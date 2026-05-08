@@ -3,4 +3,13 @@ name = "pristine"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "pristine"
+path = "src/bin/pristine.rs"
+
+[[bin]]
+name = "1p"
+path = "src/bin/pristine.rs"
+
+
 [dependencies]

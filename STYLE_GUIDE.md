@@ -2,6 +2,11 @@
 
 # Style Guide
 
+The style of this project must signal the taste and preferences of a professional engineer accustomed to working on
+large, long-lived projects with large teams of skilled experts. All code is written with maintainability in mind, to
+ensure that the code's conceptual integrity remains high, and to guarantee that future planned operations on the code
+are easy to accomplish.
+
 This project is "typechecker-first": prefer designs the compiler can validate statically.
 
 ## Safety
@@ -42,6 +47,14 @@ This project is "typechecker-first": prefer designs the compiler can validate st
 - Rustfmt is mandatory.
 - Clippy is mandatory; treat warnings as errors in CI/local workflows.
 - Avoid adding dependencies unless justified by the bead/task.
+
+## Comments
+- Comments must be professional and concise.
+- Comments should explain to future readers of the code any residual information they might need to keep in mind when reading, debugging or altering that code.
+- Comments grow too verbose when coding agents describe their current goal or task in the comments while making edits.
+  This additional context is of low value to future editors--remove it.
+- Conserve Tokens: do NOT use banner style comments to set apart structs, functions and modules. No "//-------//", "/*===============*/" or similar
+- Documentation for modules MUST not contain usage examples, especially if usage is clear from reading the code.
 
 ## Refactor gating rule (repeat)
 If your implementation is blocked by a large refactor that you are not cleared to do:

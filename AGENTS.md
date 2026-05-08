@@ -37,6 +37,8 @@ This repo uses beads_rust for task tracking: https://github.com/Dicklesworthston
 - beads_rust must be available in your environment (`br` on PATH).
 - If beads_rust is not available, **stop immediately** and tell the Coordinator Agent.
 - **Bead IDs**: `br create` auto-generates short random IDs (e.g. `code-9y0`). Do not override them.
+- Never use beads with sqlite, only ever use and commit the jsonl.
+- Always gitignore any .history files created by br.
 
 ### Migrating from beads to beads_rust
 If this repo previously used the original Go-based beads (`bd` command), follow these steps to migrate to beads_rust (`br` command):

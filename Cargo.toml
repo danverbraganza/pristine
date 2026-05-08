@@ -11,5 +11,5 @@ path = "src/bin/pristine.rs"
 name = "1p"
 path = "src/bin/pristine.rs"
 
-
 [dependencies]
+tokio = "1.52.2"

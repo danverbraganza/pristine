@@ -1,1 +1,13 @@
 /target
+.beads/.br_history/
+.beads/beads.db
+.beads/beads.db-wal
+
+# Standard emacs ignores
+*~
+
+# Env file
+.env
+
+# Standard Rust ignores
+/target/*

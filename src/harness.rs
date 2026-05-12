@@ -8,9 +8,10 @@ use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::{Agent, AgentBuilder};
 use crate::history::{AgentId, Block};
 use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
-use crate::model::ARModel;
+use crate::model::{ARModel, ModelRole};
 use crate::user::{User, UserId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -149,18 +150,23 @@ impl Harness {
         let pending = std::mem::take(&mut self.pending);
         for spec in pending {
             let agent_id = spec.id;
-            let (outbound, mut inbound) = self.bus.register(agent_id)?;
+            let (outbound, inbound) = self.bus.register(agent_id)?;
+            let model = self
+                .models
+                .get(&spec.model_id)
+                .ok_or_else(|| Error::UnknownModel(spec.model_id.clone()))?
+                .clone();
+            let agent: Agent = AgentBuilder::new()
+                .id(agent_id)
+                .system_prompt(spec.system_prompt)
+                .model(ModelRole::Default, model)
+                .build(inbound, outbound.clone())
+                .map_err(|e| Error::Lifecycle(e.to_string()))?;
             let cancel = self.cancel.clone();
             let task: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        _ = cancel.cancelled() => return Ok(()),
-                        maybe = inbound.recv() => {
-                            if maybe.is_none() {
-                                return Ok(());
-                            }
-                        }
-                    }
+                tokio::select! {
+                    _ = cancel.cancelled() => Ok(()),
+                    res = agent.run() => res.map_err(|e| Error::Lifecycle(e.to_string())),
                 }
             });
             self.agents.insert(

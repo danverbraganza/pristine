@@ -1,5 +1,4 @@
 //! Model traits and provider submodules.
-//! `Usage` is a tuple variant on `ModelStreamEvent` so it shares the struct shape with `MessageComplete { usage: Usage }` without duplication.
 
 pub mod anthropic;
 
@@ -49,7 +48,6 @@ impl std::error::Error for Error {
     }
 }
 
-/// `system_prompt` is passed explicitly because the Agent owns it (see plan.md §"Agent configuration").
 pub trait ARModel: Send + Sync {
     fn complete<'a>(
         &'a self,

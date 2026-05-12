@@ -123,6 +123,6 @@ async fn run_async() -> anyhow::Result<()> {
     }
 
     harness.shutdown();
-    harness.run_until_shutdown().await?;
+    harness.join().await?;
     Ok(())
 }

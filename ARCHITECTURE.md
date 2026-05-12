@@ -46,7 +46,14 @@ The Harness also owns the MessageBus, and connects that to agents as necessary.
 The Harness has a concept of multiple users, stored in Vec<User>; the main user is the Owner, representing the person
 who launched this process.
 
-The Harness has an explicit lifecycle. start() returns a future that drives the Harness's internal tasks (Agent event loops, MessageBus). shutdown() signals cooperative termination; awaiting the start-future after shutdown() yields a clean exit. The Harness is not usable after shutdown.
+The Harness has an explicit lifecycle:
+
+- `start(&mut self) -> Result<(), Error>` synchronously spawns the per-Agent tasks and the MessageBus routing tasks. Returns once spawning is complete.
+- `shutdown(&mut self)` signals cooperative termination by firing a cancellation token that every spawned task observes. Idempotent.
+- `join(&mut self) -> impl Future<Output = Result<(), Error>>` is async; it awaits every spawned task to completion and returns the first error encountered, or `Ok(())` if all tasks exited cleanly. Idempotent: after `join` returns, the Agent registry is empty and a subsequent `join` returns `Ok(())` immediately.
+- `send_to_agent(&self, ...)` and `subscribe(&self, ...)` interact with the running Harness via `&self`, so they can be called freely between `start` and `join`. They cannot be called concurrently with `join` itself because `join` holds `&mut self`.
+
+**Per-Agent fault isolation.** When an Agent's `run` task exits with an `Err` (e.g., an underlying Model returns an error), the Harness emits `AgentEvent::Error { message }` on that Agent's outbound stream so subscribers can detect the failure and react. Other Agents continue running. The Harness does NOT cascade-cancel on a single Agent's failure; the policy of when to call `shutdown()` is the caller's responsibility. This isolation is required to support the architectural goal of "multiple parallel agents running within one process."
 
 
 ### Model

@@ -143,8 +143,7 @@ impl Harness {
         self.owner.id()
     }
 
-    // Lifecycle: start() is synchronous; run_until_shutdown() is the awaitable hold-point.
-    // CancellationToken drives cooperative termination.
+    /// Synchronously spawn per-Agent tasks and MessageBus routing tasks.
     pub fn start(&mut self) -> Result<(), Error> {
         let pending = std::mem::take(&mut self.pending);
         for spec in pending {
@@ -172,7 +171,6 @@ impl Harness {
                     let _ = outbound_for_emit.send(AgentEvent::Error {
                         message: e.to_string(),
                     });
-                    cancel.cancel();
                 }
                 res
             });
@@ -187,10 +185,19 @@ impl Harness {
         Ok(())
     }
 
-    pub async fn run_until_shutdown(self) -> Result<(), Error> {
+    /// Await every spawned task; returns the first error encountered. Idempotent.
+    pub async fn join(&mut self) -> Result<(), Error> {
+        // Drain the registry before awaiting so the `&mut self` borrow is
+        // released across each await. Each AgentHandle's broadcast Sender is
+        // dropped as we move out, which is the desired behaviour: once all
+        // agents have exited, remaining subscribers observe a clean Closed.
+        let handles: Vec<JoinHandle<Result<(), Error>>> = std::mem::take(&mut self.agents)
+            .into_values()
+            .map(|h| h.task)
+            .collect();
         let mut first_err: Option<Error> = None;
-        for (_id, handle) in self.agents {
-            match handle.task.await {
+        for handle in handles {
+            match handle.await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     if first_err.is_none() {
@@ -210,7 +217,8 @@ impl Harness {
         }
     }
 
-    pub fn shutdown(&self) {
+    /// Signal cooperative termination to every spawned task. Idempotent.
+    pub fn shutdown(&mut self) {
         self.cancel.cancel();
     }
 
@@ -294,9 +302,9 @@ mod tests {
         let (mut harness, _agent_id, _model_id) = build_harness_with_one_agent();
         harness.start().expect("start");
         harness.shutdown();
-        let result = timeout(Duration::from_secs(5), harness.run_until_shutdown())
+        let result = timeout(Duration::from_secs(5), harness.join())
             .await
-            .expect("run_until_shutdown timed out");
+            .expect("join timed out");
         result.expect("clean shutdown");
     }
 
@@ -313,9 +321,9 @@ mod tests {
         // This test verifies the inbound-routing happy path through the bus.
         // Driving the full agent->model->event cycle is covered by the agent module tests.
         harness.shutdown();
-        timeout(Duration::from_secs(5), harness.run_until_shutdown())
+        timeout(Duration::from_secs(5), harness.join())
             .await
-            .expect("run_until_shutdown timed out")
+            .expect("join timed out")
             .expect("clean shutdown");
     }
 
@@ -342,9 +350,9 @@ mod tests {
         }
 
         harness.shutdown();
-        timeout(Duration::from_secs(5), harness.run_until_shutdown())
+        timeout(Duration::from_secs(5), harness.join())
             .await
-            .expect("run_until_shutdown timed out")
+            .expect("join timed out")
             .expect("clean shutdown");
     }
 
@@ -387,11 +395,88 @@ mod tests {
         assert!(message.contains("500"), "missing status: {message}");
         assert!(message.contains("boom"), "missing inner message: {message}");
 
-        harness.shutdown();
-        // run_until_shutdown returns Err because the agent task failed; we
-        // only need to confirm it does not hang.
-        let _ = timeout(Duration::from_secs(2), harness.run_until_shutdown())
+        // The agent task has already exited, so join() returns without a
+        // prior shutdown(). It propagates the agent's error.
+        let join_no_shutdown = timeout(Duration::from_secs(2), harness.join())
             .await
-            .expect("run_until_shutdown timed out");
+            .expect("join without shutdown timed out");
+        assert!(
+            join_no_shutdown.is_err(),
+            "expected agent error to surface via join, got Ok"
+        );
+
+        // A subsequent shutdown() + join() is a no-op (agent already drained).
+        harness.shutdown();
+        timeout(Duration::from_secs(2), harness.join())
+            .await
+            .expect("second join timed out")
+            .expect("idempotent join after drained registry");
+    }
+
+    #[tokio::test]
+    async fn multi_agent_failure_isolation() {
+        let model_id_a = ModelId::new("stub-a");
+        let model_id_b = ModelId::new("stub-b");
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+        let model_a = Arc::new(StubArModel::with_events(vec![Err(ModelError::Api {
+            status: 500,
+            message: "boom".to_string(),
+        })]));
+        let model_b = Arc::new(StubArModel::empty());
+        let mut harness = HarnessBuilder::new()
+            .add_model(model_id_a.clone(), model_a)
+            .add_model(model_id_b.clone(), model_b)
+            .add_agent(PendingAgent {
+                id: agent_a,
+                system_prompt: "a".to_string(),
+                model_id: model_id_a,
+            })
+            .add_agent(PendingAgent {
+                id: agent_b,
+                system_prompt: "b".to_string(),
+                model_id: model_id_b,
+            })
+            .build()
+            .expect("build harness");
+        harness.start().expect("start");
+
+        let mut sub_a = harness.subscribe(agent_a).expect("subscribe a");
+        let mut sub_b = harness.subscribe(agent_b).expect("subscribe b");
+        let owner = harness.owner_id();
+        harness
+            .send_to_agent(agent_a, owner, "trigger".to_string())
+            .expect("send_to_agent");
+
+        let mut error_seen = false;
+        timeout(Duration::from_secs(2), async {
+            while let Ok(evt) = sub_a.recv().await {
+                if let AgentEvent::Error { .. } = evt {
+                    error_seen = true;
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("agent A error wait timed out");
+        assert!(error_seen, "expected AgentEvent::Error from agent A");
+
+        // Agent B is still running: try_recv yields Empty (no events emitted).
+        match sub_b.try_recv() {
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+            Err(other) => panic!("agent B subscriber unexpectedly closed: {other:?}"),
+            Ok(evt) => panic!("agent B unexpectedly emitted event: {evt:?}"),
+        }
+
+        // Shutdown signals B to exit; join then collects both tasks. The
+        // first error (A's) propagates; B returns Ok.
+        harness.shutdown();
+        let result = timeout(Duration::from_secs(2), harness.join())
+            .await
+            .expect("join timed out");
+        assert!(
+            result.is_err(),
+            "expected agent A's failure to propagate from join"
+        );
     }
 }

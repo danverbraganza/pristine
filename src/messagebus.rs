@@ -13,6 +13,7 @@ pub enum AgentEvent {
     TokenDelta { text: String },
     BlockComplete { block: std::sync::Arc<HistoryNode> },
     RunComplete { usage: Usage },
+    Error { message: String },
 }
 
 #[derive(Debug)]
@@ -308,6 +309,32 @@ mod tests {
         match err {
             Error::UnknownAgent(_) => {}
             other => panic!("expected UnknownAgent, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_outbound_sees_published_error_events() {
+        let bus = InMemoryMessageBus::new();
+        let agent_id = AgentId::new();
+        let (_tx, _rx) = bus.register(agent_id).expect("register");
+
+        let mut subscriber = bus.subscribe_outbound(agent_id).expect("subscribe");
+        let outbound = bus.outbound(agent_id).expect("outbound");
+
+        outbound
+            .send(AgentEvent::Error {
+                message: "boom".to_string(),
+            })
+            .expect("send event");
+
+        let event = timeout(Duration::from_secs(1), subscriber.recv())
+            .await
+            .expect("recv timed out")
+            .expect("broadcast closed");
+
+        match event {
+            AgentEvent::Error { message } => assert_eq!(message, "boom"),
+            other => panic!("expected Error, got {other:?}"),
         }
     }
 

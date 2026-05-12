@@ -163,11 +163,19 @@ impl Harness {
                 .build(inbound, outbound.clone())
                 .map_err(|e| Error::Lifecycle(e.to_string()))?;
             let cancel = self.cancel.clone();
+            let outbound_for_emit = outbound.clone();
             let task: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
-                tokio::select! {
+                let res: Result<(), Error> = tokio::select! {
                     _ = cancel.cancelled() => Ok(()),
                     res = agent.run() => res.map_err(|e| Error::Lifecycle(e.to_string())),
+                };
+                if let Err(ref e) = res {
+                    let _ = outbound_for_emit.send(AgentEvent::Error {
+                        message: e.to_string(),
+                    });
+                    cancel.cancel();
                 }
+                res
             });
             self.agents.insert(
                 agent_id,
@@ -249,10 +257,28 @@ mod tests {
     use futures::stream;
     use tokio::time::timeout;
 
+    use std::sync::Mutex;
+
     use crate::messagebus::AgentEvent;
     use crate::model::{Error as ModelError, ModelStreamEvent};
 
-    struct StubArModel;
+    struct StubArModel {
+        events: Mutex<Vec<Result<ModelStreamEvent, ModelError>>>,
+    }
+
+    impl StubArModel {
+        fn empty() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn with_events(events: Vec<Result<ModelStreamEvent, ModelError>>) -> Self {
+            Self {
+                events: Mutex::new(events),
+            }
+        }
+    }
 
     impl ARModel for StubArModel {
         fn complete<'a>(
@@ -260,7 +286,12 @@ mod tests {
             _system_prompt: &'a str,
             _messages: &'a [Block],
         ) -> Pin<Box<dyn Stream<Item = Result<ModelStreamEvent, ModelError>> + Send + 'a>> {
-            Box::pin(stream::empty())
+            let drained: Vec<_> = self
+                .events
+                .lock()
+                .map(|mut g| std::mem::take(&mut *g))
+                .unwrap_or_default();
+            Box::pin(stream::iter(drained))
         }
     }
 
@@ -268,7 +299,7 @@ mod tests {
         let model_id = ModelId::new("stub");
         let agent_id = AgentId::new();
         let harness = HarnessBuilder::new()
-            .add_model(model_id.clone(), Arc::new(StubArModel))
+            .add_model(model_id.clone(), Arc::new(StubArModel::empty()))
             .add_agent(PendingAgent {
                 id: agent_id,
                 system_prompt: "test".to_string(),
@@ -355,5 +386,52 @@ mod tests {
             .await
             .expect("run_until_shutdown timed out")
             .expect("clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn harness_emits_error_event_when_agent_dies() {
+        let model_id = ModelId::new("stub");
+        let agent_id = AgentId::new();
+        let model = Arc::new(StubArModel::with_events(vec![Err(ModelError::Api {
+            status: 500,
+            message: "boom".to_string(),
+        })]));
+        let mut harness = HarnessBuilder::new()
+            .add_model(model_id.clone(), model)
+            .add_agent(PendingAgent {
+                id: agent_id,
+                system_prompt: "test".to_string(),
+                model_id: model_id.clone(),
+            })
+            .build()
+            .expect("build harness");
+        harness.start().expect("start");
+
+        let mut sub = harness.subscribe(agent_id).expect("subscribe");
+        let owner = harness.owner_id();
+        harness
+            .send_to_agent(agent_id, owner, "trigger".to_string())
+            .expect("send_to_agent");
+
+        let mut error_message: Option<String> = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while error_message.is_none() && tokio::time::Instant::now() < deadline {
+            match timeout(Duration::from_secs(2), sub.recv()).await {
+                Ok(Ok(AgentEvent::Error { message })) => error_message = Some(message),
+                Ok(Ok(_)) => continue,
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+        let message = error_message.expect("expected Error event");
+        assert!(message.contains("500"), "missing status: {message}");
+        assert!(message.contains("boom"), "missing inner message: {message}");
+
+        harness.shutdown();
+        // run_until_shutdown returns Err because the agent task failed; we
+        // only need to confirm it does not hang.
+        let _ = timeout(Duration::from_secs(2), harness.run_until_shutdown())
+            .await
+            .expect("run_until_shutdown timed out");
     }
 }

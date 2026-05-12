@@ -20,6 +20,7 @@ use crate::model::anthropic::AnthropicModelBuilder;
 
 const SYSTEM_PROMPT: &str =
     "You are the Pristine agent. You have an identity that is uniquely yours!";
+const FIRST_MESSAGE: &str = "Introduce yourself to me, Pristine";
 const SECOND_MESSAGE: &str = "Write me a poem of what it is like to be you, Pristine";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MODEL_KEY: &str = "anthropic-default";
@@ -33,10 +34,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Send a message to the Pristine agent and stream the reply.
+    /// Send the two hard-coded Owner messages to the Pristine agent and stream the replies.
     Run {
-        /// First user message sent from the Owner to the agent.
-        message: String,
         /// Anthropic model identifier.
         #[arg(long, default_value = DEFAULT_MODEL)]
         model: String,
@@ -58,10 +57,10 @@ pub fn run() -> anyhow::Result<()> {
 
 async fn run_async() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let command = cli.command.ok_or_else(|| {
-        anyhow::anyhow!("a subcommand is required; try `pristine run \"<message>\"`")
-    })?;
-    let Command::Run { message, model } = command;
+    let command = cli
+        .command
+        .ok_or_else(|| anyhow::anyhow!("a subcommand is required; try `pristine run`"))?;
+    let Command::Run { model } = command;
 
     let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
     if api_key.is_empty() {
@@ -88,7 +87,7 @@ async fn run_async() -> anyhow::Result<()> {
 
     let mut rx = harness.subscribe(agent_id)?;
     let owner_id = harness.owner_id();
-    harness.send_to_agent(agent_id, owner_id, message)?;
+    harness.send_to_agent(agent_id, owner_id, FIRST_MESSAGE.to_string())?;
 
     let mut runs_completed = 0u32;
     let mut second_sent = false;
@@ -98,6 +97,9 @@ async fn run_async() -> anyhow::Result<()> {
             Ok(AgentEvent::TokenDelta { text }) => {
                 print!("{text}");
                 std::io::stdout().flush()?;
+            }
+            Ok(AgentEvent::Error { message }) => {
+                return Err(anyhow::anyhow!("agent error: {message}"));
             }
             Ok(AgentEvent::RunComplete { usage }) => {
                 println!();

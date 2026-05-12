@@ -1,1 +1,353 @@
 //! Harness lifecycle and registry.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
+
+use crate::history::{AgentId, Block};
+use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
+use crate::model::ARModel;
+use crate::user::{User, UserId};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ModelId(String);
+
+impl ModelId {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+}
+
+impl std::fmt::Display for ModelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingAgent {
+    pub id: AgentId,
+    pub system_prompt: String,
+    pub model_id: ModelId,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    UnknownModel(ModelId),
+    UnknownAgent(AgentId),
+    Lifecycle(String),
+    Bus(crate::messagebus::Error),
+    Join(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::UnknownModel(id) => write!(f, "unknown model: {id}"),
+            Error::UnknownAgent(id) => write!(f, "unknown agent: {id}"),
+            Error::Lifecycle(msg) => write!(f, "lifecycle error: {msg}"),
+            Error::Bus(err) => write!(f, "message bus error: {err}"),
+            Error::Join(msg) => write!(f, "task join error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Bus(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::messagebus::Error> for Error {
+    fn from(err: crate::messagebus::Error) -> Self {
+        Error::Bus(err)
+    }
+}
+
+impl From<tokio::task::JoinError> for Error {
+    fn from(err: tokio::task::JoinError) -> Self {
+        Error::Join(err.to_string())
+    }
+}
+
+struct AgentHandle {
+    task: JoinHandle<Result<(), Error>>,
+    outbound: broadcast::Sender<AgentEvent>,
+}
+
+pub struct Harness {
+    #[allow(dead_code)] // Models are registered for Step 7's Agent loop to consume.
+    models: HashMap<ModelId, Arc<dyn ARModel>>,
+    agents: HashMap<AgentId, AgentHandle>,
+    bus: Arc<InMemoryMessageBus>,
+    owner: User,
+    cancel: CancellationToken,
+    pending: Vec<PendingAgent>,
+}
+
+pub struct HarnessBuilder {
+    models: HashMap<ModelId, Arc<dyn ARModel>>,
+    pending: Vec<PendingAgent>,
+}
+
+impl HarnessBuilder {
+    pub fn new() -> Self {
+        Self {
+            models: HashMap::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    pub fn add_model(mut self, id: ModelId, model: Arc<dyn ARModel>) -> Self {
+        self.models.insert(id, model);
+        self
+    }
+
+    pub fn add_agent(mut self, agent: PendingAgent) -> Self {
+        self.pending.push(agent);
+        self
+    }
+
+    pub fn build(self) -> Result<Harness, Error> {
+        for pending in &self.pending {
+            if !self.models.contains_key(&pending.model_id) {
+                return Err(Error::UnknownModel(pending.model_id.clone()));
+            }
+        }
+        Ok(Harness {
+            models: self.models,
+            agents: HashMap::new(),
+            bus: Arc::new(InMemoryMessageBus::new()),
+            owner: User::new(),
+            cancel: CancellationToken::new(),
+            pending: self.pending,
+        })
+    }
+}
+
+impl Default for HarnessBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Harness {
+    pub fn owner_id(&self) -> UserId {
+        self.owner.id()
+    }
+
+    // Lifecycle: start() is synchronous; run_until_shutdown() is the awaitable hold-point.
+    // CancellationToken drives cooperative termination.
+    pub fn start(&mut self) -> Result<(), Error> {
+        let pending = std::mem::take(&mut self.pending);
+        for spec in pending {
+            let agent_id = spec.id;
+            let (outbound, mut inbound) = self.bus.register(agent_id)?;
+            let cancel = self.cancel.clone();
+            let task: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return Ok(()),
+                        maybe = inbound.recv() => {
+                            if maybe.is_none() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            });
+            self.agents.insert(
+                agent_id,
+                AgentHandle {
+                    task,
+                    outbound: outbound.clone(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn run_until_shutdown(self) -> Result<(), Error> {
+        let mut first_err: Option<Error> = None;
+        for (_id, handle) in self.agents {
+            match handle.task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(join_err) => {
+                    if first_err.is_none() {
+                        first_err = Some(Error::from(join_err));
+                    }
+                }
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    pub fn shutdown(&self) {
+        self.cancel.cancel();
+    }
+
+    pub fn send_to_agent(
+        &self,
+        agent_id: AgentId,
+        from: UserId,
+        content: String,
+    ) -> Result<(), Error> {
+        let block = Block::UserMessage {
+            from,
+            content,
+            timestamp: SystemTime::now(),
+        };
+        self.bus.send_inbound(agent_id, block)?;
+        Ok(())
+    }
+
+    pub fn subscribe(&self, agent_id: AgentId) -> Result<broadcast::Receiver<AgentEvent>, Error> {
+        // Subscribe via the stored sender when available to avoid a bus lookup;
+        // fall back to the bus for parity with peer-subscribe semantics.
+        if let Some(handle) = self.agents.get(&agent_id) {
+            return Ok(handle.outbound.subscribe());
+        }
+        Ok(self.bus.subscribe_outbound(agent_id)?)
+    }
+
+    // Test-only accessor so tests can publish events through the bus directly
+    // without piercing the placeholder agent loop.
+    #[cfg(test)]
+    pub fn bus(&self) -> &Arc<InMemoryMessageBus> {
+        &self.bus
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::time::Duration;
+
+    use futures::Stream;
+    use futures::stream;
+    use tokio::time::timeout;
+
+    use crate::messagebus::AgentEvent;
+    use crate::model::{Error as ModelError, ModelStreamEvent};
+
+    struct StubArModel;
+
+    impl ARModel for StubArModel {
+        fn complete<'a>(
+            &'a self,
+            _system_prompt: &'a str,
+            _messages: &'a [Block],
+        ) -> Pin<Box<dyn Stream<Item = Result<ModelStreamEvent, ModelError>> + Send + 'a>> {
+            Box::pin(stream::empty())
+        }
+    }
+
+    fn build_harness_with_one_agent() -> (Harness, AgentId, ModelId) {
+        let model_id = ModelId::new("stub");
+        let agent_id = AgentId::new();
+        let harness = HarnessBuilder::new()
+            .add_model(model_id.clone(), Arc::new(StubArModel))
+            .add_agent(PendingAgent {
+                id: agent_id,
+                system_prompt: "test".to_string(),
+                model_id: model_id.clone(),
+            })
+            .build()
+            .expect("build harness");
+        (harness, agent_id, model_id)
+    }
+
+    #[test]
+    fn builder_rejects_agent_with_unknown_model() {
+        let missing = ModelId::new("missing");
+        let agent_id = AgentId::new();
+        let result = HarnessBuilder::new()
+            .add_agent(PendingAgent {
+                id: agent_id,
+                system_prompt: "test".to_string(),
+                model_id: missing.clone(),
+            })
+            .build();
+        match result {
+            Err(Error::UnknownModel(id)) => assert_eq!(id, missing),
+            Err(other) => panic!("expected UnknownModel, got {other:?}"),
+            Ok(_) => panic!("builder should reject unknown model"),
+        }
+    }
+
+    #[tokio::test]
+    async fn start_then_shutdown_exits_cleanly() {
+        let (mut harness, _agent_id, _model_id) = build_harness_with_one_agent();
+        harness.start().expect("start");
+        harness.shutdown();
+        let result = timeout(Duration::from_secs(5), harness.run_until_shutdown())
+            .await
+            .expect("run_until_shutdown timed out");
+        result.expect("clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn send_to_agent_routes_through_bus() {
+        let (mut harness, agent_id, _model_id) = build_harness_with_one_agent();
+        harness.start().expect("start");
+
+        let owner = harness.owner_id();
+        harness
+            .send_to_agent(agent_id, owner, "hello".to_string())
+            .expect("send_to_agent");
+
+        // The placeholder agent loop drains inbound silently, so we cannot
+        // observe the delivered block directly. Confirm the send call succeeded
+        // (returns Ok) which means the bus accepted the inbound block.
+        harness.shutdown();
+        timeout(Duration::from_secs(5), harness.run_until_shutdown())
+            .await
+            .expect("run_until_shutdown timed out")
+            .expect("clean shutdown");
+    }
+
+    #[tokio::test]
+    async fn subscribe_returns_receiver_seeing_published_event() {
+        let (mut harness, agent_id, _model_id) = build_harness_with_one_agent();
+        harness.start().expect("start");
+
+        let mut sub = harness.subscribe(agent_id).expect("subscribe");
+        let outbound = harness.bus().outbound(agent_id).expect("outbound");
+        outbound
+            .send(AgentEvent::TokenDelta {
+                text: "hi".to_string(),
+            })
+            .expect("send token delta");
+
+        let event = timeout(Duration::from_secs(1), sub.recv())
+            .await
+            .expect("recv timed out")
+            .expect("broadcast closed");
+        match event {
+            AgentEvent::TokenDelta { text } => assert_eq!(text, "hi"),
+            other => panic!("expected TokenDelta, got {other:?}"),
+        }
+
+        harness.shutdown();
+        timeout(Duration::from_secs(5), harness.run_until_shutdown())
+            .await
+            .expect("run_until_shutdown timed out")
+            .expect("clean shutdown");
+    }
+}

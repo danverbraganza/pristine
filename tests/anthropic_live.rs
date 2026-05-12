@@ -1,7 +1,6 @@
 use futures::StreamExt;
-use pristine::history::{Block, UserId};
 use pristine::model::anthropic::AnthropicModelBuilder;
-use pristine::model::{ARModel, ModelStreamEvent};
+use pristine::model::{ARModel, ContentPart, ModelInput, ModelStreamEvent, Role, Turn};
 use std::env;
 use std::time::Duration;
 
@@ -22,14 +21,22 @@ async fn live_anthropic_smoke() {
         .build()
         .expect("builder should succeed");
 
-    let block = Block::UserMessage {
-        from: UserId::new(),
-        content: "ping".to_string(),
-        timestamp: std::time::SystemTime::now(),
+    let input = ModelInput {
+        turns: vec![
+            Turn {
+                role: Role::System,
+                content: vec![ContentPart::Text(
+                    "You are a terse assistant. Reply in one word.".to_string(),
+                )],
+            },
+            Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("ping".to_string())],
+            },
+        ],
     };
-    let messages = vec![block];
 
-    let mut stream = model.complete("You are a terse assistant. Reply in one word.", &messages);
+    let mut stream = model.complete(&input);
 
     let mut got_delta = false;
     let test_timeout = tokio::time::sleep(Duration::from_secs(30));

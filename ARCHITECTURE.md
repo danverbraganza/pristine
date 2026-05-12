@@ -80,7 +80,17 @@ we will limit ourselves to their completion interface.
 ARModel will support a streaming interface. Upon receiving a request, ARModel will return (a result of) a Stream that
 will asynchronously yield the tokens.
 
-Model is, by design, only going to be limited to the ability to do completions on strings.
+The Model trait does not see `Block`. The Agent compiles its History into a structured `ModelInput` (a sequence of
+role-tagged turns, each carrying content parts). The Model — and its provider adapters — operate exclusively on
+`ModelInput`; the mapping from `Block` to `Turn` is the Agent's responsibility. The system prompt is not a separate
+parameter on the Model trait; it is represented as one or more `Role::System` turns at the head of `ModelInput`, which
+provider adapters concatenate or place into their provider-native system field as appropriate.
+
+In Phase 1 the Agent constructs `ModelInput` by linearizing its History and skipping variants the model cannot consume
+(e.g. `ReasoningTrace`, `ToolCall`, `ToolResult`). In future phases this construction will be extracted into a
+`ContextCompiler` trait so that selective summarization, vector-store lookups, and sequence-to-sequence "context
+compilation" can be plugged in without changing the Agent or the Model trait. The `ModelInput` shape is the stable
+contract between compiler and model.
 
 
 ### History

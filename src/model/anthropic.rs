@@ -4,9 +4,7 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::history::Block;
-
-use super::{ARModel, Error, ModelStreamEvent, Usage};
+use super::{ARModel, ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage};
 
 // Phase 1 cap; revisited when tool use / config land.
 const MAX_TOKENS: u32 = 1024;
@@ -91,18 +89,43 @@ struct AnthropicMessage {
     content: String,
 }
 
-fn block_to_message(block: &Block) -> Option<AnthropicMessage> {
-    match block {
-        Block::UserMessage { content, .. } => Some(AnthropicMessage {
-            role: "user",
-            content: content.clone(),
-        }),
-        Block::AgentMessage { content, .. } => Some(AnthropicMessage {
-            role: "assistant",
-            content: content.clone(),
-        }),
-        Block::ReasoningTrace { .. } | Block::ToolCall { .. } | Block::ToolResult { .. } => None,
+fn model_input_to_anthropic(input: &ModelInput) -> (String, Vec<AnthropicMessage>) {
+    let mut system = String::new();
+    let mut messages = Vec::with_capacity(input.turns.len());
+    for turn in &input.turns {
+        match turn.role {
+            Role::System => {
+                for part in &turn.content {
+                    match part {
+                        ContentPart::Text(text) => {
+                            if !system.is_empty() {
+                                system.push_str("\n\n");
+                            }
+                            system.push_str(text);
+                        }
+                    }
+                }
+            }
+            Role::User | Role::Assistant => {
+                let role: &'static str = match turn.role {
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::System => unreachable!(),
+                };
+                let mut text = String::new();
+                for part in &turn.content {
+                    match part {
+                        ContentPart::Text(t) => text.push_str(t),
+                    }
+                }
+                messages.push(AnthropicMessage {
+                    role,
+                    content: text,
+                });
+            }
+        }
     }
+    (system, messages)
 }
 
 impl From<reqwest::Error> for Error {
@@ -161,17 +184,14 @@ struct MessageDeltaUsage {
 impl ARModel for AnthropicModel {
     fn complete<'a>(
         &'a self,
-        system_prompt: &'a str,
-        messages: &'a [Block],
+        input: &'a ModelInput,
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<ModelStreamEvent, Error>> + Send + 'a>>
     {
         let client = self.client.clone();
         let api_key = self.api_key.clone();
         let model_name = self.model_name.clone();
         let base_url = self.base_url.clone();
-        let messages: Vec<AnthropicMessage> =
-            messages.iter().filter_map(block_to_message).collect();
-        let system = system_prompt.to_owned();
+        let (system, messages) = model_input_to_anthropic(input);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<ModelStreamEvent, Error>>(64);
 
@@ -335,8 +355,7 @@ impl ARModel for AnthropicModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::history::UserId;
-    use std::time::SystemTime;
+    use crate::model::Turn;
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -367,55 +386,62 @@ mod tests {
 
     #[test]
     fn serializes_user_messages_correctly() {
-        let blocks = [Block::UserMessage {
-            from: UserId::new(),
-            content: "hello".to_string(),
-            timestamp: SystemTime::now(),
-        }];
-        let messages: Vec<AnthropicMessage> = blocks.iter().filter_map(block_to_message).collect();
+        let input = ModelInput {
+            turns: vec![
+                Turn {
+                    role: Role::System,
+                    content: vec![ContentPart::Text("sys".to_string())],
+                },
+                Turn {
+                    role: Role::User,
+                    content: vec![ContentPart::Text("hello".to_string())],
+                },
+            ],
+        };
+        let (system, messages) = model_input_to_anthropic(&input);
+        assert_eq!(system, "sys");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "hello");
+
         let request = AnthropicRequest {
             model: "test-model",
             max_tokens: MAX_TOKENS,
             stream: true,
-            system: "test-system",
+            system: &system,
             messages,
         };
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["model"], "test-model");
         assert_eq!(value["max_tokens"], 1024);
         assert_eq!(value["stream"], true);
-        assert_eq!(value["system"], "test-system");
+        assert_eq!(value["system"], "sys");
         assert_eq!(value["messages"][0]["role"], "user");
         assert_eq!(value["messages"][0]["content"], "hello");
     }
 
     #[test]
-    fn non_message_blocks_are_filtered_out() {
-        let now = SystemTime::now();
-        let blocks = [
-            Block::ReasoningTrace {
-                content: "thinking".to_string(),
-                timestamp: now,
-            },
-            Block::ToolCall {
-                name: "tool".to_string(),
-                arguments: serde_json::json!({}),
-                timestamp: now,
-            },
-            Block::ToolResult {
-                name: "tool".to_string(),
-                result: serde_json::json!({}),
-                timestamp: now,
-            },
-            Block::UserMessage {
-                from: UserId::new(),
-                content: "hi".to_string(),
-                timestamp: now,
-            },
-        ];
-        let produced: Vec<AnthropicMessage> = blocks.iter().filter_map(block_to_message).collect();
-        assert_eq!(produced.len(), 1);
-        assert_eq!(produced[0].role, "user");
-        assert_eq!(produced[0].content, "hi");
+    fn system_turns_concatenated_into_system_field() {
+        let input = ModelInput {
+            turns: vec![
+                Turn {
+                    role: Role::System,
+                    content: vec![ContentPart::Text("first".to_string())],
+                },
+                Turn {
+                    role: Role::System,
+                    content: vec![ContentPart::Text("second".to_string())],
+                },
+                Turn {
+                    role: Role::User,
+                    content: vec![ContentPart::Text("hi".to_string())],
+                },
+            ],
+        };
+        let (system, messages) = model_input_to_anthropic(&input);
+        assert_eq!(system, "first\n\nsecond");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "hi");
     }
 }

@@ -10,7 +10,9 @@ use futures::stream::BoxStream;
 pub use crate::history::AgentId;
 use crate::history::{Block, History};
 use crate::messagebus::{self, AgentEvent, MessageBus};
-use crate::model::{self, ARModel, ModelRole, ModelStreamEvent, Usage};
+use crate::model::{
+    self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, Turn, Usage,
+};
 
 #[derive(Debug)]
 pub enum Error {
@@ -145,7 +147,33 @@ impl Agent {
                 .ok_or(Error::MissingDefaultModel)?
                 .clone();
 
-            let mut stream = model.complete(&self.system_prompt, &context);
+            let mut turns: Vec<Turn> = Vec::with_capacity(context.len() + 1);
+            turns.push(Turn {
+                role: Role::System,
+                content: vec![ContentPart::Text(self.system_prompt.clone())],
+            });
+            for block in context {
+                match block {
+                    Block::UserMessage { content, .. } => turns.push(Turn {
+                        role: Role::User,
+                        content: vec![ContentPart::Text(content)],
+                    }),
+                    Block::AgentMessage { content, .. } => turns.push(Turn {
+                        role: Role::Assistant,
+                        content: vec![ContentPart::Text(content)],
+                    }),
+                    Block::ReasoningTrace { .. }
+                    | Block::ToolCall { .. }
+                    | Block::ToolResult { .. } => {
+                        // Phase 1: these variants are kept in History but not
+                        // routed to the model. Phase 2 will route them via
+                        // ContentPart::ToolUse / ContentPart::ToolResult.
+                    }
+                }
+            }
+            let input = ModelInput { turns };
+
+            let mut stream = model.complete(&input);
             let mut delta_buffer = String::new();
             let mut completed_text: Option<String> = None;
             let mut final_usage = Usage::default();
@@ -418,5 +446,56 @@ mod tests {
             .next()
             .expect("at least one AgentMessage block");
         assert_eq!(agent_block, "fragment");
+    }
+
+    #[tokio::test]
+    async fn agent_run_compiles_history_into_model_input_with_system_turn() {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "ok".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(agent_id, user_block("hello there"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let drain = async {
+            while let Some(evt) = outbound.next().await {
+                if matches!(evt, AgentEvent::RunComplete { .. }) {
+                    break;
+                }
+            }
+        };
+        timeout(Duration::from_secs(2), drain)
+            .await
+            .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        assert_eq!(input.turns.len(), 2);
+        assert_eq!(input.turns[0].role, Role::System);
+        match &input.turns[0].content[0] {
+            ContentPart::Text(t) => assert_eq!(t, "test prompt"),
+        }
+        assert_eq!(input.turns[1].role, Role::User);
+        match &input.turns[1].content[0] {
+            ContentPart::Text(t) => assert_eq!(t, "hello there"),
+        }
     }
 }

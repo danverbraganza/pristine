@@ -48,11 +48,40 @@ impl std::error::Error for Error {
     }
 }
 
+/// Structured input contract for a Model call. The Agent compiles its
+/// History into this shape; provider adapters map it onto provider-native
+/// payloads. The Model trait never sees `Block`.
+#[derive(Clone, Debug)]
+pub struct ModelInput {
+    pub turns: Vec<Turn>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Turn {
+    pub role: Role,
+    pub content: Vec<ContentPart>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+}
+
+/// A part of a Turn's content. Marked `#[non_exhaustive]` because future
+/// phases will add `ToolUse` and `ToolResult` variants; downstream matchers
+/// must remain forward-compatible.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum ContentPart {
+    Text(String),
+}
+
 pub trait ARModel: Send + Sync {
     fn complete<'a>(
         &'a self,
-        system_prompt: &'a str,
-        messages: &'a [crate::history::Block],
+        input: &'a ModelInput,
     ) -> std::pin::Pin<Box<dyn futures::Stream<Item = Result<ModelStreamEvent, Error>> + Send + 'a>>;
 }
 
@@ -75,5 +104,18 @@ mod tests {
     fn error_is_standard_error_trait_object() {
         assert_send_sync::<Error>();
         assert_std_error::<Error>();
+    }
+
+    #[test]
+    fn model_input_is_send_sync() {
+        assert_send_sync::<ModelInput>();
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("hi".to_string())],
+            }],
+        };
+        assert_eq!(input.turns.len(), 1);
+        assert_eq!(input.turns[0].role, Role::User);
     }
 }

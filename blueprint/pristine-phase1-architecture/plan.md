@@ -1,176 +1,82 @@
-# Technical Design: Pristine Phase 1 Architecture
+# Technical Design: Pristine Phase 1
 
 ## Overview
 
-Phase 1 establishes the core type system and runtime for the Pristine agentic harness engine. The deliverable is a Rust workspace with a library crate (`pristine`) containing core types and traits, and a binary crate (`pristine`/`1p`) that demonstrates the end-to-end workflow: construct a Harness, register a Model, add an Agent, send a message, and stream the response.
+This plan describes the Phase 1 build of Pristine. It defers to `ARCHITECTURE.md` for the data model and runtime semantics, and documents only the Phase 1-specific implementation choices and step ordering. Information present in `ARCHITECTURE.md` is not restated here.
 
-## Architecture
+The Phase 1 deliverable is a working `1p` binary that:
+
+- Constructs a Harness with an `ARModel` implementation backed by the Anthropic Messages API.
+- Registers a single Agent under a distinguished `Owner`, with a hard-coded system prompt.
+- Starts the Harness, sends two sequential `UserMessage`s from the Owner, streams the Agent's responses to stdout, and shuts down cleanly.
+
+## Phase 1 specifics
 
 ### Crate structure
 
 ```
 pristine/
-  Cargo.toml            # workspace root (single crate, lib + two bin targets)
+  Cargo.toml
   src/
-    lib.rs              # pub mod declarations, top-level Error enum
-    harness.rs          # Harness struct, builder, agent/model registry
-    agent.rs            # Agent struct, AgentId type
-    history.rs          # HistoryNode, Block enum, node IDs
-    model.rs            # Model trait, StreamEvent, common types
+    lib.rs              # module declarations, top-level Error
+    harness.rs          # Harness, HarnessBuilder, lifecycle
+    user.rs             # User, UserId, Owner
+    agent.rs            # Agent, AgentId, AgentBuilder, AgentEvent, event loop
+    history.rs          # History, HistoryNode, NodeId, Block
+    model.rs            # ARModel and DLModel traits, ModelStreamEvent, Usage, ModelRole
     model/
-      anthropic.rs      # Anthropic Messages API implementation
+      anthropic.rs      # AnthropicModel: ARModel impl for the Messages API
+    messagebus.rs       # MessageBus trait + in-memory implementation
     bin/
-      pristine.rs       # Binary entry point (also aliased as `1p`)
+      pristine.rs       # Binary; built as `pristine` and `1p`
 ```
 
-`lib.rs` is minimal: module declarations, the composed `Error` enum, and re-exports of key public types.
+Per `STYLE_GUIDE.md`: non-mod-rs layout, `#![forbid(unsafe_code)]` at the crate root, no `unwrap()` / `expect()` in production code, no `mod.rs`.
 
-### Core types
+### Phase 1 commitments
 
-#### Harness
+These pin down implementation choices that `ARCHITECTURE.md` leaves open or that are specific to the first build.
 
-```rust
-pub struct Harness {
-    models: HashMap<ModelId, Arc<dyn Model>>,
-    agents: HashMap<AgentId, Agent>,
-}
-```
-
-- Created via `HarnessBuilder` in `main()`.
-- Owns all Models (behind `Arc<dyn Model>` for shared borrowing by Agents).
-- Owns all Agents (acts as a registry).
-- Not a global static. Created as a local in `main()`, passed by reference or owned directly.
-- Phase 1 exposes `add_model()` and `add_agent()` methods. No removal or dynamic reconfiguration yet.
-
-**Why `Arc<dyn Model>` instead of `&Model`:** Agents need a reference to their Model, but the Harness also owns the Agents. Storing `&'a Model` inside an Agent that's stored inside the Harness creates a self-referential struct. `Arc` sidesteps this cleanly — the Harness holds one `Arc`, the Agent holds a clone.
-
-#### Agent
-
-```rust
-pub struct Agent {
-    id: AgentId,
-    model: Arc<dyn Model>,
-    history: History,
-}
-```
-
-- `AgentId` is a newtype over a `String` (or compact ID type). Assigned at construction, unique within the Harness.
-- Holds a cloned `Arc<dyn Model>` — cheap, no lifetime entanglement with Harness.
-- Owns its `History`.
-- Primary method: `send_message(&mut self, input: &str) -> Result<impl Stream<Item = Result<StreamEvent>>>` — appends a `UserMessage` to history, calls the Model, streams back the response, and appends the `AgentMessage` to history once the stream completes.
-
-#### History
-
-```rust
-pub struct History {
-    head: Option<Arc<HistoryNode>>,
-}
-
-pub struct HistoryNode {
-    id: NodeId,
-    block: Block,
-    parent: Option<Arc<HistoryNode>>,
-}
-```
-
-- Immutable persistent linked list. Each node points to its parent via `Arc`.
-- `History` is a cursor — it holds an `Arc` to the current head node. Appending creates a new node pointing to the old head; it does not mutate.
-- Multiple Agents can share a prefix: clone the `History` (cheap — just cloning an `Arc`), then each appends independently.
-- `NodeId` is a newtype (UUID or similar) assigned at node creation. Exists for future disk persistence — each node is addressable by its stable ID.
-- `Block` is an enum:
-
-```rust
-pub enum Block {
-    UserMessage { content: String },
-    AgentMessage { content: String },
-    ToolCall { /* deferred — fields TBD */ },
-    ToolResult { /* deferred — fields TBD */ },
-    PeerMessage { from: AgentId, content: String },
-}
-```
-
-`ToolCall` and `ToolResult` variants are defined but not used in Phase 1. They exist so the enum is forward-compatible without breaking changes.
-
-**Future persistence:** The stable `NodeId` on each node enables a future `HistoryStore` trait that can write nodes to disk and load them lazily. The `Arc`-based in-memory representation becomes a cache layer. This requires no structural changes to `HistoryNode` — only adding a store behind `History` that intercepts parent traversal.
-
-**Future history transformation:** A function `fn prepare_for_completion(&self, history: &History) -> Vec<Block>` (or similar) will sit between the Agent and the Model, transforming the raw history into whatever the Model needs. Phase 1 just linearizes the linked list into a `Vec<Block>`.
-
-#### Model trait
-
-```rust
-pub trait Model: Send + Sync {
-    fn complete(
-        &self,
-        messages: &[Block],
-    ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, model::Error>> + Send + '_>>;
-}
-```
-
-- Returns a boxed `Stream` of `StreamEvent`s. Boxed because the trait is object-safe (`dyn Model`).
-- `StreamEvent` covers the SSE event types from the Anthropic API:
-
-```rust
-pub enum StreamEvent {
-    ContentDelta { text: String },
-    ContentComplete { text: String },
-    MessageStart { message_id: String, model: String },
-    MessageComplete { usage: Usage },
-    Error { message: String },
-}
-```
-
-`Usage` captures token counts (`input_tokens`, `output_tokens`).
-
-- The trait takes `&[Block]` — the caller (Agent) is responsible for linearizing its History into this slice. This keeps the Model stateless and decoupled from History's linked-list representation.
-
-#### Anthropic implementation
-
-```rust
-pub struct AnthropicModel {
-    client: reqwest::Client,
-    api_key: String,
-    model_name: String,  // e.g., "claude-sonnet-4-20250514"
-}
-```
-
-- Constructed via `AnthropicModelBuilder` with required `api_key` and `model_name`.
-- Implements `Model` by:
-  1. Converting `&[Block]` into the Anthropic Messages API JSON request format.
-  2. Sending a POST to `https://api.anthropic.com/v1/messages` with `stream: true`.
-  3. Parsing the SSE response into a `Stream<Item = Result<StreamEvent>>`.
-- Request/response types (Anthropic-specific JSON structures) are private to `model/anthropic.rs`. Only `StreamEvent` crosses the module boundary.
-- SSE parsing: use `reqwest`'s byte streaming + manual SSE line parsing, or `eventsource-stream` crate (lightweight, well-maintained). The Anthropic SSE format follows the standard `data:` / `event:` protocol.
+- **`ARModel` and `DLModel`.** Both traits are defined. `ARModel` carries the full streaming completion interface and is the only trait implemented in Phase 1. `DLModel` is declared as a placeholder trait with no methods; its purpose is to make the seam visible to future contributors.
+- **`ModelRole` enum.** A single variant `Default` in Phase 1. The enum exists so the `HashMap<ModelRole, Arc<dyn ARModel>>` shape on `Agent` is structurally ready for adaptive-reasoning strategies without later refactoring.
+- **`AnthropicModel`.** Implements `ARModel`. Phase 1 uses the Messages endpoint with `stream: true`. Anthropic-specific request/response JSON types are private to `model/anthropic.rs`; only `ModelStreamEvent` crosses the module boundary.
+- **`ModelStreamEvent`** (the wire type returned by `ARModel::complete`). API-shape-agnostic enum:
+  - `ContentDelta { text }`
+  - `ContentComplete { text }`
+  - `MessageStart { message_id, model }`
+  - `MessageComplete { usage: Usage }`
+  - `Error { message }`
+  - `Usage { input_tokens, output_tokens }`.
+- **`AgentEvent`** (the Agent outbound stream wire type). Unified enum:
+  - `TokenDelta { text }`
+  - `BlockComplete { block: Arc<HistoryNode> }`
+  - `RunComplete { usage: Usage }`.
+  - The Agent translates `ModelStreamEvent`s into `AgentEvent`s as the Model stream drains.
+- **Outbound channel.** `tokio::sync::broadcast::channel::<AgentEvent>`. Lossy for slow consumers — this is documented on the Agent's outbound field. Token deltas are best-effort; completed Blocks are recoverable from `History` via `NodeId`.
+- **Inbound channel.** Each Agent owns an `mpsc::Receiver<Block>`. The MessageBus is the single producer for both Owner-originated `UserMessage`s and routed peer `AgentMessage`s.
+- **Agent event loop.** A single `tokio::select!`-driven loop: read one Block from inbound → append to `History` → linearize → call active `ARModel` → drain `ModelStreamEvent`s into `AgentEvent`s on the broadcast channel → append the resulting `AgentMessage` Block → publish `BlockComplete` then `RunComplete` → return to await the next Block. The "at most one pending Model call per Agent" invariant from `ARCHITECTURE.md` falls out structurally; no mutex required.
+- **`Agent` configuration.** `AgentBuilder` requires `id: AgentId`, `system_prompt: String`, and at least one entry for `ModelRole::Default`. No skills or tool calls in Phase 1.
+- **Harness lifecycle.** `Harness::start() -> JoinHandle<Result<()>>` spawns each Agent's event-loop task and the MessageBus task, and returns a join handle that resolves when all spawned tasks have exited. `Harness::shutdown()` signals cooperative termination (cancellation token + drop senders); awaiting the start-future after `shutdown()` yields a clean exit.
+- **`MessageBus`.** Defined as a trait. Phase 1 ships `InMemoryMessageBus`, which routes one Agent's outbound `AgentEvent::BlockComplete` to a recipient Agent's inbound `Block` stream when wired. With a single Agent in the Phase 1 example the routing is trivial; the surface exists so peer messaging can slot in without restructuring Agent or Harness.
+- **`User`, `UserId`, `Owner`.** `User` carries `id: UserId` (UUID newtype). `Harness` exposes the `Owner` `UserId` as a distinguished constant accessor after construction. `Harness::send_to_agent(agent_id, from: UserId, content)` constructs a `UserMessage { from, content, timestamp }` Block and pushes it onto the named Agent's inbound stream via the MessageBus.
+- **`NodeId`.** Each `HistoryNode` carries a stable `NodeId` (UUID newtype) assigned at creation. Phase 1 does not persist nodes to disk; the stable ID is the addressing scheme for a future `HistoryStore` trait so no structural change to `HistoryNode` will be needed when that lands.
+- **`prepare_for_completion`.** Phase 1's Agent linearizes its `History` head into a `Vec<Block>` for `ARModel::complete()`. A future `prepare_for_completion(&History) -> Vec<Block>` step will sit between the Agent and the Model to apply summarization or other context shaping; Phase 1 hard-codes the linearization.
 
 ### Error handling
 
-Each module defines its own error enum:
-
-```rust
-// model.rs
-pub enum Error {
-    Request(reqwest::Error),
-    Serialization(serde_json::Error),
-    Api { status: u16, message: String },
-    Stream(String),
-}
-
-// history.rs
-pub enum Error {
-    // Phase 1: minimal. Grows as persistence is added.
-}
-```
-
-Top-level composition in `lib.rs`:
+Each module defines its own `Error` enum. The crate root composes them:
 
 ```rust
 pub enum Error {
     Model(model::Error),
     History(history::Error),
     Agent(agent::Error),
+    Harness(harness::Error),
+    MessageBus(messagebus::Error),
 }
 ```
 
-With `From` impls for each, so `?` propagates cleanly across module boundaries. The binary wraps everything in `anyhow` for ergonomic error reporting.
+With `From` impls so `?` propagates cleanly. Per `STYLE_GUIDE.md`: typed errors throughout; prefer `TryFrom` over `as` casts. The binary uses `anyhow` for top-level reporting.
 
 ### Dependencies
 
@@ -180,150 +86,98 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["stream", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-futures-core = "0.3"        # Stream trait
-tokio-stream = "0.1"        # Stream utilities
-uuid = { version = "1", features = ["v4"] }  # NodeId, AgentId
-eventsource-stream = "0.2"  # SSE parsing (evaluate vs hand-rolling)
-
-[dev-dependencies]
+futures = "0.3"
+tokio-stream = "0.1"
+uuid = { version = "1", features = ["v4"] }
+eventsource-stream = "0.2"
+clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-
-[[bin]]
-# anyhow used in binary via direct dependency or dev-dep trick
 ```
 
-Note: `anyhow` is only needed by the binary. Depending on Cargo layout, it may go in `[dependencies]` but only be imported in `bin/pristine.rs`.
+A subagent may justify substitutions (e.g. hand-rolled SSE in place of `eventsource-stream`) in the relevant Bead.
 
-### Binary workflow
+### CLI surface
 
-```rust
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let model = AnthropicModelBuilder::new()
-        .api_key("sk-...".into())  // or read from arg/env in practice
-        .model_name("claude-sonnet-4-20250514".into())
-        .build()?;
-
-    let mut harness = HarnessBuilder::new()
-        .add_model("claude", model)
-        .build()?;
-
-    harness.add_agent("agent-1", "claude")?;
-
-    let stream = harness.agent_mut("agent-1")?.send_message("Hello!").await?;
-    tokio::pin!(stream);
-
-    let start = std::time::Instant::now();
-    let mut full_response = String::new();
-
-    while let Some(event) = stream.next().await {
-        match event? {
-            StreamEvent::ContentDelta { text } => {
-                print!("{}", text);
-                full_response.push_str(&text);
-            }
-            StreamEvent::MessageComplete { usage } => {
-                println!("\n---");
-                println!("Input tokens: {}", usage.input_tokens);
-                println!("Output tokens: {}", usage.output_tokens);
-                println!("Duration: {:?}", start.elapsed());
-            }
-            _ => {}
-        }
-    }
-
-    Ok(())
-}
-```
+Clap with the `derive` feature. One default subcommand `run`. Phase 1 takes the message as a positional argument. The Anthropic API key is read from the `ANTHROPIC_API_KEY` environment variable; there is no `--api-key` flag in Phase 1. The Agent's `system_prompt` is hard-coded. The subcommand surface exists so future commands (e.g. `run-config <path>`) can be added without restructuring the binary.
 
 ## Data flow
 
 ```
 main()
-  |
-  v
-HarnessBuilder -- constructs --> Harness (owns Models, Agents)
-  |
-  v
-harness.add_agent("agent-1", "claude")
-  |  Agent created with:
-  |    - AgentId("agent-1")
-  |    - Arc<dyn Model> cloned from Harness's model registry
-  |    - Empty History
-  v
-agent.send_message("Hello!")
-  |
-  |  1. Append UserMessage { content: "Hello!" } to History
-  |  2. Linearize History into Vec<Block>
-  |  3. Call model.complete(&blocks)
-  |  4. Return the Stream to caller
-  |  5. As stream completes, append AgentMessage to History
-  v
-Stream<StreamEvent> --> caller prints tokens, collects metadata
+  -> Clap parses `run` (positional message)
+  -> HarnessBuilder constructs Harness:
+       - registers AnthropicModel as ARModel under ModelRole::Default
+       - registers Agent with hard-coded system_prompt and the model handle
+  -> harness.start() spawns Agent + MessageBus tasks, returns JoinHandle
+  -> harness.subscribe(agent_id) returns broadcast::Receiver<AgentEvent>
+  -> harness.send_to_agent(agent_id, Owner, message_text)
+       -> MessageBus routes UserMessage Block onto Agent's inbound mpsc
+  -> Agent event loop:
+       recv Block -> append to History
+                  -> linearize History (prepare_for_completion placeholder)
+                  -> ARModel::complete -> Stream<ModelStreamEvent>
+                  -> translate to AgentEvent, publish on broadcast
+                  -> on completion, append AgentMessage Block,
+                     publish BlockComplete + RunComplete
+  -> main() consumes AgentEvent::TokenDelta and prints to stdout;
+     prints usage on AgentEvent::RunComplete
+  -> Repeat send_to_agent for the second message; same broadcast Receiver
+  -> harness.shutdown(); await JoinHandle
 ```
 
 ## Implementation plan
 
-### Step 1: Project scaffolding
-- Create `src/lib.rs` with module declarations
-- Create empty module files: `harness.rs`, `agent.rs`, `history.rs`, `model.rs`, `model/anthropic.rs`
-- Add dependencies to `Cargo.toml`
-- Verify `cargo check` passes
+Each step below maps to one or more Beads created by the Coordinator. Steps may be split or merged at execution time.
 
-### Step 2: History and Block types
-- Implement `NodeId` (UUID newtype), `AgentId` (String newtype)
-- Implement `Block` enum with all five variants
-- Implement `HistoryNode` and `History` (append, linearize to `Vec<Block>`)
-- Implement `history::Error`
-- Unit tests: append, linearize, fork (two histories sharing a prefix)
+### Step 1: Scaffolding
+- Create the module file tree per "Crate structure".
+- Add `#![forbid(unsafe_code)]` at the crate root.
+- Add dependencies to `Cargo.toml`.
+- Verify `cargo check` and `cargo clippy --all-targets --all-features -- -D warnings` pass on empty modules.
 
-### Step 3: Model trait and StreamEvent
-- Define `Model` trait with `complete` method
-- Define `StreamEvent` enum and `Usage` struct
-- Define `model::Error`
+### Step 2: History and Block
+- Implement `NodeId` (UUID newtype) and the `Block` variants per `ARCHITECTURE.md` §History: `UserMessage { from: UserId, content, timestamp }`, `ReasoningTrace`, `ToolCall`, `ToolResult`, `AgentMessage { from: AgentId, content, timestamp }`.
+- Implement `HistoryNode { id, timestamp, block, parent: Option<Arc<HistoryNode>> }` and `History { head: Option<Arc<HistoryNode>> }`, with `append` and linearize-to-`Vec<Block>` operations.
+- Unit tests: append, linearize, fork (two `History` values sharing a prefix via `Arc`).
 
-### Step 4: Anthropic implementation
-- Implement request serialization (Block -> Anthropic JSON)
-- Implement SSE response parsing into `Stream<StreamEvent>`
-- Implement `AnthropicModelBuilder`
-- Implement `Model` for `AnthropicModel`
-- Integration test (may require API key; mark `#[ignore]` if so)
+### Step 3: AR/DL Model traits
+- Define `ARModel` with `complete(&self, messages: &[Block]) -> Pin<Box<dyn Stream<Item = Result<ModelStreamEvent, model::Error>> + Send + '_>>`.
+- Define `DLModel` as an empty placeholder trait.
+- Define `ModelStreamEvent`, `Usage`, `ModelRole` (sole variant `Default`).
+- Define `model::Error`.
 
-### Step 5: Harness and Agent
-- Implement `Harness` struct with model and agent registries
-- Implement `HarnessBuilder`
-- Implement `Agent` struct with `send_message`
-- Implement `agent::Error`
-- Wire up history append on send and on stream completion
+### Step 4: Anthropic ARModel
+- Implement `AnthropicModel` with `AnthropicModelBuilder` (required: `api_key`, `model_name`).
+- Block-to-Anthropic-JSON request serialization (private types).
+- SSE response parsing into `Stream<Result<ModelStreamEvent>>` using `eventsource-stream` (unless the Bead justifies otherwise).
+- Live API integration test gated behind `#[ignore]` so CI skips it and a developer can run it locally.
 
-### Step 6: Top-level error composition
-- Define `pristine::Error` in `lib.rs` with `From` impls
-- Verify `?` propagation works across module boundaries
+### Step 5: MessageBus and AgentEvent
+- Define `AgentEvent` enum (`TokenDelta`, `BlockComplete`, `RunComplete`).
+- Define the `MessageBus` trait: publish path from an Agent's outbound stream; subscribe path that delivers `Block`s into another Agent's inbound stream.
+- Implement `InMemoryMessageBus` for the single-process case. Phase 1 only requires single-agent routing; the trait shape accommodates fan-out.
 
-### Step 7: Binary
-- Wire up `main()` in `src/bin/pristine.rs` with the full workflow
-- Stream tokens to stdout, print metadata on completion
-- Manual end-to-end test against live Anthropic API
+### Step 6: Harness, User, lifecycle
+- Implement `User`, `UserId` (UUID newtype), and the distinguished `Owner` accessor on `Harness`.
+- Implement `Harness` with model registry (`HashMap<ModelId, Arc<dyn ARModel>>`), Agent registry, and the `MessageBus` instance.
+- Implement `HarnessBuilder` (`add_model`, `add_agent`).
+- Implement `Harness::start() -> JoinHandle<Result<()>>` (spawn Agent loops + MessageBus task) and `Harness::shutdown()` (cooperative cancellation token + drop senders; await spawned tasks).
+- Implement `Harness::send_to_agent(agent_id, from: UserId, content)` and `Harness::subscribe(agent_id) -> broadcast::Receiver<AgentEvent>`.
 
-### Execution model
+### Step 7: Agent event loop
+- Implement `Agent` with `id`, `system_prompt`, `models: HashMap<ModelRole, Arc<dyn ARModel>>`, `history: History`, inbound `mpsc::Receiver<Block>`, outbound `broadcast::Sender<AgentEvent>`.
+- Implement `AgentBuilder` (required: `id`, `system_prompt`, a `ModelRole::Default` entry).
+- Implement the event-loop task: receive inbound Block → append → linearize → call `ARModel` → translate `ModelStreamEvent` → publish `AgentEvent` → append `AgentMessage` Block → publish `BlockComplete` + `RunComplete` → loop.
+- The single-task design structurally enforces the "one pending Model call per Agent" invariant.
 
-This plan is executed using the Coordinator/Coding Subagent/Judge workflow defined in this repository:
+### Step 8: Binary
+- Wire up `src/bin/pristine.rs` (built as both `pristine` and `1p` per existing `Cargo.toml`).
+- Clap derive parser with `run` as the default subcommand and a positional message argument.
+- Read `ANTHROPIC_API_KEY` from env.
+- Construct Harness with one `AnthropicModel` under `ModelRole::Default` and one Agent with a hard-coded `system_prompt`.
+- `harness.start()`, subscribe, send the message from the `Owner`, stream `TokenDelta`s to stdout, print usage on `RunComplete`.
+- Per `ARCHITECTURE.md`'s "Initial Build" example, send a second message reusing the same subscription before calling `harness.shutdown()` and awaiting the join handle.
 
-- The **Coordinator** creates beads for each step and delegates them to **Coding Subagents**.
-- Each **Coding Subagent** must satisfy the Definition of Done on every commit:
-  - `cargo fmt --check` passes
-  - `cargo clippy --all-targets --all-features` passes (zero warnings)
-  - `cargo nextest run` passes within the 120s global timeout
-  - No policy violations in `STYLE_GUIDE.md`
-- The **Judge** reviews each completed bead for correctness, style, and policy compliance before the Coordinator accepts it.
-- Steps 1-7 above map to beads. The Coordinator may split or combine them as appropriate during execution.
+## Process
 
-## Open questions (deferred past Phase 1)
-
-- **IPC protocol:** Client isolation via socket/protocol TBD. Binary will gain run modes based on config.
-- **Tool use / SkillSets:** Agent capabilities beyond text-in/text-out.
-- **History persistence:** Disk-backed `HistoryStore` trait, lazy loading, eviction.
-- **History transformation:** Summarization or other preprocessing before completion.
-- **Multi-model Agents:** Agents with multiple Models for different purposes.
-- **Config files:** TOML deserialization into builders.
-- **Agent lifecycle:** Dynamic add/remove, agent-to-agent communication via PeerMessage.
+Execution follows the Coordinator / Coding Subagent / Judge / Tidy / Reflection workflow defined in `AGENTS.md`. The Coordinator creates Beads for each step, sequences and gates them; subagents implement; the Judge enforces `STYLE_GUIDE.md` and the Definition of Done. See `AGENTS.md` for the full process.

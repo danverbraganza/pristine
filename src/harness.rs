@@ -239,8 +239,7 @@ impl Harness {
         Ok(self.bus.subscribe_outbound(agent_id)?)
     }
 
-    // Test-only accessor so tests can publish events through the bus directly
-    // without piercing the placeholder agent loop.
+    // Test-only bus accessor for publishing AgentEvents directly without driving the agent loop.
     #[cfg(test)]
     pub fn bus(&self) -> &Arc<InMemoryMessageBus> {
         &self.bus
@@ -349,9 +348,8 @@ mod tests {
             .send_to_agent(agent_id, owner, "hello".to_string())
             .expect("send_to_agent");
 
-        // The placeholder agent loop drains inbound silently, so we cannot
-        // observe the delivered block directly. Confirm the send call succeeded
-        // (returns Ok) which means the bus accepted the inbound block.
+        // This test verifies the inbound-routing happy path through the bus.
+        // Driving the full agent->model->event cycle is covered by the agent module tests.
         harness.shutdown();
         timeout(Duration::from_secs(5), harness.run_until_shutdown())
             .await

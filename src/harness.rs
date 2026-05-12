@@ -4,11 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use tokio::sync::broadcast;
+use futures::stream::BoxStream;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{Agent, AgentBuilder};
+use crate::agent::AgentBuilder;
 use crate::history::{AgentId, Block};
 use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
 use crate::model::{ARModel, ModelRole};
@@ -80,7 +80,6 @@ impl From<tokio::task::JoinError> for Error {
 
 struct AgentHandle {
     task: JoinHandle<Result<(), Error>>,
-    outbound: broadcast::Sender<AgentEvent>,
 }
 
 pub struct Harness {
@@ -148,39 +147,36 @@ impl Harness {
         let pending = std::mem::take(&mut self.pending);
         for spec in pending {
             let agent_id = spec.id;
-            let (outbound, inbound) = self.bus.register(agent_id)?;
             let model = self
                 .models
                 .get(&spec.model_id)
                 .ok_or_else(|| Error::UnknownModel(spec.model_id.clone()))?
                 .clone();
-            let agent: Agent = AgentBuilder::new()
+            let bus_dyn: Arc<dyn MessageBus> = self.bus.clone();
+            let agent = AgentBuilder::new()
                 .id(agent_id)
                 .system_prompt(spec.system_prompt)
                 .model(ModelRole::Default, model)
-                .build(inbound, outbound.clone())
+                .build(bus_dyn)
                 .map_err(|e| Error::Lifecycle(e.to_string()))?;
             let cancel = self.cancel.clone();
-            let outbound_for_emit = outbound.clone();
+            let bus_for_emit = self.bus.clone();
             let task: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
                 let res: Result<(), Error> = tokio::select! {
                     _ = cancel.cancelled() => Ok(()),
                     res = agent.run() => res.map_err(|e| Error::Lifecycle(e.to_string())),
                 };
                 if let Err(ref e) = res {
-                    let _ = outbound_for_emit.send(AgentEvent::Error {
-                        message: e.to_string(),
-                    });
+                    let _ = bus_for_emit.publish(
+                        agent_id,
+                        AgentEvent::Error {
+                            message: e.to_string(),
+                        },
+                    );
                 }
                 res
             });
-            self.agents.insert(
-                agent_id,
-                AgentHandle {
-                    task,
-                    outbound: outbound.clone(),
-                },
-            );
+            self.agents.insert(agent_id, AgentHandle { task });
         }
         Ok(())
     }
@@ -188,9 +184,7 @@ impl Harness {
     /// Await every spawned task; returns the first error encountered. Idempotent.
     pub async fn join(&mut self) -> Result<(), Error> {
         // Drain the registry before awaiting so the `&mut self` borrow is
-        // released across each await. Each AgentHandle's broadcast Sender is
-        // dropped as we move out, which is the desired behaviour: once all
-        // agents have exited, remaining subscribers observe a clean Closed.
+        // released across each await.
         let handles: Vec<JoinHandle<Result<(), Error>>> = std::mem::take(&mut self.agents)
             .into_values()
             .map(|h| h.task)
@@ -237,13 +231,8 @@ impl Harness {
         Ok(())
     }
 
-    pub fn subscribe(&self, agent_id: AgentId) -> Result<broadcast::Receiver<AgentEvent>, Error> {
-        // Subscribe via the stored sender when available to avoid a bus lookup;
-        // fall back to the bus for parity with peer-subscribe semantics.
-        if let Some(handle) = self.agents.get(&agent_id) {
-            return Ok(handle.outbound.subscribe());
-        }
-        Ok(self.bus.subscribe_outbound(agent_id)?)
+    pub fn subscribe(&self, agent_id: AgentId) -> Result<BoxStream<'static, AgentEvent>, Error> {
+        Ok(self.bus.subscribe(agent_id)?)
     }
 
     // Test-only bus accessor for publishing AgentEvents directly without driving the agent loop.
@@ -258,6 +247,7 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use futures::StreamExt;
     use tokio::time::timeout;
 
     use crate::messagebus::AgentEvent;
@@ -333,17 +323,20 @@ mod tests {
         harness.start().expect("start");
 
         let mut sub = harness.subscribe(agent_id).expect("subscribe");
-        let outbound = harness.bus().outbound(agent_id).expect("outbound");
-        outbound
-            .send(AgentEvent::TokenDelta {
-                text: "hi".to_string(),
-            })
-            .expect("send token delta");
+        harness
+            .bus()
+            .publish(
+                agent_id,
+                AgentEvent::TokenDelta {
+                    text: "hi".to_string(),
+                },
+            )
+            .expect("publish token delta");
 
-        let event = timeout(Duration::from_secs(1), sub.recv())
+        let event = timeout(Duration::from_secs(1), sub.next())
             .await
             .expect("recv timed out")
-            .expect("broadcast closed");
+            .expect("stream closed");
         match event {
             AgentEvent::TokenDelta { text } => assert_eq!(text, "hi"),
             other => panic!("expected TokenDelta, got {other:?}"),
@@ -384,10 +377,10 @@ mod tests {
         let mut error_message: Option<String> = None;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while error_message.is_none() && tokio::time::Instant::now() < deadline {
-            match timeout(Duration::from_secs(2), sub.recv()).await {
-                Ok(Ok(AgentEvent::Error { message })) => error_message = Some(message),
-                Ok(Ok(_)) => continue,
-                Ok(Err(_)) => break,
+            match timeout(Duration::from_secs(2), sub.next()).await {
+                Ok(Some(AgentEvent::Error { message })) => error_message = Some(message),
+                Ok(Some(_)) => continue,
+                Ok(None) => break,
                 Err(_) => break,
             }
         }
@@ -450,7 +443,7 @@ mod tests {
 
         let mut error_seen = false;
         timeout(Duration::from_secs(2), async {
-            while let Ok(evt) = sub_a.recv().await {
+            while let Some(evt) = sub_a.next().await {
                 if let AgentEvent::Error { .. } = evt {
                     error_seen = true;
                     break;
@@ -461,12 +454,13 @@ mod tests {
         .expect("agent A error wait timed out");
         assert!(error_seen, "expected AgentEvent::Error from agent A");
 
-        // Agent B is still running: try_recv yields Empty (no events emitted).
-        match sub_b.try_recv() {
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
-            Err(other) => panic!("agent B subscriber unexpectedly closed: {other:?}"),
-            Ok(evt) => panic!("agent B unexpectedly emitted event: {evt:?}"),
-        }
+        // Agent B is still running and has emitted no events: a brief poll
+        // times out without yielding anything.
+        let poll = timeout(Duration::from_millis(100), sub_b.next()).await;
+        assert!(
+            poll.is_err(),
+            "agent B unexpectedly emitted event or closed: {poll:?}"
+        );
 
         // Shutdown signals B to exit; join then collects both tasks. The
         // first error (A's) propagates; B returns Ok.

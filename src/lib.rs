@@ -14,7 +14,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tokio::sync::broadcast::error::RecvError;
+use futures::StreamExt;
 
 use crate::agent::AgentId;
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
@@ -96,15 +96,15 @@ async fn run_async() -> anyhow::Result<()> {
     let mut second_sent = false;
 
     while runs_completed < 2 {
-        match rx.recv().await {
-            Ok(AgentEvent::TokenDelta { text }) => {
+        match rx.next().await {
+            Some(AgentEvent::TokenDelta { text }) => {
                 print!("{text}");
                 std::io::stdout().flush()?;
             }
-            Ok(AgentEvent::Error { message }) => {
+            Some(AgentEvent::Error { message }) => {
                 return Err(anyhow::anyhow!("agent error: {message}"));
             }
-            Ok(AgentEvent::RunComplete { usage }) => {
+            Some(AgentEvent::RunComplete { usage }) => {
                 println!();
                 eprintln!(
                     "[usage: input_tokens={} output_tokens={}]",
@@ -116,9 +116,8 @@ async fn run_async() -> anyhow::Result<()> {
                     second_sent = true;
                 }
             }
-            Ok(AgentEvent::BlockComplete { .. }) => {}
-            Err(RecvError::Lagged(_)) => continue,
-            Err(RecvError::Closed) => break,
+            Some(AgentEvent::BlockComplete { .. }) => {}
+            None => break,
         }
     }
 

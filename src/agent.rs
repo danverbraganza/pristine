@@ -5,17 +5,18 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use futures::StreamExt;
-use tokio::sync::{broadcast, mpsc};
+use futures::stream::BoxStream;
 
 pub use crate::history::AgentId;
 use crate::history::{Block, History};
-use crate::messagebus::AgentEvent;
+use crate::messagebus::{self, AgentEvent, MessageBus};
 use crate::model::{self, ARModel, ModelRole, ModelStreamEvent, Usage};
 
 #[derive(Debug)]
 pub enum Error {
     Configuration(String),
     Model(model::Error),
+    Bus(messagebus::Error),
     MissingDefaultModel,
 }
 
@@ -24,6 +25,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::Configuration(msg) => write!(f, "configuration error: {msg}"),
             Error::Model(err) => write!(f, "model error: {err}"),
+            Error::Bus(err) => write!(f, "message bus error: {err}"),
             Error::MissingDefaultModel => write!(f, "missing default model"),
         }
     }
@@ -33,6 +35,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Model(err) => Some(err),
+            Error::Bus(err) => Some(err),
             _ => None,
         }
     }
@@ -44,13 +47,19 @@ impl From<model::Error> for Error {
     }
 }
 
+impl From<messagebus::Error> for Error {
+    fn from(err: messagebus::Error) -> Self {
+        Error::Bus(err)
+    }
+}
+
 pub struct Agent {
     id: AgentId,
     system_prompt: String,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     history: History,
-    inbound: mpsc::Receiver<Block>,
-    outbound: broadcast::Sender<AgentEvent>,
+    inbound: BoxStream<'static, Block>,
+    bus: Arc<dyn MessageBus>,
 }
 
 pub struct AgentBuilder {
@@ -83,11 +92,7 @@ impl AgentBuilder {
         self
     }
 
-    pub fn build(
-        self,
-        inbound: mpsc::Receiver<Block>,
-        outbound: broadcast::Sender<AgentEvent>,
-    ) -> Result<Agent, Error> {
+    pub fn build(self, bus: Arc<dyn MessageBus>) -> Result<Agent, Error> {
         let id = self
             .id
             .ok_or_else(|| Error::Configuration("agent id is required".to_string()))?;
@@ -99,13 +104,14 @@ impl AgentBuilder {
                 "default model is required".to_string(),
             ));
         }
+        let inbound = bus.register(id)?;
         Ok(Agent {
             id,
             system_prompt,
             models: self.models,
             history: History::new(),
             inbound,
-            outbound,
+            bus,
         })
     }
 }
@@ -122,11 +128,14 @@ impl Agent {
     }
 
     pub async fn run(mut self) -> Result<(), Error> {
-        while let Some(block) = self.inbound.recv().await {
+        while let Some(block) = self.inbound.next().await {
             let inbound_node = self.history.append(block);
-            let _ = self.outbound.send(AgentEvent::BlockComplete {
-                block: inbound_node,
-            });
+            let _ = self.bus.publish(
+                self.id,
+                AgentEvent::BlockComplete {
+                    block: inbound_node,
+                },
+            );
 
             let context = self.history.linearize();
 
@@ -145,7 +154,7 @@ impl Agent {
                 match evt? {
                     ModelStreamEvent::ContentDelta { text } => {
                         delta_buffer.push_str(&text);
-                        let _ = self.outbound.send(AgentEvent::TokenDelta { text });
+                        let _ = self.bus.publish(self.id, AgentEvent::TokenDelta { text });
                     }
                     ModelStreamEvent::ContentComplete { text } => {
                         completed_text = Some(text);
@@ -170,11 +179,11 @@ impl Agent {
             };
             let agent_node = self.history.append(agent_msg);
             let _ = self
-                .outbound
-                .send(AgentEvent::BlockComplete { block: agent_node });
+                .bus
+                .publish(self.id, AgentEvent::BlockComplete { block: agent_node });
             let _ = self
-                .outbound
-                .send(AgentEvent::RunComplete { usage: final_usage });
+                .bus
+                .publish(self.id, AgentEvent::RunComplete { usage: final_usage });
         }
         Ok(())
     }
@@ -188,6 +197,7 @@ mod tests {
     use tokio::time::timeout;
 
     use crate::history::UserId;
+    use crate::messagebus::InMemoryMessageBus;
     use crate::test_support::StubArModel;
 
     fn user_block(content: &str) -> Block {
@@ -203,19 +213,19 @@ mod tests {
     ) -> (
         Agent,
         AgentId,
-        mpsc::Sender<Block>,
-        broadcast::Receiver<AgentEvent>,
+        Arc<InMemoryMessageBus>,
+        BoxStream<'static, AgentEvent>,
     ) {
         let agent_id = AgentId::new();
-        let (inbound_tx, inbound_rx) = mpsc::channel(8);
-        let (outbound_tx, outbound_rx) = broadcast::channel(64);
+        let bus = Arc::new(InMemoryMessageBus::new());
         let agent = AgentBuilder::new()
             .id(agent_id)
             .system_prompt("test prompt")
             .model(ModelRole::Default, model)
-            .build(inbound_rx, outbound_tx)
+            .build(bus.clone() as Arc<dyn MessageBus>)
             .expect("build agent");
-        (agent, agent_id, inbound_tx, outbound_rx)
+        let outbound = bus.subscribe(agent_id).expect("subscribe");
+        (agent, agent_id, bus, outbound)
     }
 
     #[tokio::test]
@@ -244,27 +254,32 @@ mod tests {
                 },
             }),
         ]));
-        let (agent, _agent_id, inbound_tx, mut outbound_rx) = build_agent(model);
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
 
-        inbound_tx
-            .send(user_block("greet"))
-            .await
+        bus.send_inbound(agent_id, user_block("greet"))
             .expect("send inbound");
-        drop(inbound_tx);
 
         let handle = tokio::spawn(agent.run());
 
         let mut events = Vec::new();
+        let mut run_complete_seen = false;
         let collect = async {
-            while let Ok(evt) = outbound_rx.recv().await {
+            while let Some(evt) = outbound.next().await {
+                let is_run_complete = matches!(evt, AgentEvent::RunComplete { .. });
                 events.push(evt);
+                if is_run_complete {
+                    run_complete_seen = true;
+                    break;
+                }
             }
             events
         };
         let events = timeout(Duration::from_secs(2), collect)
             .await
             .expect("drain timed out");
+        assert!(run_complete_seen, "expected RunComplete");
 
+        bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
             .await
             .expect("join timed out")
@@ -313,11 +328,10 @@ mod tests {
     #[tokio::test]
     async fn agent_run_exits_when_inbound_closed() {
         let model = Arc::new(StubArModel::empty());
-        let (agent, _agent_id, inbound_tx, _outbound_rx) = build_agent(model);
-
-        drop(inbound_tx);
+        let (agent, agent_id, bus, _outbound) = build_agent(model);
 
         let handle = tokio::spawn(agent.run());
+        bus.close_inbound(agent_id);
         let result = timeout(Duration::from_secs(1), handle)
             .await
             .expect("join timed out")
@@ -331,11 +345,9 @@ mod tests {
             status: 500,
             message: "boom".to_string(),
         })]));
-        let (agent, _agent_id, inbound_tx, _outbound_rx) = build_agent(model);
+        let (agent, agent_id, bus, _outbound) = build_agent(model);
 
-        inbound_tx
-            .send(user_block("trigger"))
-            .await
+        bus.send_inbound(agent_id, user_block("trigger"))
             .expect("send inbound");
 
         let handle = tokio::spawn(agent.run());
@@ -365,20 +377,21 @@ mod tests {
                 },
             }),
         ]));
-        let (agent, _agent_id, inbound_tx, mut outbound_rx) = build_agent(model);
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
 
-        inbound_tx
-            .send(user_block("prompt"))
-            .await
+        bus.send_inbound(agent_id, user_block("prompt"))
             .expect("send inbound");
-        drop(inbound_tx);
 
         let handle = tokio::spawn(agent.run());
 
         let mut events = Vec::new();
         let collect = async {
-            while let Ok(evt) = outbound_rx.recv().await {
+            while let Some(evt) = outbound.next().await {
+                let stop = matches!(evt, AgentEvent::RunComplete { .. });
                 events.push(evt);
+                if stop {
+                    break;
+                }
             }
             events
         };
@@ -386,6 +399,7 @@ mod tests {
             .await
             .expect("drain timed out");
 
+        bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
             .await
             .expect("join timed out")

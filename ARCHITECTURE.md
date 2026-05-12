@@ -80,6 +80,8 @@ we will limit ourselves to their completion interface.
 ARModel will support a streaming interface. Upon receiving a request, ARModel will return (a result of) a Stream that
 will asynchronously yield the tokens.
 
+Model is, by design, only going to be limited to the ability to do completions on strings.
+
 
 ### History
 

@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use tokio::sync::{broadcast, mpsc};
+use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
 use crate::history::{AgentId, Block, HistoryNode};
 use crate::model::Usage;
@@ -19,6 +22,7 @@ pub enum AgentEvent {
 #[derive(Debug)]
 pub enum Error {
     UnknownAgent(AgentId),
+    AlreadyRegistered(AgentId),
     Closed,
 }
 
@@ -26,6 +30,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::UnknownAgent(id) => write!(f, "unknown agent: {id}"),
+            Error::AlreadyRegistered(id) => write!(f, "agent already registered: {id}"),
             Error::Closed => write!(f, "channel closed"),
         }
     }
@@ -38,20 +43,22 @@ impl std::error::Error for Error {
 }
 
 pub trait MessageBus: Send + Sync {
-    fn register(
-        &self,
-        agent_id: AgentId,
-    ) -> Result<(broadcast::Sender<AgentEvent>, mpsc::Receiver<Block>), Error>;
+    /// Register an Agent and obtain its single-consumer inbound stream.
+    /// A second `register` for the same `AgentId` returns `Error::AlreadyRegistered`.
+    fn register(&self, agent_id: AgentId) -> Result<BoxStream<'static, Block>, Error>;
 
-    fn outbound(&self, agent_id: AgentId) -> Result<broadcast::Sender<AgentEvent>, Error>;
+    /// Publish an event on a registered Agent's outbound stream.
+    fn publish(&self, agent_id: AgentId, event: AgentEvent) -> Result<(), Error>;
 
-    fn subscribe_outbound(
-        &self,
-        agent_id: AgentId,
-    ) -> Result<broadcast::Receiver<AgentEvent>, Error>;
+    /// Subscribe to a registered Agent's outbound events. Multi-subscriber;
+    /// each call returns a fresh stream observing events from the call site onward.
+    fn subscribe(&self, agent_id: AgentId) -> Result<BoxStream<'static, AgentEvent>, Error>;
 
+    /// Push a `Block` onto the named Agent's inbound stream.
     fn send_inbound(&self, agent_id: AgentId, block: Block) -> Result<(), Error>;
 
+    /// Route `AgentMessage` Blocks from `from`'s outbound stream to `to`'s inbound stream.
+    /// Spawns an internal task. Other event variants are observed but not forwarded.
     fn route(&self, from: AgentId, to: AgentId) -> Result<(), Error>;
 }
 
@@ -61,16 +68,7 @@ const INBOUND_CAPACITY: usize = 64;
 
 struct AgentEntry {
     outbound: broadcast::Sender<AgentEvent>,
-    inbound: mpsc::Sender<Block>,
-}
-
-impl Clone for AgentEntry {
-    fn clone(&self) -> Self {
-        Self {
-            outbound: self.outbound.clone(),
-            inbound: self.inbound.clone(),
-        }
-    }
+    inbound_sender: mpsc::Sender<Block>,
 }
 
 pub struct InMemoryMessageBus {
@@ -84,11 +82,27 @@ impl InMemoryMessageBus {
         }
     }
 
-    fn get_entry(&self, agent_id: AgentId) -> Result<AgentEntry, Error> {
+    fn outbound_sender(&self, agent_id: AgentId) -> Result<broadcast::Sender<AgentEvent>, Error> {
         let map = self.entries.lock().map_err(|_| Error::Closed)?;
         map.get(&agent_id)
-            .cloned()
+            .map(|e| e.outbound.clone())
             .ok_or(Error::UnknownAgent(agent_id))
+    }
+
+    fn inbound_sender(&self, agent_id: AgentId) -> Result<mpsc::Sender<Block>, Error> {
+        let map = self.entries.lock().map_err(|_| Error::Closed)?;
+        map.get(&agent_id)
+            .map(|e| e.inbound_sender.clone())
+            .ok_or(Error::UnknownAgent(agent_id))
+    }
+
+    // Test-only: drop the entry so the inbound mpsc sender closes and the
+    // Agent's inbound stream yields None on its next poll.
+    #[cfg(test)]
+    pub fn close_inbound(&self, agent_id: AgentId) {
+        if let Ok(mut map) = self.entries.lock() {
+            map.remove(&agent_id);
+        }
     }
 }
 
@@ -99,51 +113,47 @@ impl Default for InMemoryMessageBus {
 }
 
 impl MessageBus for InMemoryMessageBus {
-    // Double-register silently overwrites the prior entry; callers are expected to register once.
-    fn register(
-        &self,
-        agent_id: AgentId,
-    ) -> Result<(broadcast::Sender<AgentEvent>, mpsc::Receiver<Block>), Error> {
+    fn register(&self, agent_id: AgentId) -> Result<BoxStream<'static, Block>, Error> {
+        let mut map = self.entries.lock().map_err(|_| Error::Closed)?;
+        if map.contains_key(&agent_id) {
+            return Err(Error::AlreadyRegistered(agent_id));
+        }
         let (outbound_tx, _outbound_rx) = broadcast::channel(OUTBOUND_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_CAPACITY);
-        let entry = AgentEntry {
-            outbound: outbound_tx.clone(),
-            inbound: inbound_tx,
-        };
-        let mut map = self.entries.lock().map_err(|_| Error::Closed)?;
-        map.insert(agent_id, entry);
-        Ok((outbound_tx, inbound_rx))
+        map.insert(
+            agent_id,
+            AgentEntry {
+                outbound: outbound_tx,
+                inbound_sender: inbound_tx,
+            },
+        );
+        Ok(Box::pin(ReceiverStream::new(inbound_rx)))
     }
 
-    fn outbound(&self, agent_id: AgentId) -> Result<broadcast::Sender<AgentEvent>, Error> {
-        let entry = self.get_entry(agent_id)?;
-        Ok(entry.outbound)
+    fn publish(&self, agent_id: AgentId, event: AgentEvent) -> Result<(), Error> {
+        let sender = self.outbound_sender(agent_id)?;
+        // Broadcast send errors only when there are zero receivers; the bus is lossy by design.
+        let _ = sender.send(event);
+        Ok(())
     }
 
-    fn subscribe_outbound(
-        &self,
-        agent_id: AgentId,
-    ) -> Result<broadcast::Receiver<AgentEvent>, Error> {
-        let entry = self.get_entry(agent_id)?;
-        Ok(entry.outbound.subscribe())
+    fn subscribe(&self, agent_id: AgentId) -> Result<BoxStream<'static, AgentEvent>, Error> {
+        let sender = self.outbound_sender(agent_id)?;
+        let receiver = sender.subscribe();
+        let stream = BroadcastStream::new(receiver).filter_map(|res| async move { res.ok() });
+        Ok(Box::pin(stream))
     }
 
-    // Uses try_send so the trait method stays sync; channel-full or closed maps to Error::Closed.
     fn send_inbound(&self, agent_id: AgentId, block: Block) -> Result<(), Error> {
-        let entry = self.get_entry(agent_id)?;
-        entry.inbound.try_send(block).map_err(|_| Error::Closed)
+        let sender = self.inbound_sender(agent_id)?;
+        sender.try_send(block).map_err(|_| Error::Closed)
     }
 
     fn route(&self, from: AgentId, to: AgentId) -> Result<(), Error> {
-        let from_tx = self.outbound(from)?;
-        let to_inbound = {
-            let map = self.entries.lock().map_err(|_| Error::Closed)?;
-            let entry = map.get(&to).ok_or(Error::UnknownAgent(to))?;
-            entry.inbound.clone()
-        };
-        let mut subscriber = from_tx.subscribe();
+        let mut subscriber = self.subscribe(from)?;
+        let to_inbound = self.inbound_sender(to)?;
         tokio::spawn(async move {
-            while let Ok(evt) = subscriber.recv().await {
+            while let Some(evt) = subscriber.next().await {
                 if let AgentEvent::BlockComplete { block } = evt
                     && let Block::AgentMessage { .. } = block.block()
                 {
@@ -188,15 +198,15 @@ mod tests {
     async fn register_then_send_inbound_delivers_block() {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
-        let (_tx, mut rx) = bus.register(agent_id).expect("register");
+        let mut inbound = bus.register(agent_id).expect("register");
 
         bus.send_inbound(agent_id, user_block("hello"))
             .expect("send_inbound");
 
-        let block = timeout(Duration::from_secs(1), rx.recv())
+        let block = timeout(Duration::from_secs(1), inbound.next())
             .await
             .expect("recv timed out")
-            .expect("channel closed");
+            .expect("stream closed");
 
         match block {
             Block::UserMessage { content, .. } => assert_eq!(content, "hello"),
@@ -205,24 +215,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_outbound_sees_published_events() {
+    async fn subscribe_sees_published_events() {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
-        let (_tx, _rx) = bus.register(agent_id).expect("register");
+        let _inbound = bus.register(agent_id).expect("register");
 
-        let mut subscriber = bus.subscribe_outbound(agent_id).expect("subscribe");
-        let outbound = bus.outbound(agent_id).expect("outbound");
+        let mut subscriber = bus.subscribe(agent_id).expect("subscribe");
 
-        outbound
-            .send(AgentEvent::TokenDelta {
+        bus.publish(
+            agent_id,
+            AgentEvent::TokenDelta {
                 text: "hi".to_string(),
-            })
-            .expect("send event");
+            },
+        )
+        .expect("publish event");
 
-        let event = timeout(Duration::from_secs(1), subscriber.recv())
+        let event = timeout(Duration::from_secs(1), subscriber.next())
             .await
             .expect("recv timed out")
-            .expect("broadcast closed");
+            .expect("stream closed");
 
         match event {
             AgentEvent::TokenDelta { text } => assert_eq!(text, "hi"),
@@ -235,25 +246,26 @@ mod tests {
         let bus = InMemoryMessageBus::new();
         let a_id = AgentId::new();
         let b_id = AgentId::new();
-        let (_a_tx, _a_rx) = bus.register(a_id).expect("register a");
-        let (_b_tx, mut b_rx) = bus.register(b_id).expect("register b");
+        let _a_inbound = bus.register(a_id).expect("register a");
+        let mut b_inbound = bus.register(b_id).expect("register b");
 
         bus.route(a_id, b_id).expect("route");
 
         let mut history = History::new();
         let node = history.append(agent_block(a_id, "from-a"));
 
-        let outbound = bus.outbound(a_id).expect("outbound");
-        outbound
-            .send(AgentEvent::BlockComplete {
+        bus.publish(
+            a_id,
+            AgentEvent::BlockComplete {
                 block: Arc::clone(&node),
-            })
-            .expect("send block complete");
+            },
+        )
+        .expect("publish block complete");
 
-        let received = timeout(Duration::from_secs(1), b_rx.recv())
+        let received = timeout(Duration::from_secs(1), b_inbound.next())
             .await
             .expect("recv timed out")
-            .expect("inbound closed");
+            .expect("stream closed");
 
         match received {
             Block::AgentMessage { from, content, .. } => {
@@ -269,22 +281,23 @@ mod tests {
         let bus = InMemoryMessageBus::new();
         let a_id = AgentId::new();
         let b_id = AgentId::new();
-        let (_a_tx, _a_rx) = bus.register(a_id).expect("register a");
-        let (_b_tx, mut b_rx) = bus.register(b_id).expect("register b");
+        let _a_inbound = bus.register(a_id).expect("register a");
+        let mut b_inbound = bus.register(b_id).expect("register b");
 
         bus.route(a_id, b_id).expect("route");
 
         let mut history = History::new();
         let node = history.append(user_block("should-not-route"));
 
-        let outbound = bus.outbound(a_id).expect("outbound");
-        outbound
-            .send(AgentEvent::BlockComplete {
+        bus.publish(
+            a_id,
+            AgentEvent::BlockComplete {
                 block: Arc::clone(&node),
-            })
-            .expect("send block complete");
+            },
+        )
+        .expect("publish block complete");
 
-        let result = timeout(Duration::from_millis(200), b_rx.recv()).await;
+        let result = timeout(Duration::from_millis(200), b_inbound.next()).await;
         assert!(result.is_err(), "expected timeout, got {:?}", result);
     }
 
@@ -302,39 +315,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_outbound_on_unknown_agent_errors() {
+    async fn subscribe_on_unknown_agent_errors() {
         let bus = InMemoryMessageBus::new();
         let unknown = AgentId::new();
-        let err = bus.subscribe_outbound(unknown).expect_err("expected error");
-        match err {
-            Error::UnknownAgent(_) => {}
-            other => panic!("expected UnknownAgent, got {other:?}"),
+        match bus.subscribe(unknown) {
+            Err(Error::UnknownAgent(_)) => {}
+            Err(other) => panic!("expected UnknownAgent, got {other:?}"),
+            Ok(_) => panic!("expected error, got Ok"),
         }
     }
 
     #[tokio::test]
-    async fn subscribe_outbound_sees_published_error_events() {
+    async fn subscribe_sees_published_error_events() {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
-        let (_tx, _rx) = bus.register(agent_id).expect("register");
+        let _inbound = bus.register(agent_id).expect("register");
 
-        let mut subscriber = bus.subscribe_outbound(agent_id).expect("subscribe");
-        let outbound = bus.outbound(agent_id).expect("outbound");
+        let mut subscriber = bus.subscribe(agent_id).expect("subscribe");
 
-        outbound
-            .send(AgentEvent::Error {
+        bus.publish(
+            agent_id,
+            AgentEvent::Error {
                 message: "boom".to_string(),
-            })
-            .expect("send event");
+            },
+        )
+        .expect("publish event");
 
-        let event = timeout(Duration::from_secs(1), subscriber.recv())
+        let event = timeout(Duration::from_secs(1), subscriber.next())
             .await
             .expect("recv timed out")
-            .expect("broadcast closed");
+            .expect("stream closed");
 
         match event {
             AgentEvent::Error { message } => assert_eq!(message, "boom"),
             other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn register_twice_errors() {
+        let bus = InMemoryMessageBus::new();
+        let agent_id = AgentId::new();
+        let _first = bus.register(agent_id).expect("first register");
+        match bus.register(agent_id) {
+            Err(Error::AlreadyRegistered(id)) => assert_eq!(id, agent_id),
+            Err(other) => panic!("expected AlreadyRegistered, got {other:?}"),
+            Ok(_) => panic!("expected second register to fail"),
         }
     }
 

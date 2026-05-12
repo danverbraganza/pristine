@@ -84,7 +84,6 @@ struct AgentHandle {
 }
 
 pub struct Harness {
-    #[allow(dead_code)] // Models are registered for Step 7's Agent loop to consume.
     models: HashMap<ModelId, Arc<dyn ARModel>>,
     agents: HashMap<AgentId, AgentHandle>,
     bus: Arc<InMemoryMessageBus>,

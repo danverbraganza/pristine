@@ -1,0 +1,10 @@
+# Files versioned independently on the `specs` jj bookmark.
+# One path per line. Blank lines and `#` comments are ignored.
+# Directory paths are recursed (untracked files like emacs backups are skipped).
+# `spec-files` itself is always exported and does not need to be listed.
+#
+# Rust-Bucket-generated docs (AGENTS.md, STYLE_GUIDE.md, TESTING.md) are
+# deliberately omitted: they belong to the framework, not the project.
+ARCHITECTURE.md
+README.md
+blueprint

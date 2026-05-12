@@ -99,32 +99,17 @@ pub enum Block {
 #[derive(Debug)]
 pub struct HistoryNode {
     id: NodeId,
-    timestamp: SystemTime,
     block: Block,
     parent: Option<Arc<HistoryNode>>,
 }
 
 impl HistoryNode {
-    pub(crate) fn new(
-        id: NodeId,
-        timestamp: SystemTime,
-        block: Block,
-        parent: Option<Arc<HistoryNode>>,
-    ) -> Self {
-        Self {
-            id,
-            timestamp,
-            block,
-            parent,
-        }
+    pub(crate) fn new(id: NodeId, block: Block, parent: Option<Arc<HistoryNode>>) -> Self {
+        Self { id, block, parent }
     }
 
     pub fn id(&self) -> NodeId {
         self.id
-    }
-
-    pub fn timestamp(&self) -> SystemTime {
-        self.timestamp
     }
 
     pub fn block(&self) -> &Block {
@@ -146,12 +131,7 @@ impl History {
     }
 
     pub fn append(&mut self, block: Block) -> Arc<HistoryNode> {
-        let node = Arc::new(HistoryNode::new(
-            NodeId::new(),
-            SystemTime::now(),
-            block,
-            self.head.clone(),
-        ));
+        let node = Arc::new(HistoryNode::new(NodeId::new(), block, self.head.clone()));
         self.head = Some(node.clone());
         node
     }

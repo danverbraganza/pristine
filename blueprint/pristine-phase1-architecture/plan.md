@@ -137,7 +137,7 @@ Each step below maps to one or more Beads created by the Coordinator. Steps may 
 
 ### Step 2: History and Block
 - Implement `NodeId` (UUID newtype) and the `Block` variants per `ARCHITECTURE.md` §History: `UserMessage { from: UserId, content, timestamp }`, `ReasoningTrace`, `ToolCall`, `ToolResult`, `AgentMessage { from: AgentId, content, timestamp }`.
-- Implement `HistoryNode { id, timestamp, block, parent: Option<Arc<HistoryNode>> }` and `History { head: Option<Arc<HistoryNode>> }`, with `append` and linearize-to-`Vec<Block>` operations.
+- Implement `HistoryNode { id, block, parent: Option<Arc<HistoryNode>> }` and `History { head: Option<Arc<HistoryNode>> }`, with `append` and linearize-to-`Vec<Block>` operations.
 - Unit tests: append, linearize, fork (two `History` values sharing a prefix via `Arc`).
 
 ### Step 3: AR/DL Model traits

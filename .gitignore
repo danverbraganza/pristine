@@ -6,6 +6,10 @@
 # Standard emacs ignores
 *~
 
+# Emacs autosave and lock files
+#*#
+.#*
+
 # Env file
 .env
 

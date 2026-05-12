@@ -7,6 +7,9 @@ pub mod messagebus;
 pub mod model;
 pub mod user;
 
+#[cfg(test)]
+mod test_support;
+
 use std::io::Write;
 use std::sync::Arc;
 

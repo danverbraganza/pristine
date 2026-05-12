@@ -183,39 +183,12 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::pin::Pin;
-    use std::sync::Mutex;
     use std::time::Duration;
 
-    use futures::Stream;
-    use futures::stream;
     use tokio::time::timeout;
 
     use crate::history::UserId;
-
-    struct StubArModel {
-        events: Mutex<Vec<Result<ModelStreamEvent, model::Error>>>,
-    }
-
-    impl StubArModel {
-        fn new(events: Vec<Result<ModelStreamEvent, model::Error>>) -> Self {
-            Self {
-                events: Mutex::new(events),
-            }
-        }
-    }
-
-    impl ARModel for StubArModel {
-        fn complete<'a>(
-            &'a self,
-            _system_prompt: &'a str,
-            _messages: &'a [Block],
-        ) -> Pin<Box<dyn Stream<Item = Result<ModelStreamEvent, model::Error>> + Send + 'a>>
-        {
-            let events = std::mem::take(&mut *self.events.lock().expect("test lock"));
-            Box::pin(stream::iter(events))
-        }
-    }
+    use crate::test_support::StubArModel;
 
     fn user_block(content: &str) -> Block {
         Block::UserMessage {
@@ -247,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_run_processes_one_user_message() {
-        let model = Arc::new(StubArModel::new(vec![
+        let model = Arc::new(StubArModel::with_events(vec![
             Ok(ModelStreamEvent::MessageStart {
                 message_id: "m1".to_string(),
                 model: "stub".to_string(),
@@ -339,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_run_exits_when_inbound_closed() {
-        let model = Arc::new(StubArModel::new(vec![]));
+        let model = Arc::new(StubArModel::empty());
         let (agent, _agent_id, inbound_tx, _outbound_rx) = build_agent(model);
 
         drop(inbound_tx);
@@ -354,7 +327,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_run_propagates_model_error() {
-        let model = Arc::new(StubArModel::new(vec![Err(model::Error::Api {
+        let model = Arc::new(StubArModel::with_events(vec![Err(model::Error::Api {
             status: 500,
             message: "boom".to_string(),
         })]));
@@ -381,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_run_uses_delta_buffer_when_no_content_complete() {
-        let model = Arc::new(StubArModel::new(vec![
+        let model = Arc::new(StubArModel::with_events(vec![
             Ok(ModelStreamEvent::ContentDelta {
                 text: "fragment".to_string(),
             }),

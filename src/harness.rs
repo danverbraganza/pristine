@@ -248,50 +248,13 @@ impl Harness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::pin::Pin;
     use std::time::Duration;
 
-    use futures::Stream;
-    use futures::stream;
     use tokio::time::timeout;
 
-    use std::sync::Mutex;
-
     use crate::messagebus::AgentEvent;
-    use crate::model::{Error as ModelError, ModelStreamEvent};
-
-    struct StubArModel {
-        events: Mutex<Vec<Result<ModelStreamEvent, ModelError>>>,
-    }
-
-    impl StubArModel {
-        fn empty() -> Self {
-            Self {
-                events: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn with_events(events: Vec<Result<ModelStreamEvent, ModelError>>) -> Self {
-            Self {
-                events: Mutex::new(events),
-            }
-        }
-    }
-
-    impl ARModel for StubArModel {
-        fn complete<'a>(
-            &'a self,
-            _system_prompt: &'a str,
-            _messages: &'a [Block],
-        ) -> Pin<Box<dyn Stream<Item = Result<ModelStreamEvent, ModelError>> + Send + 'a>> {
-            let drained: Vec<_> = self
-                .events
-                .lock()
-                .map(|mut g| std::mem::take(&mut *g))
-                .unwrap_or_default();
-            Box::pin(stream::iter(drained))
-        }
-    }
+    use crate::model::Error as ModelError;
+    use crate::test_support::StubArModel;
 
     fn build_harness_with_one_agent() -> (Harness, AgentId, ModelId) {
         let model_id = ModelId::new("stub");

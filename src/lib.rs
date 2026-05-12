@@ -6,5 +6,3 @@ pub mod history;
 pub mod messagebus;
 pub mod model;
 pub mod user;
-
-pub enum Error {}

@@ -7,6 +7,10 @@ edition = "2024"
 name = "pristine"
 path = "src/bin/pristine.rs"
 
+[[bin]]
+name = "1p"
+path = "src/bin/1p.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }

@@ -218,20 +218,56 @@ establishment and User identity resolution differ.
 
 Streaming data (e.g. token deltas from an Agent's model call) will be delivered
 as JSON-RPC **notifications** — messages from server to client with no request
-ID and no expectation of a response. A client that subscribes to an Agent's
-event stream receives a series of notifications carrying AgentEvent data until
-the stream ends or the client unsubscribes.
+ID and no expectation of a response. Notifications use a single `agent.event`
+method with a `type` discriminator field identifying the AgentEvent variant
+(`token_delta`, `block_complete`, `run_complete`, `error`). All four variants
+are delivered; the client filters as needed.
+
+Calling `send_message` implicitly subscribes the caller to that Agent's event
+stream for the duration of the resulting model run. Explicit `subscribe` /
+`unsubscribe` methods may be added in the future for clients that want to
+observe Agents they did not message directly.
+
+#### Methods
+
+The initial method surface is deliberately small. Adding methods is cheap: each
+is a function on a `#[rpc(server)]` trait, and the `jsonrpsee` proc macro
+generates all dispatch, deserialization, and error-handling code.
+
+- `initialize` — client calls this first; server responds with `agent_id` and
+  `owner_id` so the client knows how to address subsequent requests. No
+  `initialized` notification is auto-fired; the client must request.
+- `send_message(agent_id, content)` — wraps `Harness::send_to_agent`. Returns
+  acknowledgement. Implicitly subscribes the caller to `agent.event`
+  notifications for that Agent.
+- `shutdown` — triggers graceful Harness shutdown.
+
+#### Implementation
+
+The server is built on `jsonrpsee` (v0.26, `server-core` + `macros` features
+only — no HTTP/WS server dependency). Method dispatch uses
+`RpcModule::raw_json_request`, which accepts a raw JSON-RPC string and returns
+the response plus a `Receiver` for subscription notifications.
+
+A thin stdio adapter (~30–50 lines) provides the read/dispatch/write loop:
+read a line from `tokio::io::stdin`, dispatch via `raw_json_request`, write the
+response to stdout, and drain subscription notifications to stdout as they
+arrive. Stdout writes are serialized via an async mutex — simple and correct for
+the single-client stdio transport.
+
+Graceful shutdown occurs on either a `shutdown` method call or EOF on stdin.
 
 ## Key Technological Choices
 
 - Tokio
 - Command line parsing with Clap
+- `jsonrpsee` 0.26 (`server-core`, `macros`) for JSON-RPC dispatch
 
+## Phase 1: Initial Build
 
-
-## Initial Build
-
-To validate this design, we will initially attempt to implement 1p with the following characteristics. Code is indicative only, not proper systax or naming:
+To validate the core engine design, Phase 1 implemented `pristine run` as a
+hardcoded two-message demo. Code is indicative only, not proper syntax or
+naming:
 
 ```
 fn main() {
@@ -255,3 +291,34 @@ fn main() {
     harness.shutdown();
     harness.join().await?;
 }
+```
+
+## Phase 2: JSON-RPC Server
+
+Phase 2 replaces the hardcoded demo with the JSON-RPC stdio server described in
+§Client Protocol above. `pristine run` starts the server, which reads
+newline-delimited JSON-RPC requests from stdin and writes responses and
+notifications to stdout. The Harness setup (single Agent, single Anthropic
+Model) remains hardcoded for now.
+
+The Phase 1 demo flow is preserved as a Python client script (`client.py`),
+runnable via `uv run`, which spawns `pristine run` as a subprocess and drives
+the same two-message conversation over JSON-RPC:
+
+```python
+# Pseudocode — client.py (uv run, jsonrpcclient)
+proc = subprocess.Popen(["pristine", "run"], stdin=PIPE, stdout=PIPE)
+
+# Handshake
+send(proc, "initialize") -> { agent_id, owner_id }
+
+# First message
+send(proc, "send_message", { agent_id, content: "Introduce yourself..." })
+# Read agent.event notifications, print token deltas until run_complete
+
+# Second message
+send(proc, "send_message", { agent_id, content: "Write me a poem..." })
+# Read agent.event notifications, print token deltas until run_complete
+
+send(proc, "shutdown")
+```

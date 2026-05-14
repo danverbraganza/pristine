@@ -106,6 +106,7 @@ def main() -> None:
         # Shutdown
         send(proc, "shutdown")
     finally:
+        proc.stdin.close()
         proc.wait()
 
 

@@ -17,6 +17,11 @@ install:
 test:
     cargo nextest run
 
+# Launch the Python JSON-RPC client
+[group('development')]
+chat:
+    uv run client.py
+
 specs-bookmark := "specs"
 specs-manifest := "spec-files"
 

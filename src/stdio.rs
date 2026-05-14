@@ -95,16 +95,23 @@ pub async fn run_server(
             _ = shutdown_token.cancelled() => break,
             line = lines.recv() => {
                 let Some(text) = line else { break };
-                let is_send = is_method(&text, "send_message");
+
+                let envelope: RequestEnvelope = serde_json::from_str(&text)?;
 
                 let (response, _rx) = module
                     .raw_json_request(&text, 1)
                     .await
                     .map_err(|e| StdioError::InvalidRequest(e.to_string()))?;
 
+                let success = serde_json::from_str::<ResponseEnvelope>(response.get())
+                    .ok()
+                    .and_then(|r| r.result)
+                    .is_some();
                 write_line(&mut stdout, response.get()).await?;
 
-                if is_send && is_success(response.get()) {
+                if let DispatchOutcome::DrainEvents =
+                    classify_outcome(&envelope.method, success)
+                {
                     drain_events(&*bus, agent_id, &mut stdout).await?;
                 }
             }
@@ -113,18 +120,26 @@ pub async fn run_server(
     Ok(())
 }
 
-fn is_method(line: &str, method: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(line)
-        .ok()
-        .and_then(|v| v.get("method")?.as_str().map(|m| m == method))
-        .unwrap_or(false)
+#[derive(serde::Deserialize)]
+struct RequestEnvelope {
+    method: String,
 }
 
-fn is_success(response: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(response)
-        .ok()
-        .map(|v| v.get("result").is_some())
-        .unwrap_or(false)
+#[derive(serde::Deserialize)]
+struct ResponseEnvelope {
+    result: Option<serde_json::Value>,
+}
+
+enum DispatchOutcome {
+    Done,
+    DrainEvents,
+}
+
+fn classify_outcome(method: &str, success: bool) -> DispatchOutcome {
+    match (method, success) {
+        ("send_message", true) => DispatchOutcome::DrainEvents,
+        _ => DispatchOutcome::Done,
+    }
 }
 
 async fn write_line(out: &mut tokio::io::Stdout, text: &str) -> std::io::Result<()> {

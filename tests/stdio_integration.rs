@@ -13,10 +13,10 @@ fn build_rpc_module() -> (
     AgentId,
     UserId,
     CancellationToken,
-    Arc<InMemoryMessageBus>,
+    Arc<dyn MessageBus>,
     futures::stream::BoxStream<'static, pristine::history::Block>,
 ) {
-    let bus = Arc::new(InMemoryMessageBus::new());
+    let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
     let agent_id = AgentId::new();
     let owner_id = UserId::new();
     let token = CancellationToken::new();

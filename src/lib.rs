@@ -18,6 +18,7 @@ use clap::{Parser, Subcommand};
 
 use crate::agent::AgentId;
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
+use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicModelBuilder;
 
 const SYSTEM_PROMPT: &str =
@@ -87,7 +88,7 @@ async fn run_async() -> anyhow::Result<()> {
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let owner_id = harness.owner_id();
-    let bus = harness.bus().clone();
+    let bus = harness.bus().clone() as Arc<dyn MessageBus>;
 
     crate::stdio::run_server(bus, agent_id, owner_id, shutdown_token).await?;
 

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::history::{AgentId, Block, UserId};
-use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
+use crate::messagebus::{AgentEvent, MessageBus};
 use crate::model::Usage;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -85,7 +85,7 @@ pub trait PristineRpc {
 }
 
 pub struct RpcServerImpl {
-    bus: Arc<InMemoryMessageBus>,
+    bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     owner_id: UserId,
     shutdown_token: CancellationToken,
@@ -93,7 +93,7 @@ pub struct RpcServerImpl {
 
 impl RpcServerImpl {
     pub fn new(
-        bus: Arc<InMemoryMessageBus>,
+        bus: Arc<dyn MessageBus>,
         agent_id: AgentId,
         owner_id: UserId,
         shutdown_token: CancellationToken,
@@ -145,6 +145,7 @@ impl PristineRpcServer for RpcServerImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messagebus::InMemoryMessageBus;
     use jsonrpsee::RpcModule;
 
     fn build_rpc_module() -> (
@@ -152,7 +153,7 @@ mod tests {
         AgentId,
         futures::stream::BoxStream<'static, Block>,
     ) {
-        let bus = Arc::new(InMemoryMessageBus::new());
+        let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
         let agent_id = AgentId::new();
         let owner_id = UserId::new();
         let token = CancellationToken::new();
@@ -190,7 +191,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_cancels_token() {
-        let bus = Arc::new(InMemoryMessageBus::new());
+        let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
         let agent_id = AgentId::new();
         let owner_id = UserId::new();
         let token = CancellationToken::new();
@@ -212,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_to_unknown_agent_returns_error() {
-        let bus = Arc::new(InMemoryMessageBus::new());
+        let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
         let registered_id = AgentId::new();
         let unknown_id = AgentId::new();
         let owner_id = UserId::new();

@@ -3,48 +3,109 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::history::{AgentId, UserId};
-use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
+use crate::messagebus::{AgentEvent, MessageBus};
 use crate::rpc::{AgentEventNotification, PristineRpcServer, RpcServerImpl};
 
+#[derive(Debug)]
+pub enum StdioError {
+    Io(std::io::Error),
+    InvalidRequest(String),
+    Bus(crate::messagebus::Error),
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for StdioError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StdioError::Io(e) => write!(f, "IO: {e}"),
+            StdioError::InvalidRequest(msg) => write!(f, "invalid JSON-RPC request: {msg}"),
+            StdioError::Bus(e) => write!(f, "bus: {e}"),
+            StdioError::Json(e) => write!(f, "JSON: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for StdioError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            StdioError::Io(e) => Some(e),
+            StdioError::InvalidRequest(_) => None,
+            StdioError::Bus(e) => Some(e),
+            StdioError::Json(e) => Some(e),
+        }
+    }
+}
+
+impl From<std::io::Error> for StdioError {
+    fn from(e: std::io::Error) -> Self {
+        StdioError::Io(e)
+    }
+}
+
+impl From<crate::messagebus::Error> for StdioError {
+    fn from(e: crate::messagebus::Error) -> Self {
+        StdioError::Bus(e)
+    }
+}
+
+impl From<serde_json::Error> for StdioError {
+    fn from(e: serde_json::Error) -> Self {
+        StdioError::Json(e)
+    }
+}
+
+fn spawn_stdin_reader() -> tokio::sync::mpsc::Receiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(16);
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let stdin = std::io::stdin().lock();
+        let reader = std::io::BufReader::new(stdin);
+        for line in reader.lines() {
+            match line {
+                Ok(l) if l.trim().is_empty() => continue,
+                Ok(l) => {
+                    if tx.blocking_send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    rx
+}
+
 pub async fn run_server(
-    bus: Arc<InMemoryMessageBus>,
+    bus: Arc<dyn MessageBus>,
     agent_id: AgentId,
     owner_id: UserId,
     shutdown_token: CancellationToken,
-) -> anyhow::Result<()> {
+) -> Result<(), StdioError> {
     let server = RpcServerImpl::new(bus.clone(), agent_id, owner_id, shutdown_token.clone());
     let module = server.into_rpc();
-
-    let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
-    let stdin = BufReader::new(tokio::io::stdin());
-    let mut lines = stdin.lines();
+    let mut stdout = tokio::io::stdout();
+    let mut lines = spawn_stdin_reader();
 
     loop {
         tokio::select! {
             _ = shutdown_token.cancelled() => break,
-            line = lines.next_line() => {
-                match line? {
-                    Some(ref text) if text.trim().is_empty() => continue,
-                    Some(text) => {
-                        let is_send = is_method(&text, "send_message");
+            line = lines.recv() => {
+                let Some(text) = line else { break };
+                let is_send = is_method(&text, "send_message");
 
-                        let (response, _rx) = module
-                            .raw_json_request(&text, 1)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("invalid JSON-RPC request: {e}"))?;
+                let (response, _rx) = module
+                    .raw_json_request(&text, 1)
+                    .await
+                    .map_err(|e| StdioError::InvalidRequest(e.to_string()))?;
 
-                        write_line(&stdout, response.get()).await?;
+                write_line(&mut stdout, response.get()).await?;
 
-                        if is_send && is_success(response.get()) {
-                            drain_events(&bus, agent_id, &stdout).await?;
-                        }
-                    }
-                    None => break,
+                if is_send && is_success(response.get()) {
+                    drain_events(&*bus, agent_id, &mut stdout).await?;
                 }
             }
         }
@@ -66,8 +127,7 @@ fn is_success(response: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn write_line(stdout: &Arc<Mutex<tokio::io::Stdout>>, text: &str) -> anyhow::Result<()> {
-    let mut out = stdout.lock().await;
+async fn write_line(out: &mut tokio::io::Stdout, text: &str) -> std::io::Result<()> {
     out.write_all(text.as_bytes()).await?;
     out.write_all(b"\n").await?;
     out.flush().await?;
@@ -75,13 +135,11 @@ async fn write_line(stdout: &Arc<Mutex<tokio::io::Stdout>>, text: &str) -> anyho
 }
 
 async fn drain_events(
-    bus: &Arc<InMemoryMessageBus>,
+    bus: &dyn MessageBus,
     agent_id: AgentId,
-    stdout: &Arc<Mutex<tokio::io::Stdout>>,
-) -> anyhow::Result<()> {
-    let mut events = bus
-        .subscribe(agent_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    stdout: &mut tokio::io::Stdout,
+) -> Result<(), StdioError> {
+    let mut events = bus.subscribe(agent_id)?;
     while let Some(event) = events.next().await {
         let is_terminal = matches!(
             event,

@@ -5,32 +5,23 @@
 # ]
 # ///
 
-"""JSON-RPC client for the Pristine agent harness.
+"""Interactive chat REPL for the Pristine agent harness.
 
-Spawns `cargo run -- run` as a subprocess and drives a two-message conversation
-over the stdio JSON-RPC transport.  Runnable as `uv run client.py`.
+Spawns `cargo run -- run` as a subprocess and provides an interactive prompt.
+User input is sent as messages to the agent; streamed token deltas are printed
+inline until the run completes.  Runnable as `uv run client.py`.
 """
 
 import json
 import subprocess
 import sys
 
-_next_id = 0
-
-
-def make_request(method: str, params: dict | None = None) -> str:
-    global _next_id
-    _next_id += 1
-    r: dict = {"jsonrpc": "2.0", "method": method, "id": _next_id}
-    if params is not None:
-        r["params"] = params
-    return json.dumps(r)
+from jsonrpcclient import request_json
 
 
 def send(proc: subprocess.Popen, method: str, params: dict | None = None) -> dict:
     """Send a JSON-RPC request and return the parsed response."""
-    req = make_request(method, params)
-    print(f"-> {method}", file=sys.stderr)
+    req = request_json(method, params=params)
     assert proc.stdin is not None
     proc.stdin.write(req + "\n")
     proc.stdin.flush()
@@ -87,25 +78,24 @@ def main() -> None:
     )
 
     try:
-        # Handshake
         resp = send(proc, "initialize")
         result = resp["result"]
         agent_id = result["agent_id"]
-        owner_id = result["owner_id"]
-        print(f"agent_id: {agent_id}", file=sys.stderr)
-        print(f"owner_id: {owner_id}", file=sys.stderr)
+        print(f"Pristine ({agent_id[:8]})", file=sys.stderr)
 
-        # First message
-        send(proc, "send_message", {"agent_id": agent_id, "content": "Introduce yourself to me, Pristine"})
-        drain_events(proc)
-
-        # Second message
-        send(proc, "send_message", {"agent_id": agent_id, "content": "Write me a poem of what it is like to be you, Pristine"})
-        drain_events(proc)
-
-        # Shutdown
-        send(proc, "shutdown")
+        while True:
+            try:
+                user_input = input("> ")
+            except (EOFError, KeyboardInterrupt):
+                print(file=sys.stderr)
+                break
+            if not user_input.strip():
+                continue
+            send(proc, "send_message", {"agent_id": agent_id, "content": user_input})
+            drain_events(proc)
     finally:
+        if proc.poll() is None:
+            send(proc, "shutdown")
         proc.stdin.close()
         proc.wait()
 

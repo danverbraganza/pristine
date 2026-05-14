@@ -16,12 +16,6 @@ pub struct InitializeResult {
     pub owner_id: UserId,
 }
 
-#[derive(serde::Deserialize)]
-pub struct SendMessageParams {
-    pub agent_id: AgentId,
-    pub content: String,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SendMessageResult {
     pub ok: bool,

@@ -2,30 +2,13 @@
 
 ## Goals
 
-The goal for Pristine is to create a robust, simple and watertight "engine" for agent harnesses. Completing this work
-and providing most of the plumbing for Agent Harnesses will unlock experimentation with different information
-architecture and agent harness designs. The design work of representing the fundamental primitives of agents, therefore, is the most important work for Pristine.
+This document describes the architecture of Pristine's core engine. See DESIGN.md for the project's design philosophy, goals, and roadmap.
 
-- Integration with multiple language models, including open langauge models and local model providers
-- Consistent and extensible modelling of the problem
-- Support for multiple parallel agents running within one process
-- Agents support forking, creating subagents, speculative task evaluation
-- Support for peer message sending between Agents
-- Programmable interface for interacting/driving the harness from other programs
-- Robustly archictected for maintainability with Single Responsibility Principle, Encapsulation and Information Hiding
-- Logging
-- Tracing
+The architecture is driven by three constraints:
 
-### Examples
-Here are some motivating examples of the kinds of projects I want to build with Pristine:
-
-- A simple coding agent that works with open models, and is able to use tool-calls to edit projects
-- A recursive AR-LLM integrated with a diffusion model to continuously tailor its history/context to the task at hand
-- A multi-player game with multiple agents, each with their own private reasoning traces, who are able to interact with each other and with the player
-
-### Non-goals
-- UI/TUI: Pristine will not ship with a canonical UI, since it is meant to be wrapped by other applications. We will
-  have a small helper UI for development purposes, but it will not be intended as the main way to use Pristine.
+1. **Composability** -- every major subsystem (Model, History, MessageBus, ContextCompiler) is a trait, so implementations can be swapped without changing consumer code.
+2. **Multi-agent isolation** -- multiple Agents run independently within one process; a failure in one does not cascade to others.
+3. **Transport neutrality** -- the JSON-RPC method surface is identical regardless of whether the transport is stdio, a Unix socket, or something else entirely.
 
 ## Core Data Model Objects
 

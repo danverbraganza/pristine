@@ -1,5 +1,6 @@
 //! Persistent history of immutable Block events.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -26,7 +27,7 @@ impl fmt::Display for NodeId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(Uuid);
 
 impl AgentId {
@@ -47,7 +48,7 @@ impl fmt::Display for AgentId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(Uuid);
 
 impl UserId {

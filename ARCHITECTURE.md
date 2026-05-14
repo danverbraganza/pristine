@@ -187,6 +187,41 @@ can be added without changing the `Agent`, `Harness`, or any consumer code. The
 Tokio-channel mechanics are an implementation detail of `InMemoryMessageBus`,
 not a contract of the trait.
 
+### Client Protocol
+
+Pristine exposes its capabilities to external clients via JSON-RPC 2.0. The
+protocol layer sits between external callers and the Harness: clients send
+JSON-RPC requests (e.g. "send a message to an agent", "subscribe to events"),
+and the server translates them into Harness operations and returns results.
+
+JSON-RPC was chosen because it provides structured request/response framing
+(method dispatch, request IDs, typed errors) with minimal ceremony, and is a
+proven pattern for engine-wrapping harnesses (LSP, MCP). The protocol is
+transport-agnostic by design; the same JSON-RPC methods work identically
+regardless of the underlying carrier.
+
+#### Transports
+
+The default transport is **stdio** (newline-delimited JSON-RPC over
+stdin/stdout). When `pristine run` starts, it reads JSON-RPC requests from stdin
+and writes JSON-RPC responses and notifications to stdout. This transport is
+inherently single-client and is reserved for the Owner — the user who launched
+the process.
+
+In future work, Pristine will support a **Unix domain socket** transport,
+allowing multiple concurrent clients to connect to a running server. Socket
+clients will authenticate as distinct Users within the Harness. The JSON-RPC
+method surface will be identical across transports; only the connection
+establishment and User identity resolution differ.
+
+#### Notifications (server → client)
+
+Streaming data (e.g. token deltas from an Agent's model call) will be delivered
+as JSON-RPC **notifications** — messages from server to client with no request
+ID and no expectation of a response. A client that subscribes to an Agent's
+event stream receives a series of notifications carrying AgentEvent data until
+the stream ends or the client unsubscribes.
+
 ## Key Technological Choices
 
 - Tokio

@@ -12,21 +12,16 @@ pub mod user;
 #[cfg(test)]
 mod test_support;
 
-use std::io::Write;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use futures::StreamExt;
 
 use crate::agent::AgentId;
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
-use crate::messagebus::AgentEvent;
 use crate::model::anthropic::AnthropicModelBuilder;
 
 const SYSTEM_PROMPT: &str =
     "You are the Pristine agent. You have an identity that is uniquely yours!";
-const FIRST_MESSAGE: &str = "Introduce yourself to me, Pristine";
-const SECOND_MESSAGE: &str = "Write me a poem of what it is like to be you, Pristine";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MODEL_KEY: &str = "anthropic-default";
 
@@ -39,7 +34,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Send the two hard-coded Owner messages to the Pristine agent and stream the replies.
+    /// Start the JSON-RPC stdio server.
     Run {
         /// Anthropic model identifier.
         #[arg(long, default_value = DEFAULT_MODEL)]
@@ -90,38 +85,11 @@ async fn run_async() -> anyhow::Result<()> {
 
     harness.start()?;
 
-    let mut rx = harness.subscribe(agent_id)?;
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
     let owner_id = harness.owner_id();
-    harness.send_to_agent(agent_id, owner_id, FIRST_MESSAGE.to_string())?;
+    let bus = harness.bus().clone();
 
-    let mut runs_completed = 0u32;
-    let mut second_sent = false;
-
-    while runs_completed < 2 {
-        match rx.next().await {
-            Some(AgentEvent::TokenDelta { text }) => {
-                print!("{text}");
-                std::io::stdout().flush()?;
-            }
-            Some(AgentEvent::Error { message }) => {
-                return Err(anyhow::anyhow!("agent error: {message}"));
-            }
-            Some(AgentEvent::RunComplete { usage }) => {
-                println!();
-                eprintln!(
-                    "[usage: input_tokens={} output_tokens={}]",
-                    usage.input_tokens, usage.output_tokens
-                );
-                runs_completed += 1;
-                if !second_sent {
-                    harness.send_to_agent(agent_id, owner_id, SECOND_MESSAGE.to_string())?;
-                    second_sent = true;
-                }
-            }
-            Some(AgentEvent::BlockComplete { .. }) => {}
-            None => break,
-        }
-    }
+    crate::stdio::run_server(bus, agent_id, owner_id, shutdown_token).await?;
 
     harness.shutdown();
     harness.join().await?;

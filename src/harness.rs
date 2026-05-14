@@ -235,8 +235,6 @@ impl Harness {
         Ok(self.bus.subscribe(agent_id)?)
     }
 
-    // Test-only bus accessor for publishing AgentEvents directly without driving the agent loop.
-    #[cfg(test)]
     pub fn bus(&self) -> &Arc<InMemoryMessageBus> {
         &self.bus
     }

@@ -13,6 +13,7 @@ use crate::messagebus::{self, AgentEvent, MessageBus};
 use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, Turn, Usage,
 };
+use crate::tool::ToolRegistry;
 
 #[derive(Debug)]
 pub enum Error {
@@ -62,12 +63,14 @@ pub struct Agent {
     history: History,
     inbound: BoxStream<'static, Block>,
     bus: Arc<dyn MessageBus>,
+    tools: Arc<ToolRegistry>,
 }
 
 pub struct AgentBuilder {
     id: Option<AgentId>,
     system_prompt: Option<String>,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
+    tools: Option<Arc<ToolRegistry>>,
 }
 
 impl AgentBuilder {
@@ -76,6 +79,7 @@ impl AgentBuilder {
             id: None,
             system_prompt: None,
             models: HashMap::new(),
+            tools: None,
         }
     }
 
@@ -94,6 +98,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn tools(mut self, registry: Arc<ToolRegistry>) -> Self {
+        self.tools = Some(registry);
+        self
+    }
+
     pub fn build(self, bus: Arc<dyn MessageBus>) -> Result<Agent, Error> {
         let id = self
             .id
@@ -107,6 +116,7 @@ impl AgentBuilder {
             ));
         }
         let inbound = bus.register(id)?;
+        let tools = self.tools.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
         Ok(Agent {
             id,
             system_prompt,
@@ -114,6 +124,7 @@ impl AgentBuilder {
             history: History::new(),
             inbound,
             bus,
+            tools,
         })
     }
 }
@@ -127,6 +138,10 @@ impl Default for AgentBuilder {
 impl Agent {
     pub fn id(&self) -> AgentId {
         self.id
+    }
+
+    pub fn tools(&self) -> &Arc<ToolRegistry> {
+        &self.tools
     }
 
     pub async fn run(mut self) -> Result<(), Error> {
@@ -235,6 +250,42 @@ mod tests {
     use crate::history::UserId;
     use crate::messagebus::InMemoryMessageBus;
     use crate::test_support::StubArModel;
+    use crate::tool::{Tool, ToolError};
+
+    struct EchoTool {
+        name: String,
+        description: String,
+        schema: serde_json::Value,
+    }
+
+    impl EchoTool {
+        fn new() -> Self {
+            Self {
+                name: "echo".to_string(),
+                description: "Echoes input back wrapped under `echo`.".to_string(),
+                schema: serde_json::json!({ "type": "object" }),
+            }
+        }
+    }
+
+    #[jsonrpsee::core::async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn description(&self) -> &str {
+            &self.description
+        }
+
+        fn input_schema(&self) -> &serde_json::Value {
+            &self.schema
+        }
+
+        async fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({ "echo": input }))
+        }
+    }
 
     fn user_block(content: &str) -> Block {
         Block::UserMessage {
@@ -507,5 +558,33 @@ mod tests {
             ContentPart::Text(t) => assert_eq!(t, "hello there"),
             other => panic!("expected Text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn agent_default_tool_registry_is_empty() {
+        let model = Arc::new(StubArModel::empty());
+        let (agent, _agent_id, _bus, _outbound) = build_agent(model);
+        assert!(agent.tools().list().is_empty());
+    }
+
+    #[test]
+    fn agent_tools_accessor_returns_shared_registry() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(EchoTool::new()))
+            .expect("register echo");
+        let registry = Arc::new(registry);
+
+        let agent_id = AgentId::new();
+        let bus = Arc::new(InMemoryMessageBus::new());
+        let model = Arc::new(StubArModel::empty());
+        let agent = AgentBuilder::new()
+            .id(agent_id)
+            .system_prompt("test prompt")
+            .model(ModelRole::Default, model as Arc<dyn ARModel>)
+            .tools(registry)
+            .build(bus.clone() as Arc<dyn MessageBus>)
+            .expect("build agent");
+        assert!(agent.tools().get("echo").is_some());
     }
 }

@@ -12,6 +12,7 @@ use crate::agent::AgentBuilder;
 use crate::history::{AgentId, Block};
 use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
 use crate::model::{ARModel, ModelRole};
+use crate::tool::{Tool, ToolError, ToolRegistry};
 use crate::user::{User, UserId};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -43,6 +44,7 @@ pub enum Error {
     Lifecycle(String),
     Bus(crate::messagebus::Error),
     Join(String),
+    DuplicateTool(String),
 }
 
 impl std::fmt::Display for Error {
@@ -53,6 +55,7 @@ impl std::fmt::Display for Error {
             Error::Lifecycle(msg) => write!(f, "lifecycle error: {msg}"),
             Error::Bus(err) => write!(f, "message bus error: {err}"),
             Error::Join(msg) => write!(f, "task join error: {msg}"),
+            Error::DuplicateTool(name) => write!(f, "duplicate tool: {name}"),
         }
     }
 }
@@ -61,6 +64,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Bus(err) => Some(err),
+            Error::DuplicateTool(_) => None,
             _ => None,
         }
     }
@@ -89,11 +93,13 @@ pub struct Harness {
     owner: User,
     cancel: CancellationToken,
     pending: Vec<PendingAgent>,
+    tools: Arc<ToolRegistry>,
 }
 
 pub struct HarnessBuilder {
     models: HashMap<ModelId, Arc<dyn ARModel>>,
     pending: Vec<PendingAgent>,
+    tools: Arc<ToolRegistry>,
 }
 
 impl HarnessBuilder {
@@ -101,6 +107,7 @@ impl HarnessBuilder {
         Self {
             models: HashMap::new(),
             pending: Vec::new(),
+            tools: Arc::new(ToolRegistry::new()),
         }
     }
 
@@ -112,6 +119,17 @@ impl HarnessBuilder {
     pub fn add_agent(mut self, agent: PendingAgent) -> Self {
         self.pending.push(agent);
         self
+    }
+
+    pub fn add_tool(mut self, tool: Arc<dyn Tool>) -> Result<Self, Error> {
+        let registry = Arc::get_mut(&mut self.tools).ok_or_else(|| {
+            Error::Lifecycle("tool registry has been shared; cannot mutate".to_string())
+        })?;
+        registry.register(tool).map_err(|e| match e {
+            ToolError::AlreadyRegistered(name) => Error::DuplicateTool(name),
+            other => Error::Lifecycle(other.to_string()),
+        })?;
+        Ok(self)
     }
 
     pub fn build(self) -> Result<Harness, Error> {
@@ -127,6 +145,7 @@ impl HarnessBuilder {
             owner: User::new(),
             cancel: CancellationToken::new(),
             pending: self.pending,
+            tools: self.tools,
         })
     }
 }
@@ -157,6 +176,7 @@ impl Harness {
                 .id(agent_id)
                 .system_prompt(spec.system_prompt)
                 .model(ModelRole::Default, model)
+                .tools(self.tools.clone())
                 .build(bus_dyn)
                 .map_err(|e| Error::Lifecycle(e.to_string()))?;
             let cancel = self.cancel.clone();
@@ -238,6 +258,10 @@ impl Harness {
     pub fn bus(&self) -> &Arc<InMemoryMessageBus> {
         &self.bus
     }
+
+    pub fn tools(&self) -> &Arc<ToolRegistry> {
+        &self.tools
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +275,42 @@ mod tests {
     use crate::messagebus::AgentEvent;
     use crate::model::Error as ModelError;
     use crate::test_support::StubArModel;
+    use crate::tool::Tool;
+
+    struct EchoTool {
+        name: String,
+        description: String,
+        schema: serde_json::Value,
+    }
+
+    impl EchoTool {
+        fn new() -> Self {
+            Self {
+                name: "echo".to_string(),
+                description: "Echoes input back wrapped under `echo`.".to_string(),
+                schema: serde_json::json!({ "type": "object" }),
+            }
+        }
+    }
+
+    #[jsonrpsee::core::async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn description(&self) -> &str {
+            &self.description
+        }
+
+        fn input_schema(&self) -> &serde_json::Value {
+            &self.schema
+        }
+
+        async fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+            Ok(serde_json::json!({ "echo": input }))
+        }
+    }
 
     fn build_harness_with_one_agent() -> (Harness, AgentId, ModelId) {
         let model_id = ModelId::new("stub");
@@ -470,5 +530,42 @@ mod tests {
             result.is_err(),
             "expected agent A's failure to propagate from join"
         );
+    }
+
+    #[test]
+    fn harness_builder_starts_with_empty_tool_registry() {
+        let (harness, _agent_id, _model_id) = build_harness_with_one_agent();
+        assert!(harness.tools().list().is_empty());
+    }
+
+    #[test]
+    fn harness_builder_add_tool_makes_tool_visible_to_agents() {
+        let model_id = ModelId::new("stub");
+        let agent_id = AgentId::new();
+        let harness = HarnessBuilder::new()
+            .add_model(model_id.clone(), Arc::new(StubArModel::empty()))
+            .add_agent(PendingAgent {
+                id: agent_id,
+                system_prompt: "test".to_string(),
+                model_id,
+            })
+            .add_tool(Arc::new(EchoTool::new()))
+            .expect("add_tool succeeds")
+            .build()
+            .expect("build harness");
+        assert!(harness.tools().get("echo").is_some());
+    }
+
+    #[test]
+    fn harness_builder_duplicate_tool_returns_error() {
+        let builder = HarnessBuilder::new()
+            .add_tool(Arc::new(EchoTool::new()))
+            .expect("first add_tool succeeds");
+        let result = builder.add_tool(Arc::new(EchoTool::new()));
+        match result {
+            Err(Error::DuplicateTool(name)) => assert_eq!(name, "echo"),
+            Err(other) => panic!("expected DuplicateTool, got {other:?}"),
+            Ok(_) => panic!("second add_tool should fail"),
+        }
     }
 }

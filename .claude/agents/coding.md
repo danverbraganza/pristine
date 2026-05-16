@@ -38,6 +38,14 @@ If your task is blocked by a large refactor that you are not cleared to do:
   - specify the required refactor
   - request the Coordinator to create/assign a bead for it first
 
+## Declared deviations
+A bead may specify an exact symbol, file location, or code shape that, on contact with the existing code, turns out to be wrong, ambiguous, or forced into a different form. When you choose a form that departs from the bead's literal text, report it as a **declared deviation** in your final message to the Coordinator. A declared deviation must:
+- name the bead instruction it departs from,
+- describe what you did instead, and
+- give a one-sentence reason (compiler-forced, clippy-forced, style-guide-forced, or "the bead instruction was inconsistent with existing code").
+
+Do NOT declare a deviation for: choices fully within the bead's discretion, restatements of what the bead asked for, or stylistic micro-decisions invisible from the diff. Deviations exist so the Judge can audit instruction-vs-implementation drift, not as a journal of the implementation.
+
 ## Definition of Done
 Before declaring your task complete:
 - `cargo fmt --check` passes

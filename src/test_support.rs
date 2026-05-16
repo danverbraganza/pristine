@@ -50,3 +50,41 @@ impl ARModel for StubArModel {
         Box::pin(stream::iter(next))
     }
 }
+
+pub(crate) struct EchoTool {
+    name: String,
+    description: String,
+    schema: serde_json::Value,
+}
+
+impl EchoTool {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            description: "Echoes input back wrapped under `echo`.".to_string(),
+            schema: serde_json::json!({ "type": "object" }),
+        }
+    }
+}
+
+#[jsonrpsee::core::async_trait]
+impl crate::tool::Tool for EchoTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn input_schema(&self) -> &serde_json::Value {
+        &self.schema
+    }
+
+    async fn call(
+        &self,
+        input: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::tool::ToolError> {
+        Ok(serde_json::json!({ "echo": input }))
+    }
+}

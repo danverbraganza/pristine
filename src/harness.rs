@@ -274,43 +274,7 @@ mod tests {
 
     use crate::messagebus::AgentEvent;
     use crate::model::Error as ModelError;
-    use crate::test_support::StubArModel;
-    use crate::tool::Tool;
-
-    struct EchoTool {
-        name: String,
-        description: String,
-        schema: serde_json::Value,
-    }
-
-    impl EchoTool {
-        fn new() -> Self {
-            Self {
-                name: "echo".to_string(),
-                description: "Echoes input back wrapped under `echo`.".to_string(),
-                schema: serde_json::json!({ "type": "object" }),
-            }
-        }
-    }
-
-    #[jsonrpsee::core::async_trait]
-    impl Tool for EchoTool {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn description(&self) -> &str {
-            &self.description
-        }
-
-        fn input_schema(&self) -> &serde_json::Value {
-            &self.schema
-        }
-
-        async fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-            Ok(serde_json::json!({ "echo": input }))
-        }
-    }
+    use crate::test_support::{EchoTool, StubArModel};
 
     fn build_harness_with_one_agent() -> (Harness, AgentId, ModelId) {
         let model_id = ModelId::new("stub");
@@ -549,7 +513,7 @@ mod tests {
                 system_prompt: "test".to_string(),
                 model_id,
             })
-            .add_tool(Arc::new(EchoTool::new()))
+            .add_tool(Arc::new(EchoTool::new("echo")))
             .expect("add_tool succeeds")
             .build()
             .expect("build harness");
@@ -559,9 +523,9 @@ mod tests {
     #[test]
     fn harness_builder_duplicate_tool_returns_error() {
         let builder = HarnessBuilder::new()
-            .add_tool(Arc::new(EchoTool::new()))
+            .add_tool(Arc::new(EchoTool::new("echo")))
             .expect("first add_tool succeeds");
-        let result = builder.add_tool(Arc::new(EchoTool::new()));
+        let result = builder.add_tool(Arc::new(EchoTool::new("echo")));
         match result {
             Err(Error::DuplicateTool(name)) => assert_eq!(name, "echo"),
             Err(other) => panic!("expected DuplicateTool, got {other:?}"),

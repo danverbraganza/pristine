@@ -318,43 +318,7 @@ mod tests {
 
     use crate::history::UserId;
     use crate::messagebus::InMemoryMessageBus;
-    use crate::test_support::StubArModel;
-    use crate::tool::{Tool, ToolError};
-
-    struct EchoTool {
-        name: String,
-        description: String,
-        schema: serde_json::Value,
-    }
-
-    impl EchoTool {
-        fn new() -> Self {
-            Self {
-                name: "echo".to_string(),
-                description: "Echoes input back wrapped under `echo`.".to_string(),
-                schema: serde_json::json!({ "type": "object" }),
-            }
-        }
-    }
-
-    #[jsonrpsee::core::async_trait]
-    impl Tool for EchoTool {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn description(&self) -> &str {
-            &self.description
-        }
-
-        fn input_schema(&self) -> &serde_json::Value {
-            &self.schema
-        }
-
-        async fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-            Ok(serde_json::json!({ "echo": input }))
-        }
-    }
+    use crate::test_support::{EchoTool, StubArModel};
 
     fn user_block(content: &str) -> Block {
         Block::UserMessage {
@@ -640,7 +604,7 @@ mod tests {
     fn agent_tools_accessor_returns_shared_registry() {
         let mut registry = ToolRegistry::new();
         registry
-            .register(Arc::new(EchoTool::new()))
+            .register(Arc::new(EchoTool::new("echo")))
             .expect("register echo");
         let registry = Arc::new(registry);
 
@@ -661,7 +625,7 @@ mod tests {
     async fn agent_run_populates_model_input_tools_from_registry() {
         let mut registry = ToolRegistry::new();
         registry
-            .register(Arc::new(EchoTool::new()))
+            .register(Arc::new(EchoTool::new("echo")))
             .expect("register echo");
         let registry = Arc::new(registry);
 
@@ -892,7 +856,7 @@ mod tests {
     async fn agent_run_dispatches_tool_call_and_re_enters_model() {
         let mut registry = ToolRegistry::new();
         registry
-            .register(Arc::new(EchoTool::new()))
+            .register(Arc::new(EchoTool::new("echo")))
             .expect("register echo");
         let registry = Arc::new(registry);
 
@@ -1116,7 +1080,7 @@ mod tests {
     async fn agent_run_skips_agent_message_when_only_tool_calls() {
         let mut registry = ToolRegistry::new();
         registry
-            .register(Arc::new(EchoTool::new()))
+            .register(Arc::new(EchoTool::new("echo")))
             .expect("register echo");
         let registry = Arc::new(registry);
 

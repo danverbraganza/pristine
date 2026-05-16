@@ -81,43 +81,9 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::EchoTool;
 
     fn assert_std_error<T: std::error::Error + Send + Sync + 'static>() {}
-
-    struct EchoTool {
-        name: String,
-        description: String,
-        schema: serde_json::Value,
-    }
-
-    impl EchoTool {
-        fn new(name: &str) -> Self {
-            Self {
-                name: name.to_string(),
-                description: "Echoes input back wrapped under `echo`.".to_string(),
-                schema: serde_json::json!({ "type": "object" }),
-            }
-        }
-    }
-
-    #[jsonrpsee::core::async_trait]
-    impl Tool for EchoTool {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn description(&self) -> &str {
-            &self.description
-        }
-
-        fn input_schema(&self) -> &serde_json::Value {
-            &self.schema
-        }
-
-        async fn call(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
-            Ok(serde_json::json!({ "echo": input }))
-        }
-    }
 
     #[test]
     fn tool_error_is_standard_error_trait_object() {

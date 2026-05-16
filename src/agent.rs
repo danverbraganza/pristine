@@ -382,23 +382,13 @@ mod tests {
 
         let handle = tokio::spawn(agent.run());
 
-        let mut events = Vec::new();
-        let mut idle_seen = false;
-        let collect = async {
-            while let Some(evt) = outbound.next().await {
-                let is_idle = matches!(evt, AgentEvent::Idle);
-                events.push(evt);
-                if is_idle {
-                    idle_seen = true;
-                    break;
-                }
-            }
-            events
-        };
-        let events = timeout(Duration::from_secs(2), collect)
-            .await
-            .expect("drain timed out");
-        assert!(idle_seen, "expected Idle");
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 1),
+        )
+        .await
+        .expect("drain timed out");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -510,20 +500,13 @@ mod tests {
 
         let handle = tokio::spawn(agent.run());
 
-        let mut events = Vec::new();
-        let collect = async {
-            while let Some(evt) = outbound.next().await {
-                let stop = matches!(evt, AgentEvent::Idle);
-                events.push(evt);
-                if stop {
-                    break;
-                }
-            }
-            events
-        };
-        let events = timeout(Duration::from_secs(2), collect)
-            .await
-            .expect("drain timed out");
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 1),
+        )
+        .await
+        .expect("drain timed out");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -567,16 +550,13 @@ mod tests {
 
         let handle = tokio::spawn(agent.run());
 
-        let drain = async {
-            while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::Idle) {
-                    break;
-                }
-            }
-        };
-        timeout(Duration::from_secs(2), drain)
-            .await
-            .expect("drain timed out");
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 1),
+        )
+        .await
+        .expect("drain timed out");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -664,16 +644,13 @@ mod tests {
 
         let handle = tokio::spawn(agent.run());
 
-        let drain = async {
-            while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::Idle) {
-                    break;
-                }
-            }
-        };
-        timeout(Duration::from_secs(2), drain)
-            .await
-            .expect("drain timed out");
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 1),
+        )
+        .await
+        .expect("drain timed out");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -722,20 +699,13 @@ mod tests {
 
         let handle = tokio::spawn(agent.run());
 
-        let drain = async {
-            let mut idles = 0;
-            while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::Idle) {
-                    idles += 1;
-                    if idles == 2 {
-                        break;
-                    }
-                }
-            }
-        };
-        timeout(Duration::from_secs(2), drain)
-            .await
-            .expect("drain timed out");
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 2),
+        )
+        .await
+        .expect("drain timed out");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -795,20 +765,13 @@ mod tests {
 
         let handle = tokio::spawn(agent.run());
 
-        let drain = async {
-            let mut idles = 0;
-            while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::Idle) {
-                    idles += 1;
-                    if idles == 2 {
-                        break;
-                    }
-                }
-            }
-        };
-        timeout(Duration::from_secs(2), drain)
-            .await
-            .expect("drain timed out");
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 2),
+        )
+        .await
+        .expect("drain timed out");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -840,15 +803,21 @@ mod tests {
         }
     }
 
-    async fn drain_until_idle(
+    /// Drain `outbound` into `sink` until `n` Idle events have been observed.
+    async fn drain_until_idles(
         outbound: &mut BoxStream<'static, AgentEvent>,
         sink: &mut Vec<AgentEvent>,
+        n: usize,
     ) {
+        let mut idles = 0;
         while let Some(evt) = outbound.next().await {
             let is_idle = matches!(evt, AgentEvent::Idle);
             sink.push(evt);
             if is_idle {
-                break;
+                idles += 1;
+                if idles >= n {
+                    return;
+                }
             }
         }
     }
@@ -923,7 +892,7 @@ mod tests {
         let mut events: Vec<AgentEvent> = Vec::new();
         timeout(
             Duration::from_secs(2),
-            drain_until_idle(&mut outbound, &mut events),
+            drain_until_idles(&mut outbound, &mut events, 1),
         )
         .await
         .expect("drain timed out");
@@ -1038,7 +1007,7 @@ mod tests {
         let mut events: Vec<AgentEvent> = Vec::new();
         timeout(
             Duration::from_secs(2),
-            drain_until_idle(&mut outbound, &mut events),
+            drain_until_idles(&mut outbound, &mut events, 1),
         )
         .await
         .expect("drain timed out");
@@ -1132,7 +1101,7 @@ mod tests {
         let mut events: Vec<AgentEvent> = Vec::new();
         timeout(
             Duration::from_secs(2),
-            drain_until_idle(&mut outbound, &mut events),
+            drain_until_idles(&mut outbound, &mut events, 1),
         )
         .await
         .expect("drain timed out");

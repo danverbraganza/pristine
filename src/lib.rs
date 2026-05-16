@@ -7,6 +7,7 @@ pub mod messagebus;
 pub mod model;
 pub mod rpc;
 pub mod stdio;
+pub mod tool;
 pub mod user;
 
 #[cfg(test)]

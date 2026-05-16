@@ -11,7 +11,8 @@ pub use crate::history::AgentId;
 use crate::history::{Block, History};
 use crate::messagebus::{self, AgentEvent, MessageBus};
 use crate::model::{
-    self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, Turn, Usage,
+    self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
+    Usage,
 };
 use crate::tool::ToolRegistry;
 
@@ -162,6 +163,17 @@ impl Agent {
                 .ok_or(Error::MissingDefaultModel)?
                 .clone();
 
+            let tools: Vec<ToolSpec> = self
+                .tools
+                .list()
+                .into_iter()
+                .map(|tool| ToolSpec {
+                    name: tool.name().to_string(),
+                    description: tool.description().to_string(),
+                    input_schema: tool.input_schema().clone(),
+                })
+                .collect();
+
             let mut turns: Vec<Turn> = Vec::with_capacity(context.len() + 1);
             turns.push(Turn {
                 role: Role::System,
@@ -177,19 +189,39 @@ impl Agent {
                         role: Role::Assistant,
                         content: vec![ContentPart::Text(content)],
                     }),
-                    Block::ReasoningTrace { .. }
-                    | Block::ToolCall { .. }
-                    | Block::ToolResult { .. } => {
-                        // Phase 1: these variants are kept in History but not
-                        // routed to the model. Phase 2 will route them via
-                        // ContentPart::ToolUse / ContentPart::ToolResult.
+                    Block::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                        ..
+                    } => turns.push(Turn {
+                        role: Role::Assistant,
+                        content: vec![ContentPart::ToolUse {
+                            id,
+                            name,
+                            input: arguments,
+                        }],
+                    }),
+                    Block::ToolResult {
+                        tool_use_id,
+                        result,
+                        is_error,
+                        ..
+                    } => turns.push(Turn {
+                        role: Role::User,
+                        content: vec![ContentPart::ToolResult {
+                            tool_use_id,
+                            content: result,
+                            is_error,
+                        }],
+                    }),
+                    Block::ReasoningTrace { .. } => {
+                        // Reasoning traces are kept in History but not routed
+                        // to the model; ARMs vary on whether they accept them.
                     }
                 }
             }
-            let input = ModelInput {
-                turns,
-                tools: Vec::new(),
-            };
+            let input = ModelInput { turns, tools };
 
             let mut stream = model.complete(&input);
             let mut delta_buffer = String::new();
@@ -586,5 +618,218 @@ mod tests {
             .build(bus.clone() as Arc<dyn MessageBus>)
             .expect("build agent");
         assert!(agent.tools().get("echo").is_some());
+    }
+
+    #[tokio::test]
+    async fn agent_run_populates_model_input_tools_from_registry() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(EchoTool::new()))
+            .expect("register echo");
+        let registry = Arc::new(registry);
+
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "ok".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+
+        let agent_id = AgentId::new();
+        let bus = Arc::new(InMemoryMessageBus::new());
+        let agent = AgentBuilder::new()
+            .id(agent_id)
+            .system_prompt("test prompt")
+            .model(ModelRole::Default, model as Arc<dyn ARModel>)
+            .tools(registry)
+            .build(bus.clone() as Arc<dyn MessageBus>)
+            .expect("build agent");
+        let mut outbound = bus.subscribe(agent_id).expect("subscribe");
+
+        bus.send_inbound(agent_id, user_block("hello"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let drain = async {
+            while let Some(evt) = outbound.next().await {
+                if matches!(evt, AgentEvent::RunComplete { .. }) {
+                    break;
+                }
+            }
+        };
+        timeout(Duration::from_secs(2), drain)
+            .await
+            .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        assert_eq!(input.tools.len(), 1);
+        assert_eq!(input.tools[0].name, "echo");
+        assert_eq!(
+            input.tools[0].description,
+            "Echoes input back wrapped under `echo`."
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_run_compiles_block_tool_call_into_content_part_tool_use() {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "ok".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(
+            agent_id,
+            Block::ToolCall {
+                id: "use_x".to_string(),
+                name: "echo".to_string(),
+                arguments: serde_json::json!({ "a": 1 }),
+                timestamp: SystemTime::now(),
+            },
+        )
+        .expect("send tool call");
+        bus.send_inbound(agent_id, user_block("follow up"))
+            .expect("send user message");
+
+        let handle = tokio::spawn(agent.run());
+
+        let drain = async {
+            let mut run_completes = 0;
+            while let Some(evt) = outbound.next().await {
+                if matches!(evt, AgentEvent::RunComplete { .. }) {
+                    run_completes += 1;
+                    if run_completes == 2 {
+                        break;
+                    }
+                }
+            }
+        };
+        timeout(Duration::from_secs(2), drain)
+            .await
+            .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        let tool_use_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::Assistant
+                    && matches!(t.content.first(), Some(ContentPart::ToolUse { .. }))
+            })
+            .expect("expected an Assistant turn with ContentPart::ToolUse");
+        match &tool_use_turn.content[0] {
+            ContentPart::ToolUse { id, name, input } => {
+                assert_eq!(id, "use_x");
+                assert_eq!(name, "echo");
+                assert_eq!(input, &serde_json::json!({ "a": 1 }));
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_run_compiles_block_tool_result_into_content_part_tool_result() {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "ok".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(
+            agent_id,
+            Block::ToolResult {
+                tool_use_id: "use_x".to_string(),
+                name: "echo".to_string(),
+                result: serde_json::json!("ok"),
+                is_error: false,
+                timestamp: SystemTime::now(),
+            },
+        )
+        .expect("send tool result");
+        bus.send_inbound(agent_id, user_block("follow up"))
+            .expect("send user message");
+
+        let handle = tokio::spawn(agent.run());
+
+        let drain = async {
+            let mut run_completes = 0;
+            while let Some(evt) = outbound.next().await {
+                if matches!(evt, AgentEvent::RunComplete { .. }) {
+                    run_completes += 1;
+                    if run_completes == 2 {
+                        break;
+                    }
+                }
+            }
+        };
+        timeout(Duration::from_secs(2), drain)
+            .await
+            .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        let tool_result_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::User
+                    && matches!(t.content.first(), Some(ContentPart::ToolResult { .. }))
+            })
+            .expect("expected a User turn with ContentPart::ToolResult");
+        match &tool_result_turn.content[0] {
+            ContentPart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "use_x");
+                assert_eq!(content, &serde_json::json!("ok"));
+                assert!(!*is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }

@@ -155,118 +155,155 @@ impl Agent {
                 },
             );
 
-            let context = self.history.linearize();
+            loop {
+                let context = self.history.linearize();
 
-            let model = self
-                .models
-                .get(&ModelRole::Default)
-                .ok_or(Error::MissingDefaultModel)?
-                .clone();
+                let model = self
+                    .models
+                    .get(&ModelRole::Default)
+                    .ok_or(Error::MissingDefaultModel)?
+                    .clone();
 
-            let tools: Vec<ToolSpec> = self
-                .tools
-                .list()
-                .into_iter()
-                .map(|tool| ToolSpec {
-                    name: tool.name().to_string(),
-                    description: tool.description().to_string(),
-                    input_schema: tool.input_schema().clone(),
-                })
-                .collect();
+                let tools: Vec<ToolSpec> = self
+                    .tools
+                    .list()
+                    .into_iter()
+                    .map(|tool| ToolSpec {
+                        name: tool.name().to_string(),
+                        description: tool.description().to_string(),
+                        input_schema: tool.input_schema().clone(),
+                    })
+                    .collect();
 
-            let mut turns: Vec<Turn> = Vec::with_capacity(context.len() + 1);
-            turns.push(Turn {
-                role: Role::System,
-                content: vec![ContentPart::Text(self.system_prompt.clone())],
-            });
-            for block in context {
-                match block {
-                    Block::UserMessage { content, .. } => turns.push(Turn {
-                        role: Role::User,
-                        content: vec![ContentPart::Text(content)],
-                    }),
-                    Block::AgentMessage { content, .. } => turns.push(Turn {
-                        role: Role::Assistant,
-                        content: vec![ContentPart::Text(content)],
-                    }),
-                    Block::ToolCall {
-                        id,
-                        name,
-                        arguments,
-                        ..
-                    } => turns.push(Turn {
-                        role: Role::Assistant,
-                        content: vec![ContentPart::ToolUse {
+                let mut turns: Vec<Turn> = Vec::with_capacity(context.len() + 1);
+                turns.push(Turn {
+                    role: Role::System,
+                    content: vec![ContentPart::Text(self.system_prompt.clone())],
+                });
+                for block in context {
+                    match block {
+                        Block::UserMessage { content, .. } => turns.push(Turn {
+                            role: Role::User,
+                            content: vec![ContentPart::Text(content)],
+                        }),
+                        Block::AgentMessage { content, .. } => turns.push(Turn {
+                            role: Role::Assistant,
+                            content: vec![ContentPart::Text(content)],
+                        }),
+                        Block::ToolCall {
                             id,
                             name,
-                            input: arguments,
-                        }],
-                    }),
-                    Block::ToolResult {
-                        tool_use_id,
-                        result,
-                        is_error,
-                        ..
-                    } => turns.push(Turn {
-                        role: Role::User,
-                        content: vec![ContentPart::ToolResult {
+                            arguments,
+                            ..
+                        } => turns.push(Turn {
+                            role: Role::Assistant,
+                            content: vec![ContentPart::ToolUse {
+                                id,
+                                name,
+                                input: arguments,
+                            }],
+                        }),
+                        Block::ToolResult {
                             tool_use_id,
-                            content: result,
+                            result,
                             is_error,
-                        }],
-                    }),
-                    Block::ReasoningTrace { .. } => {
-                        // Reasoning traces are kept in History but not routed
-                        // to the model; ARMs vary on whether they accept them.
+                            ..
+                        } => turns.push(Turn {
+                            role: Role::User,
+                            content: vec![ContentPart::ToolResult {
+                                tool_use_id,
+                                content: result,
+                                is_error,
+                            }],
+                        }),
+                        Block::ReasoningTrace { .. } => {
+                            // Reasoning traces are kept in History but not routed
+                            // to the model; ARMs vary on whether they accept them.
+                        }
                     }
                 }
-            }
-            let input = ModelInput { turns, tools };
+                let input = ModelInput { turns, tools };
 
-            let mut stream = model.complete(&input);
-            let mut delta_buffer = String::new();
-            let mut completed_text: Option<String> = None;
-            let mut final_usage = Usage::default();
+                let mut stream = model.complete(&input);
+                let mut delta_buffer = String::new();
+                let mut completed_text: Option<String> = None;
+                let mut final_usage = Usage::default();
+                let mut pending_tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
 
-            while let Some(evt) = stream.next().await {
-                match evt? {
-                    ModelStreamEvent::ContentDelta { text } => {
-                        delta_buffer.push_str(&text);
-                        let _ = self.bus.publish(self.id, AgentEvent::TokenDelta { text });
-                    }
-                    ModelStreamEvent::ContentComplete { text } => {
-                        completed_text = Some(text);
-                    }
-                    ModelStreamEvent::Usage(u) => {
-                        final_usage = u;
-                    }
-                    ModelStreamEvent::MessageComplete { usage } => {
-                        final_usage = usage;
-                    }
-                    ModelStreamEvent::MessageStart { .. } => {}
-                    ModelStreamEvent::Error { .. } => {}
-                    ModelStreamEvent::ToolUseStart { .. }
-                    | ModelStreamEvent::ToolUseDelta { .. }
-                    | ModelStreamEvent::ToolUseComplete { .. } => {
-                        // Tool-use dispatch lands in a later bead (Agent run loop).
+                while let Some(evt) = stream.next().await {
+                    match evt? {
+                        ModelStreamEvent::ContentDelta { text } => {
+                            delta_buffer.push_str(&text);
+                            let _ = self.bus.publish(self.id, AgentEvent::TokenDelta { text });
+                        }
+                        ModelStreamEvent::ContentComplete { text } => {
+                            completed_text = Some(text);
+                        }
+                        ModelStreamEvent::Usage(u) => {
+                            final_usage = u;
+                        }
+                        ModelStreamEvent::MessageComplete { usage } => {
+                            final_usage = usage;
+                        }
+                        ModelStreamEvent::MessageStart { .. } => {}
+                        ModelStreamEvent::Error { .. } => {}
+                        ModelStreamEvent::ToolUseStart { .. } => {}
+                        ModelStreamEvent::ToolUseDelta { .. } => {}
+                        ModelStreamEvent::ToolUseComplete { id, name, input } => {
+                            pending_tool_calls.push((id, name, input));
+                        }
                     }
                 }
-            }
-            drop(stream);
+                drop(stream);
 
-            let content = completed_text.unwrap_or(delta_buffer);
-            let agent_msg = Block::AgentMessage {
-                from: self.id,
-                content,
-                timestamp: SystemTime::now(),
-            };
-            let agent_node = self.history.append(agent_msg);
-            let _ = self
-                .bus
-                .publish(self.id, AgentEvent::BlockComplete { block: agent_node });
-            let _ = self
-                .bus
-                .publish(self.id, AgentEvent::RunComplete { usage: final_usage });
+                let text_content = completed_text.unwrap_or(delta_buffer);
+                if !text_content.is_empty() {
+                    let agent_node = self.history.append(Block::AgentMessage {
+                        from: self.id,
+                        content: text_content,
+                        timestamp: SystemTime::now(),
+                    });
+                    let _ = self
+                        .bus
+                        .publish(self.id, AgentEvent::BlockComplete { block: agent_node });
+                }
+
+                let _ = self
+                    .bus
+                    .publish(self.id, AgentEvent::RunComplete { usage: final_usage });
+
+                if pending_tool_calls.is_empty() {
+                    break;
+                }
+
+                for (id, name, args) in pending_tool_calls {
+                    let call_node = self.history.append(Block::ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments: args.clone(),
+                        timestamp: SystemTime::now(),
+                    });
+                    let _ = self
+                        .bus
+                        .publish(self.id, AgentEvent::BlockComplete { block: call_node });
+
+                    let (result_json, is_error) = match self.tools.dispatch(&name, args).await {
+                        Ok(value) => (value, false),
+                        Err(err) => (serde_json::json!({ "error": err.to_string() }), true),
+                    };
+
+                    let result_node = self.history.append(Block::ToolResult {
+                        tool_use_id: id,
+                        name,
+                        result: result_json,
+                        is_error,
+                        timestamp: SystemTime::now(),
+                    });
+                    let _ = self
+                        .bus
+                        .publish(self.id, AgentEvent::BlockComplete { block: result_node });
+                }
+            }
         }
         Ok(())
     }
@@ -831,5 +868,327 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    async fn drain_run_completes(
+        outbound: &mut BoxStream<'static, AgentEvent>,
+        target: usize,
+        sink: &mut Vec<AgentEvent>,
+    ) {
+        let mut seen = 0;
+        while let Some(evt) = outbound.next().await {
+            let is_run_complete = matches!(evt, AgentEvent::RunComplete { .. });
+            sink.push(evt);
+            if is_run_complete {
+                seen += 1;
+                if seen == target {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_run_dispatches_tool_call_and_re_enters_model() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(EchoTool::new()))
+            .expect("register echo");
+        let registry = Arc::new(registry);
+
+        let model = Arc::new(StubArModel::with_call_scripts(vec![
+            vec![
+                Ok(ModelStreamEvent::MessageStart {
+                    message_id: "m1".to_string(),
+                    model: "stub".to_string(),
+                }),
+                Ok(ModelStreamEvent::ToolUseStart {
+                    id: "use_1".to_string(),
+                    name: "echo".to_string(),
+                }),
+                Ok(ModelStreamEvent::ToolUseComplete {
+                    id: "use_1".to_string(),
+                    name: "echo".to_string(),
+                    input: serde_json::json!({ "text": "hi" }),
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                }),
+            ],
+            vec![
+                Ok(ModelStreamEvent::MessageStart {
+                    message_id: "m2".to_string(),
+                    model: "stub".to_string(),
+                }),
+                Ok(ModelStreamEvent::ContentDelta {
+                    text: "done".to_string(),
+                }),
+                Ok(ModelStreamEvent::ContentComplete {
+                    text: "done".to_string(),
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                }),
+            ],
+        ]));
+        let captured = model.clone();
+
+        let agent_id = AgentId::new();
+        let bus = Arc::new(InMemoryMessageBus::new());
+        let agent = AgentBuilder::new()
+            .id(agent_id)
+            .system_prompt("test prompt")
+            .model(ModelRole::Default, model as Arc<dyn ARModel>)
+            .tools(registry)
+            .build(bus.clone() as Arc<dyn MessageBus>)
+            .expect("build agent");
+        let mut outbound = bus.subscribe(agent_id).expect("subscribe");
+
+        bus.send_inbound(agent_id, user_block("please call echo"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_run_completes(&mut outbound, 2, &mut events),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        let tool_use_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::Assistant
+                    && matches!(t.content.first(), Some(ContentPart::ToolUse { .. }))
+            })
+            .expect("expected Assistant turn with ToolUse");
+        match &tool_use_turn.content[0] {
+            ContentPart::ToolUse { id, name, input } => {
+                assert_eq!(id, "use_1");
+                assert_eq!(name, "echo");
+                assert_eq!(input, &serde_json::json!({ "text": "hi" }));
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+
+        let tool_result_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::User
+                    && matches!(t.content.first(), Some(ContentPart::ToolResult { .. }))
+            })
+            .expect("expected User turn with ToolResult");
+        match &tool_result_turn.content[0] {
+            ContentPart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "use_1");
+                assert_eq!(content, &serde_json::json!({ "echo": { "text": "hi" } }));
+                assert!(!*is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+
+        let block_complete_count = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::BlockComplete { .. }))
+            .count();
+        assert_eq!(block_complete_count, 4);
+
+        let run_complete_count = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::RunComplete { .. }))
+            .count();
+        assert_eq!(run_complete_count, 2);
+
+        let agent_messages: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::BlockComplete { block } => match block.block() {
+                    Block::AgentMessage { content, .. } => Some(content.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(agent_messages, vec!["done".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn agent_run_dispatches_unknown_tool_yields_error_result() {
+        let model = Arc::new(StubArModel::with_call_scripts(vec![
+            vec![
+                Ok(ModelStreamEvent::ToolUseComplete {
+                    id: "use_x".to_string(),
+                    name: "nonexistent".to_string(),
+                    input: serde_json::Value::Null,
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                }),
+            ],
+            vec![
+                Ok(ModelStreamEvent::ContentComplete {
+                    text: "recovered".to_string(),
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                }),
+            ],
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(agent_id, user_block("trigger missing tool"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_run_completes(&mut outbound, 2, &mut events),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        let tool_result_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::User
+                    && matches!(t.content.first(), Some(ContentPart::ToolResult { .. }))
+            })
+            .expect("expected User turn with ToolResult");
+        match &tool_result_turn.content[0] {
+            ContentPart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "use_x");
+                assert!(*is_error);
+                let serialized = serde_json::to_string(content).expect("serialize content");
+                assert!(
+                    serialized.contains("nonexistent"),
+                    "expected error to mention tool name, got {serialized}"
+                );
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_run_skips_agent_message_when_only_tool_calls() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(EchoTool::new()))
+            .expect("register echo");
+        let registry = Arc::new(registry);
+
+        let model = Arc::new(StubArModel::with_call_scripts(vec![
+            vec![
+                Ok(ModelStreamEvent::ToolUseComplete {
+                    id: "use_1".to_string(),
+                    name: "echo".to_string(),
+                    input: serde_json::json!({ "text": "hi" }),
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    },
+                }),
+            ],
+            vec![
+                Ok(ModelStreamEvent::ContentComplete {
+                    text: "final".to_string(),
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                }),
+            ],
+        ]));
+        let captured = model.clone();
+
+        let agent_id = AgentId::new();
+        let bus = Arc::new(InMemoryMessageBus::new());
+        let agent = AgentBuilder::new()
+            .id(agent_id)
+            .system_prompt("test prompt")
+            .model(ModelRole::Default, model as Arc<dyn ARModel>)
+            .tools(registry)
+            .build(bus.clone() as Arc<dyn MessageBus>)
+            .expect("build agent");
+        let mut outbound = bus.subscribe(agent_id).expect("subscribe");
+
+        bus.send_inbound(agent_id, user_block("call echo only"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_run_completes(&mut outbound, 2, &mut events),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let input = captured.last_input().expect("model called");
+        let has_empty_assistant_text = input.turns.iter().any(|t| {
+            t.role == Role::Assistant
+                && t.content.len() == 1
+                && matches!(&t.content[0], ContentPart::Text(s) if s.is_empty())
+        });
+        assert!(
+            !has_empty_assistant_text,
+            "did not expect an Assistant turn with empty Text; turns: {:?}",
+            input.turns
+        );
     }
 }

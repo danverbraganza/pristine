@@ -195,6 +195,11 @@ impl Agent {
                     }
                     ModelStreamEvent::MessageStart { .. } => {}
                     ModelStreamEvent::Error { .. } => {}
+                    ModelStreamEvent::ToolUseStart { .. }
+                    | ModelStreamEvent::ToolUseDelta { .. }
+                    | ModelStreamEvent::ToolUseComplete { .. } => {
+                        // Tool-use dispatch lands in a later bead (Agent run loop).
+                    }
                 }
             }
             drop(stream);

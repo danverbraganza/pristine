@@ -15,12 +15,44 @@ pub struct Usage {
 
 #[derive(Clone, Debug)]
 pub enum ModelStreamEvent {
-    MessageStart { message_id: String, model: String },
-    ContentDelta { text: String },
-    ContentComplete { text: String },
+    MessageStart {
+        message_id: String,
+        model: String,
+    },
+    ContentDelta {
+        text: String,
+    },
+    ContentComplete {
+        text: String,
+    },
     Usage(Usage),
-    MessageComplete { usage: Usage },
-    Error { message: String },
+    MessageComplete {
+        usage: Usage,
+    },
+    Error {
+        message: String,
+    },
+    /// Provider opened a tool_use content block. `id` is the provider-issued
+    /// tool-use identifier; `name` is the tool the provider wants invoked.
+    ToolUseStart {
+        id: String,
+        name: String,
+    },
+    /// Incremental JSON-input fragment for an in-flight tool_use. Consumers
+    /// accumulate fragments until the matching `ToolUseComplete`; `id`
+    /// disambiguates interleaved tool_uses.
+    ToolUseDelta {
+        id: String,
+        partial_json: String,
+    },
+    /// Provider closed the tool_use block. `input` is the fully-parsed JSON;
+    /// the adapter is responsible for accumulating partial deltas and
+    /// deserializing before emitting this event.
+    ToolUseComplete {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(Debug)]
@@ -178,5 +210,67 @@ mod tests {
             }
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_use_stream_events_round_trip_their_fields() {
+        let start = ModelStreamEvent::ToolUseStart {
+            id: "tu-1".to_string(),
+            name: "echo".to_string(),
+        };
+        match start {
+            ModelStreamEvent::ToolUseStart { id, name } => {
+                assert_eq!(id, "tu-1");
+                assert_eq!(name, "echo");
+            }
+            other => panic!("expected ToolUseStart, got {other:?}"),
+        }
+
+        let delta = ModelStreamEvent::ToolUseDelta {
+            id: "tu-1".to_string(),
+            partial_json: "{\"k\":".to_string(),
+        };
+        match delta {
+            ModelStreamEvent::ToolUseDelta { id, partial_json } => {
+                assert_eq!(id, "tu-1");
+                assert_eq!(partial_json, "{\"k\":");
+            }
+            other => panic!("expected ToolUseDelta, got {other:?}"),
+        }
+
+        let complete = ModelStreamEvent::ToolUseComplete {
+            id: "tu-1".to_string(),
+            name: "echo".to_string(),
+            input: serde_json::json!({ "k": "v" }),
+        };
+        match complete {
+            ModelStreamEvent::ToolUseComplete { id, name, input } => {
+                assert_eq!(id, "tu-1");
+                assert_eq!(name, "echo");
+                assert_eq!(input, serde_json::json!({ "k": "v" }));
+            }
+            other => panic!("expected ToolUseComplete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_use_delta_distinguishes_interleaved_ids() {
+        let a = ModelStreamEvent::ToolUseDelta {
+            id: "tu-a".to_string(),
+            partial_json: "{\"a\":1}".to_string(),
+        };
+        let b = ModelStreamEvent::ToolUseDelta {
+            id: "tu-b".to_string(),
+            partial_json: "{\"b\":2}".to_string(),
+        };
+        let id_a = match a {
+            ModelStreamEvent::ToolUseDelta { id, .. } => id,
+            other => panic!("expected ToolUseDelta, got {other:?}"),
+        };
+        let id_b = match b {
+            ModelStreamEvent::ToolUseDelta { id, .. } => id,
+            other => panic!("expected ToolUseDelta, got {other:?}"),
+        };
+        assert_ne!(id_a, id_b);
     }
 }

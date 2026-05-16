@@ -42,10 +42,10 @@ impl AgentEventNotification {
                 event_type: "token_delta".to_string(),
                 data: serde_json::json!({ "text": text }),
             },
-            AgentEvent::BlockComplete { .. } => Self {
+            AgentEvent::BlockComplete { block } => Self {
                 agent_id,
                 event_type: "block_complete".to_string(),
-                data: serde_json::json!({}),
+                data: block_to_value(block.block()),
             },
             AgentEvent::RunComplete { usage } => Self {
                 agent_id,
@@ -66,6 +66,49 @@ fn usage_to_value(usage: &Usage) -> serde_json::Value {
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
     })
+}
+
+fn block_to_value(block: &Block) -> serde_json::Value {
+    match block {
+        Block::UserMessage { from, content, .. } => serde_json::json!({
+            "block_type": "user_message",
+            "from": from,
+            "content": content,
+        }),
+        Block::AgentMessage { from, content, .. } => serde_json::json!({
+            "block_type": "agent_message",
+            "from": from,
+            "content": content,
+        }),
+        Block::ToolCall {
+            id,
+            name,
+            arguments,
+            ..
+        } => serde_json::json!({
+            "block_type": "tool_call",
+            "id": id,
+            "name": name,
+            "arguments": arguments,
+        }),
+        Block::ToolResult {
+            tool_use_id,
+            name,
+            result,
+            is_error,
+            ..
+        } => serde_json::json!({
+            "block_type": "tool_result",
+            "tool_use_id": tool_use_id,
+            "name": name,
+            "result": result,
+            "is_error": is_error,
+        }),
+        Block::ReasoningTrace { content, .. } => serde_json::json!({
+            "block_type": "reasoning_trace",
+            "content": content,
+        }),
+    }
 }
 
 #[jsonrpsee::proc_macros::rpc(server)]
@@ -245,14 +288,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_event_notification_block_complete() {
+    fn block_complete_notification_user_message_shape() {
         let agent_id = AgentId::new();
         let event = AgentEvent::BlockComplete {
             block: Arc::new(crate::history::HistoryNode::new(
                 crate::history::NodeId::new(),
                 Block::UserMessage {
                     from: UserId::new(),
-                    content: "test".to_string(),
+                    content: "hello".to_string(),
                     timestamp: SystemTime::now(),
                 },
                 None,
@@ -260,6 +303,107 @@ mod tests {
         };
         let notification = AgentEventNotification::from_event(agent_id, &event);
         assert_eq!(notification.event_type, "block_complete");
+        assert_eq!(notification.data["block_type"], "user_message");
+        assert_eq!(notification.data["content"], "hello");
+        assert!(
+            notification.data["from"]
+                .as_str()
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn block_complete_notification_agent_message_shape() {
+        let agent_id = AgentId::new();
+        let event = AgentEvent::BlockComplete {
+            block: Arc::new(crate::history::HistoryNode::new(
+                crate::history::NodeId::new(),
+                Block::AgentMessage {
+                    from: AgentId::new(),
+                    content: "world".to_string(),
+                    timestamp: SystemTime::now(),
+                },
+                None,
+            )),
+        };
+        let notification = AgentEventNotification::from_event(agent_id, &event);
+        assert_eq!(notification.event_type, "block_complete");
+        assert_eq!(notification.data["block_type"], "agent_message");
+        assert_eq!(notification.data["content"], "world");
+        assert!(
+            notification.data["from"]
+                .as_str()
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn block_complete_notification_tool_call_shape() {
+        let agent_id = AgentId::new();
+        let event = AgentEvent::BlockComplete {
+            block: Arc::new(crate::history::HistoryNode::new(
+                crate::history::NodeId::new(),
+                Block::ToolCall {
+                    id: "use_42".to_string(),
+                    name: "echo".to_string(),
+                    arguments: serde_json::json!({"k": "v"}),
+                    timestamp: SystemTime::now(),
+                },
+                None,
+            )),
+        };
+        let notification = AgentEventNotification::from_event(agent_id, &event);
+        assert_eq!(notification.event_type, "block_complete");
+        assert_eq!(notification.data["block_type"], "tool_call");
+        assert_eq!(notification.data["id"], "use_42");
+        assert_eq!(notification.data["name"], "echo");
+        assert_eq!(notification.data["arguments"]["k"], "v");
+    }
+
+    #[test]
+    fn block_complete_notification_tool_result_shape() {
+        let agent_id = AgentId::new();
+        let event = AgentEvent::BlockComplete {
+            block: Arc::new(crate::history::HistoryNode::new(
+                crate::history::NodeId::new(),
+                Block::ToolResult {
+                    tool_use_id: "use_42".to_string(),
+                    name: "echo".to_string(),
+                    result: serde_json::json!({"echo": {"k": "v"}}),
+                    is_error: false,
+                    timestamp: SystemTime::now(),
+                },
+                None,
+            )),
+        };
+        let notification = AgentEventNotification::from_event(agent_id, &event);
+        assert_eq!(notification.event_type, "block_complete");
+        assert_eq!(notification.data["block_type"], "tool_result");
+        assert_eq!(notification.data["tool_use_id"], "use_42");
+        assert_eq!(notification.data["name"], "echo");
+        assert_eq!(notification.data["result"]["echo"]["k"], "v");
+        assert_eq!(notification.data["is_error"], false);
+    }
+
+    #[test]
+    fn block_complete_notification_reasoning_trace_shape() {
+        let agent_id = AgentId::new();
+        let event = AgentEvent::BlockComplete {
+            block: Arc::new(crate::history::HistoryNode::new(
+                crate::history::NodeId::new(),
+                Block::ReasoningTrace {
+                    content: "thinking...".to_string(),
+                    timestamp: SystemTime::now(),
+                },
+                None,
+            )),
+        };
+        let notification = AgentEventNotification::from_event(agent_id, &event);
+        assert_eq!(notification.event_type, "block_complete");
+        assert_eq!(notification.data["block_type"], "reasoning_trace");
+        assert_eq!(notification.data["content"], "thinking...");
     }
 
     #[test]

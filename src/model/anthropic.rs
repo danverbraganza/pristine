@@ -81,15 +81,49 @@ struct AnthropicRequest<'a> {
     stream: bool,
     system: &'a str,
     messages: Vec<AnthropicMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<AnthropicTool>,
 }
 
 #[derive(serde::Serialize)]
 struct AnthropicMessage {
     role: &'static str,
-    content: String,
+    content: Vec<AnthropicContentBlock>,
 }
 
-fn model_input_to_anthropic(input: &ModelInput) -> (String, Vec<AnthropicMessage>) {
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        #[serde(skip_serializing_if = "is_false")]
+        is_error: bool,
+    },
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+#[derive(serde::Serialize)]
+struct AnthropicTool {
+    name: String,
+    description: String,
+    input_schema: serde_json::Value,
+}
+
+fn model_input_to_anthropic(
+    input: &ModelInput,
+) -> (String, Vec<AnthropicMessage>, Vec<AnthropicTool>) {
     let mut system = String::new();
     let mut messages = Vec::with_capacity(input.turns.len());
     for turn in &input.turns {
@@ -104,7 +138,7 @@ fn model_input_to_anthropic(input: &ModelInput) -> (String, Vec<AnthropicMessage
                             system.push_str(text);
                         }
                         ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => {
-                            // Tool-content serialization lands in a later bead (Anthropic adapter).
+                            // Tool exchanges have no meaningful place in a system turn; drop them.
                         }
                     }
                 }
@@ -115,23 +149,46 @@ fn model_input_to_anthropic(input: &ModelInput) -> (String, Vec<AnthropicMessage
                     Role::Assistant => "assistant",
                     Role::System => unreachable!(),
                 };
-                let mut text = String::new();
+                let mut content = Vec::with_capacity(turn.content.len());
                 for part in &turn.content {
                     match part {
-                        ContentPart::Text(t) => text.push_str(t),
-                        ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => {
-                            // Tool-content serialization lands in a later bead (Anthropic adapter).
+                        ContentPart::Text(t) => {
+                            content.push(AnthropicContentBlock::Text { text: t.clone() })
+                        }
+                        ContentPart::ToolUse { id, name, input } => {
+                            content.push(AnthropicContentBlock::ToolUse {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input: input.clone(),
+                            });
+                        }
+                        ContentPart::ToolResult {
+                            tool_use_id,
+                            content: result_content,
+                            is_error,
+                        } => {
+                            content.push(AnthropicContentBlock::ToolResult {
+                                tool_use_id: tool_use_id.clone(),
+                                content: result_content.clone(),
+                                is_error: *is_error,
+                            });
                         }
                     }
                 }
-                messages.push(AnthropicMessage {
-                    role,
-                    content: text,
-                });
+                messages.push(AnthropicMessage { role, content });
             }
         }
     }
-    (system, messages)
+    let tools = input
+        .tools
+        .iter()
+        .map(|spec| AnthropicTool {
+            name: spec.name.clone(),
+            description: spec.description.clone(),
+            input_schema: spec.input_schema.clone(),
+        })
+        .collect();
+    (system, messages, tools)
 }
 
 impl From<reqwest::Error> for Error {
@@ -197,7 +254,7 @@ impl ARModel for AnthropicModel {
         let api_key = self.api_key.clone();
         let model_name = self.model_name.clone();
         let base_url = self.base_url.clone();
-        let (system, messages) = model_input_to_anthropic(input);
+        let (system, messages, tools) = model_input_to_anthropic(input);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<ModelStreamEvent, Error>>(64);
 
@@ -208,6 +265,7 @@ impl ARModel for AnthropicModel {
                 stream: true,
                 system: &system,
                 messages,
+                tools,
             };
             let url = format!("{base_url}/v1/messages");
             let response = match client
@@ -361,7 +419,7 @@ impl ARModel for AnthropicModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Turn;
+    use crate::model::{ToolSpec, Turn};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -405,11 +463,12 @@ mod tests {
             ],
             tools: Vec::new(),
         };
-        let (system, messages) = model_input_to_anthropic(&input);
+        let (system, messages, tools) = model_input_to_anthropic(&input);
         assert_eq!(system, "sys");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[0].content, "hello");
+        assert_eq!(messages[0].content.len(), 1);
+        assert!(tools.is_empty());
 
         let request = AnthropicRequest {
             model: "test-model",
@@ -417,6 +476,7 @@ mod tests {
             stream: true,
             system: &system,
             messages,
+            tools,
         };
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["model"], "test-model");
@@ -424,7 +484,9 @@ mod tests {
         assert_eq!(value["stream"], true);
         assert_eq!(value["system"], "sys");
         assert_eq!(value["messages"][0]["role"], "user");
-        assert_eq!(value["messages"][0]["content"], "hello");
+        assert_eq!(value["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(value["messages"][0]["content"][0]["text"], "hello");
+        assert!(value.get("tools").is_none());
     }
 
     #[test]
@@ -446,10 +508,168 @@ mod tests {
             ],
             tools: Vec::new(),
         };
-        let (system, messages) = model_input_to_anthropic(&input);
+        let (system, messages, tools) = model_input_to_anthropic(&input);
         assert_eq!(system, "first\n\nsecond");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[0].content, "hi");
+        assert_eq!(messages[0].content.len(), 1);
+        assert!(tools.is_empty());
+
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["messages"][0]["content"][0]["type"], "text");
+        assert_eq!(value["messages"][0]["content"][0]["text"], "hi");
+        assert!(value.get("tools").is_none());
+    }
+
+    #[test]
+    fn serializes_tools_field_when_present() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("hi".into())],
+            }],
+            tools: vec![ToolSpec {
+                name: "echo".into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            }],
+        };
+        let (system, messages, tools) = model_input_to_anthropic(&input);
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["tools"][0]["name"], "echo");
+        assert_eq!(value["tools"][0]["description"], "d");
+        assert_eq!(value["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn serializes_tool_use_content_block() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                content: vec![ContentPart::ToolUse {
+                    id: "use_1".into(),
+                    name: "echo".into(),
+                    input: serde_json::json!({ "text": "hi" }),
+                }],
+            }],
+            tools: Vec::new(),
+        };
+        let (system, messages, tools) = model_input_to_anthropic(&input);
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["messages"][0]["role"], "assistant");
+        assert_eq!(value["messages"][0]["content"][0]["type"], "tool_use");
+        assert_eq!(value["messages"][0]["content"][0]["id"], "use_1");
+        assert_eq!(value["messages"][0]["content"][0]["name"], "echo");
+        assert_eq!(value["messages"][0]["content"][0]["input"]["text"], "hi");
+    }
+
+    #[test]
+    fn serializes_tool_result_content_block() {
+        let input_ok = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::ToolResult {
+                    tool_use_id: "use_1".into(),
+                    content: serde_json::json!("ok"),
+                    is_error: false,
+                }],
+            }],
+            tools: Vec::new(),
+        };
+        let (system, messages, tools) = model_input_to_anthropic(&input_ok);
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["messages"][0]["content"][0]["type"], "tool_result");
+        assert_eq!(value["messages"][0]["content"][0]["tool_use_id"], "use_1");
+        assert_eq!(value["messages"][0]["content"][0]["content"], "ok");
+        assert!(value["messages"][0]["content"][0].get("is_error").is_none());
+
+        let input_err = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::ToolResult {
+                    tool_use_id: "use_1".into(),
+                    content: serde_json::json!("ok"),
+                    is_error: true,
+                }],
+            }],
+            tools: Vec::new(),
+        };
+        let (system, messages, tools) = model_input_to_anthropic(&input_err);
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["messages"][0]["content"][0]["is_error"], true);
+    }
+
+    #[test]
+    fn serializes_mixed_text_and_tool_use_blocks() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                content: vec![
+                    ContentPart::Text("thinking...".into()),
+                    ContentPart::ToolUse {
+                        id: "use_2".into(),
+                        name: "echo".into(),
+                        input: serde_json::Value::Null,
+                    },
+                ],
+            }],
+            tools: Vec::new(),
+        };
+        let (system, messages, tools) = model_input_to_anthropic(&input);
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        let content = value["messages"][0]["content"]
+            .as_array()
+            .expect("content is array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "tool_use");
     }
 }

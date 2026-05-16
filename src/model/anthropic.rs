@@ -103,6 +103,9 @@ fn model_input_to_anthropic(input: &ModelInput) -> (String, Vec<AnthropicMessage
                             }
                             system.push_str(text);
                         }
+                        ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => {
+                            // Tool-content serialization lands in a later bead (Anthropic adapter).
+                        }
                     }
                 }
             }
@@ -116,6 +119,9 @@ fn model_input_to_anthropic(input: &ModelInput) -> (String, Vec<AnthropicMessage
                 for part in &turn.content {
                     match part {
                         ContentPart::Text(t) => text.push_str(t),
+                        ContentPart::ToolUse { .. } | ContentPart::ToolResult { .. } => {
+                            // Tool-content serialization lands in a later bead (Anthropic adapter).
+                        }
                     }
                 }
                 messages.push(AnthropicMessage {

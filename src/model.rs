@@ -69,13 +69,24 @@ pub enum Role {
     Assistant,
 }
 
-/// A part of a Turn's content. Marked `#[non_exhaustive]` because future
-/// phases will add `ToolUse` and `ToolResult` variants; downstream matchers
-/// must remain forward-compatible.
+/// A part of a Turn's content; carries text and tool exchanges between the
+/// Agent and the Model. Marked `#[non_exhaustive]` because additional
+/// modalities (image, audio, etc.) are still anticipated and downstream
+/// matchers must remain forward-compatible.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ContentPart {
     Text(String),
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: serde_json::Value,
+        is_error: bool,
+    },
 }
 
 pub trait ARModel: Send + Sync {
@@ -117,5 +128,55 @@ mod tests {
         };
         assert_eq!(input.turns.len(), 1);
         assert_eq!(input.turns[0].role, Role::User);
+    }
+
+    #[test]
+    fn content_part_is_send_sync() {
+        assert_send_sync::<ContentPart>();
+    }
+
+    #[test]
+    fn tool_use_round_trips_through_model_input() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::Assistant,
+                content: vec![ContentPart::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "echo".to_string(),
+                    input: serde_json::json!({ "hello": "world" }),
+                }],
+            }],
+        };
+        let part = &input.turns[0].content[0];
+        match part {
+            ContentPart::ToolUse { id, name, input } => {
+                assert_eq!(id, "call-1");
+                assert_eq!(name, "echo");
+                assert_eq!(input, &serde_json::json!({ "hello": "world" }));
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_result_clone_preserves_fields() {
+        let part = ContentPart::ToolResult {
+            tool_use_id: "call-1".to_string(),
+            content: serde_json::Value::Null,
+            is_error: true,
+        };
+        let cloned = part.clone();
+        match cloned {
+            ContentPart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "call-1");
+                assert_eq!(content, serde_json::Value::Null);
+                assert!(is_error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 }

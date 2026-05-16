@@ -492,10 +492,12 @@ mod tests {
         assert_eq!(input.turns[0].role, Role::System);
         match &input.turns[0].content[0] {
             ContentPart::Text(t) => assert_eq!(t, "test prompt"),
+            other => panic!("expected Text, got {other:?}"),
         }
         assert_eq!(input.turns[1].role, Role::User);
         match &input.turns[1].content[0] {
             ContentPart::Text(t) => assert_eq!(t, "hello there"),
+            other => panic!("expected Text, got {other:?}"),
         }
     }
 }

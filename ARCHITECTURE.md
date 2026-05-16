@@ -69,11 +69,16 @@ role-tagged turns, each carrying content parts). The Model — and its provider 
 parameter on the Model trait; it is represented as one or more `Role::System` turns at the head of `ModelInput`, which
 provider adapters concatenate or place into their provider-native system field as appropriate.
 
-In Phase 1 the Agent constructs `ModelInput` by linearizing its History and skipping variants the model cannot consume
-(e.g. `ReasoningTrace`, `ToolCall`, `ToolResult`). In future phases this construction will be extracted into a
-`ContextCompiler` trait so that selective summarization, vector-store lookups, and sequence-to-sequence "context
-compilation" can be plugged in without changing the Agent or the Model trait. The `ModelInput` shape is the stable
-contract between compiler and model.
+The Agent constructs `ModelInput` by linearizing its History and translating each
+`Block` variant into the appropriate `Turn` / `ContentPart` shape: `UserMessage` and
+`AgentMessage` become `Text` content parts on `User` / `Assistant` turns, `ToolCall`
+becomes `ContentPart::ToolUse` on an `Assistant` turn, and `ToolResult` becomes
+`ContentPart::ToolResult` on a `User` turn. `ReasoningTrace` is retained in History
+but not routed to the model; ARMs vary on whether they accept it. In future phases
+this construction will be extracted into a `ContextCompiler` trait so that selective
+summarization, vector-store lookups, and sequence-to-sequence "context compilation"
+can be plugged in without changing the Agent or the Model trait. The `ModelInput`
+shape is the stable contract between compiler and model.
 
 
 ### History

@@ -18,7 +18,7 @@ Configuration is the primary user interface. Rather than hard-coding agent topol
 
 ### 1. Tool Calls
 
-Enable Agents to make tool calls during their run loop. Currently the Agent skips `ToolCall` and `ToolResult` blocks when compiling History into `ModelInput` (see ARCHITECTURE.md History, Agent). This phase adds a tool registry to the Harness, wires tool execution into the Agent's event loop so that model-requested tool calls are dispatched and their results appended to History, and extends the `ModelInput`/`ARModel` contract to carry tool-call requests and results.
+Enable Agents to make tool calls during their run loop. The tool registry, `ToolSpec`/tools array, streaming tool-use events, History block compilation, and dispatch loop have all landed; remaining work is wiring a demo tool into `pristine run` and surfacing tool-call activity in `client.py`. This roadmap entry will move into Completed once those land.
 
 ### 2. Configuration File
 

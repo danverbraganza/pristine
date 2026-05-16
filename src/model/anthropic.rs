@@ -1,5 +1,7 @@
 //! Anthropic ARModel implementation.
 
+use std::collections::HashMap;
+
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
@@ -221,7 +223,34 @@ struct MessageStartUsage {
 }
 
 #[derive(serde::Deserialize)]
+struct ContentBlockStartPayload {
+    index: u32,
+    content_block: ContentBlockStartInner,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ContentBlockStartInner {
+    Text {
+        #[serde(default)]
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        // Anthropic always sends an empty object at start; the meaningful value
+        // arrives via input_json_delta. The field is parsed for completeness.
+        #[serde(default)]
+        #[allow(dead_code)]
+        input: serde_json::Value,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(serde::Deserialize)]
 struct ContentBlockDeltaPayload {
+    index: u32,
     delta: ContentDelta,
 }
 
@@ -230,8 +259,26 @@ struct ContentBlockDeltaPayload {
 enum ContentDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
     #[serde(other)]
     Other,
+}
+
+#[derive(serde::Deserialize)]
+struct ContentBlockStopPayload {
+    index: u32,
+}
+
+enum BlockState {
+    Text {
+        accumulator: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        json_accumulator: String,
+    },
 }
 
 #[derive(serde::Deserialize)]
@@ -298,7 +345,7 @@ impl ARModel for AnthropicModel {
 
             let byte_stream = response.bytes_stream();
             let mut events = byte_stream.eventsource();
-            let mut accumulator = String::new();
+            let mut blocks: HashMap<u32, BlockState> = HashMap::new();
             let mut last_input_tokens: u32 = 0;
             let mut last_output_tokens: u32 = 0;
 
@@ -343,7 +390,39 @@ impl ARModel for AnthropicModel {
                         }
                     }
                     "content_block_start" => {
-                        accumulator.clear();
+                        let payload: ContentBlockStartPayload =
+                            match serde_json::from_str(&event.data) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    let _ =
+                                        tx.send(Err(Error::Deserialization(e.to_string()))).await;
+                                    return;
+                                }
+                            };
+                        match payload.content_block {
+                            ContentBlockStartInner::Text { text } => {
+                                blocks
+                                    .insert(payload.index, BlockState::Text { accumulator: text });
+                            }
+                            ContentBlockStartInner::ToolUse { id, name, .. } => {
+                                blocks.insert(
+                                    payload.index,
+                                    BlockState::ToolUse {
+                                        id: id.clone(),
+                                        name: name.clone(),
+                                        json_accumulator: String::new(),
+                                    },
+                                );
+                                if tx
+                                    .send(Ok(ModelStreamEvent::ToolUseStart { id, name }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            ContentBlockStartInner::Other => {}
+                        }
                     }
                     "content_block_delta" => {
                         let payload: ContentBlockDeltaPayload =
@@ -355,23 +434,80 @@ impl ARModel for AnthropicModel {
                                     return;
                                 }
                             };
-                        if let ContentDelta::TextDelta { text } = payload.delta {
-                            accumulator.push_str(&text);
-                            if tx
-                                .send(Ok(ModelStreamEvent::ContentDelta { text }))
-                                .await
-                                .is_err()
-                            {
-                                return;
+                        match (blocks.get_mut(&payload.index), payload.delta) {
+                            (
+                                Some(BlockState::Text { accumulator }),
+                                ContentDelta::TextDelta { text },
+                            ) => {
+                                accumulator.push_str(&text);
+                                if tx
+                                    .send(Ok(ModelStreamEvent::ContentDelta { text }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
                             }
+                            (
+                                Some(BlockState::ToolUse {
+                                    id,
+                                    json_accumulator,
+                                    ..
+                                }),
+                                ContentDelta::InputJsonDelta { partial_json },
+                            ) => {
+                                json_accumulator.push_str(&partial_json);
+                                if tx
+                                    .send(Ok(ModelStreamEvent::ToolUseDelta {
+                                        id: id.clone(),
+                                        partial_json,
+                                    }))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     "content_block_stop" => {
-                        let text = std::mem::take(&mut accumulator);
-                        if tx
-                            .send(Ok(ModelStreamEvent::ContentComplete { text }))
-                            .await
-                            .is_err()
+                        let payload: ContentBlockStopPayload =
+                            match serde_json::from_str(&event.data) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    let _ =
+                                        tx.send(Err(Error::Deserialization(e.to_string()))).await;
+                                    return;
+                                }
+                            };
+                        let completed = match blocks.remove(&payload.index) {
+                            Some(BlockState::Text { accumulator }) => {
+                                Some(ModelStreamEvent::ContentComplete { text: accumulator })
+                            }
+                            Some(BlockState::ToolUse {
+                                id,
+                                name,
+                                json_accumulator,
+                            }) => {
+                                match serde_json::from_str::<serde_json::Value>(&json_accumulator) {
+                                    Ok(input) => {
+                                        Some(ModelStreamEvent::ToolUseComplete { id, name, input })
+                                    }
+                                    Err(e) => {
+                                        let _ = tx
+                                            .send(Err(Error::Deserialization(format!(
+                                                "tool_use input parse: {e}"
+                                            ))))
+                                            .await;
+                                        return;
+                                    }
+                                }
+                            }
+                            None => None,
+                        };
+                        if let Some(event) = completed
+                            && tx.send(Ok(event)).await.is_err()
                         {
                             return;
                         }
@@ -671,5 +807,72 @@ mod tests {
         assert_eq!(content.len(), 2);
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn parses_content_block_start_text() {
+        let data =
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
+        let payload: ContentBlockStartPayload =
+            serde_json::from_str(data).expect("parse content_block_start text");
+        assert_eq!(payload.index, 0);
+        match payload.content_block {
+            ContentBlockStartInner::Text { text } => assert_eq!(text, ""),
+            _ => panic!("expected ContentBlockStartInner::Text"),
+        }
+    }
+
+    #[test]
+    fn parses_content_block_start_tool_use() {
+        let data = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01abc","name":"echo","input":{}}}"#;
+        let payload: ContentBlockStartPayload =
+            serde_json::from_str(data).expect("parse content_block_start tool_use");
+        assert_eq!(payload.index, 1);
+        match payload.content_block {
+            ContentBlockStartInner::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_01abc");
+                assert_eq!(name, "echo");
+                assert_eq!(input, serde_json::json!({}));
+            }
+            _ => panic!("expected ContentBlockStartInner::ToolUse"),
+        }
+    }
+
+    #[test]
+    fn parses_content_block_start_unknown_type_falls_back_to_other() {
+        let data = r#"{"type":"content_block_start","index":3,"content_block":{"type":"image"}}"#;
+        let payload: ContentBlockStartPayload =
+            serde_json::from_str(data).expect("parse content_block_start unknown");
+        assert_eq!(payload.index, 3);
+        match payload.content_block {
+            ContentBlockStartInner::Other => {}
+            _ => panic!("expected ContentBlockStartInner::Other"),
+        }
+    }
+
+    #[test]
+    fn parses_input_json_delta() {
+        let data = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"hello\":\"wo"}}"#;
+        let payload: ContentBlockDeltaPayload =
+            serde_json::from_str(data).expect("parse input_json_delta");
+        assert_eq!(payload.index, 1);
+        match payload.delta {
+            ContentDelta::InputJsonDelta { partial_json } => {
+                assert_eq!(partial_json, "{\"hello\":\"wo");
+            }
+            _ => panic!("expected ContentDelta::InputJsonDelta"),
+        }
+    }
+
+    #[test]
+    fn accumulated_tool_use_json_round_trips_via_serde_json() {
+        let fragments = ["{\"text\"", ":\"hi\"", "}"];
+        let mut joined = String::new();
+        for fragment in fragments {
+            joined.push_str(fragment);
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&joined).expect("parse accumulated tool_use input");
+        assert_eq!(value, serde_json::json!({"text":"hi"}));
     }
 }

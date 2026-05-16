@@ -34,6 +34,7 @@ async fn live_anthropic_smoke() {
                 content: vec![ContentPart::Text("ping".to_string())],
             },
         ],
+        tools: Vec::new(),
     };
 
     let mut stream = model.complete(&input);

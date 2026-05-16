@@ -171,7 +171,10 @@ impl Agent {
                     }
                 }
             }
-            let input = ModelInput { turns };
+            let input = ModelInput {
+                turns,
+                tools: Vec::new(),
+            };
 
             let mut stream = model.complete(&input);
             let mut delta_buffer = String::new();

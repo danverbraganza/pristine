@@ -403,6 +403,7 @@ mod tests {
                     content: vec![ContentPart::Text("hello".to_string())],
                 },
             ],
+            tools: Vec::new(),
         };
         let (system, messages) = model_input_to_anthropic(&input);
         assert_eq!(system, "sys");
@@ -443,6 +444,7 @@ mod tests {
                     content: vec![ContentPart::Text("hi".to_string())],
                 },
             ],
+            tools: Vec::new(),
         };
         let (system, messages) = model_input_to_anthropic(&input);
         assert_eq!(system, "first\n\nsecond");

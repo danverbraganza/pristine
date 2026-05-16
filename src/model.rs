@@ -80,12 +80,22 @@ impl std::error::Error for Error {
     }
 }
 
+/// Provider-agnostic descriptor for a tool the model may invoke. Carries no
+/// behavior; provider adapters translate this into their own payload types.
+#[derive(Clone, Debug)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
 /// Structured input contract for a Model call. The Agent compiles its
 /// History into this shape; provider adapters map it onto provider-native
 /// payloads. The Model trait never sees `Block`.
 #[derive(Clone, Debug)]
 pub struct ModelInput {
     pub turns: Vec<Turn>,
+    pub tools: Vec<ToolSpec>,
 }
 
 #[derive(Clone, Debug)]
@@ -157,6 +167,7 @@ mod tests {
                 role: Role::User,
                 content: vec![ContentPart::Text("hi".to_string())],
             }],
+            tools: Vec::new(),
         };
         assert_eq!(input.turns.len(), 1);
         assert_eq!(input.turns[0].role, Role::User);
@@ -178,6 +189,7 @@ mod tests {
                     input: serde_json::json!({ "hello": "world" }),
                 }],
             }],
+            tools: Vec::new(),
         };
         let part = &input.turns[0].content[0];
         match part {
@@ -272,5 +284,40 @@ mod tests {
             other => panic!("expected ToolUseDelta, got {other:?}"),
         };
         assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn tool_spec_fields_round_trip() {
+        let spec = ToolSpec {
+            name: "echo".to_string(),
+            description: "Echoes input".to_string(),
+            input_schema: serde_json::json!({ "type": "object" }),
+        };
+        assert_eq!(spec.name, "echo");
+        assert_eq!(spec.description, "Echoes input");
+        assert_eq!(spec.input_schema, serde_json::json!({ "type": "object" }));
+    }
+
+    #[test]
+    fn model_input_carries_tools_alongside_turns() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("hi".into())],
+            }],
+            tools: vec![ToolSpec {
+                name: "echo".into(),
+                description: "".into(),
+                input_schema: serde_json::Value::Null,
+            }],
+        };
+        assert_eq!(input.tools.len(), 1);
+        assert_eq!(input.turns.len(), 1);
+        assert_eq!(input.tools[0].name, "echo");
+    }
+
+    #[test]
+    fn tool_spec_is_send_sync() {
+        assert_send_sync::<ToolSpec>();
     }
 }

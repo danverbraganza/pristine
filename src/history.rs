@@ -81,13 +81,16 @@ pub enum Block {
         timestamp: SystemTime,
     },
     ToolCall {
+        id: String,
         name: String,
         arguments: serde_json::Value,
         timestamp: SystemTime,
     },
     ToolResult {
+        tool_use_id: String,
         name: String,
         result: serde_json::Value,
+        is_error: bool,
         timestamp: SystemTime,
     },
     AgentMessage {
@@ -235,5 +238,94 @@ mod tests {
         // Silence unused-binding warnings while keeping the tails pinned so the
         // strong_count assertion above reflects the intended sharing.
         let _ = (&h1_tail, &h2_tail);
+    }
+
+    #[test]
+    fn tool_call_round_trips_through_history() {
+        let mut history = History::new();
+        history.append(Block::ToolCall {
+            id: "use_001".to_string(),
+            name: "echo".to_string(),
+            arguments: serde_json::json!({"text": "hi"}),
+            timestamp: SystemTime::now(),
+        });
+
+        let blocks = history.linearize();
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::ToolCall {
+                id,
+                name,
+                arguments,
+                timestamp,
+            } => {
+                assert_eq!(id, "use_001");
+                assert_eq!(name, "echo");
+                assert_eq!(arguments, &serde_json::json!({"text": "hi"}));
+                assert!(matches!(timestamp, SystemTime { .. }));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_result_round_trips_through_history() {
+        let mut history = History::new();
+        history.append(Block::ToolResult {
+            tool_use_id: "use_002".to_string(),
+            name: "echo".to_string(),
+            result: serde_json::Value::Null,
+            is_error: true,
+            timestamp: SystemTime::now(),
+        });
+
+        let blocks = history.linearize();
+        assert_eq!(blocks.len(), 1);
+        match &blocks[0] {
+            Block::ToolResult {
+                tool_use_id,
+                name,
+                result,
+                is_error,
+                timestamp,
+            } => {
+                assert_eq!(tool_use_id, "use_002");
+                assert_eq!(name, "echo");
+                assert_eq!(result, &serde_json::Value::Null);
+                assert!(*is_error);
+                assert!(matches!(timestamp, SystemTime { .. }));
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_call_and_result_share_correlation_id() {
+        let mut history = History::new();
+        history.append(Block::ToolCall {
+            id: "use_003".to_string(),
+            name: "echo".to_string(),
+            arguments: serde_json::json!({"text": "hello"}),
+            timestamp: SystemTime::now(),
+        });
+        history.append(Block::ToolResult {
+            tool_use_id: "use_003".to_string(),
+            name: "echo".to_string(),
+            result: serde_json::json!({"echoed": "hello"}),
+            is_error: false,
+            timestamp: SystemTime::now(),
+        });
+
+        let blocks = history.linearize();
+        assert_eq!(blocks.len(), 2);
+        let call_id = match &blocks[0] {
+            Block::ToolCall { id, .. } => id.clone(),
+            other => panic!("expected ToolCall, got {other:?}"),
+        };
+        let result_id = match &blocks[1] {
+            Block::ToolResult { tool_use_id, .. } => tool_use_id.clone(),
+            other => panic!("expected ToolResult, got {other:?}"),
+        };
+        assert_eq!(call_id, result_id);
     }
 }

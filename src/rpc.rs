@@ -57,6 +57,11 @@ impl AgentEventNotification {
                 event_type: "error".to_string(),
                 data: serde_json::json!({ "message": message }),
             },
+            AgentEvent::Idle => Self {
+                agent_id,
+                event_type: "idle".to_string(),
+                data: serde_json::json!({}),
+            },
         }
     }
 }
@@ -430,5 +435,20 @@ mod tests {
         let notification = AgentEventNotification::from_event(agent_id, &event);
         assert_eq!(notification.event_type, "error");
         assert_eq!(notification.data["message"], "boom");
+    }
+
+    #[test]
+    fn agent_event_notification_idle() {
+        let agent_id = AgentId::new();
+        let event = AgentEvent::Idle;
+        let notification = AgentEventNotification::from_event(agent_id, &event);
+        assert_eq!(notification.event_type, "idle");
+        assert!(
+            notification
+                .data
+                .as_object()
+                .map(|o| o.is_empty())
+                .unwrap_or(false)
+        );
     }
 }

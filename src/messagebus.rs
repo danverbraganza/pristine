@@ -13,10 +13,21 @@ use crate::model::Usage;
 
 #[derive(Clone, Debug)]
 pub enum AgentEvent {
-    TokenDelta { text: String },
-    BlockComplete { block: std::sync::Arc<HistoryNode> },
-    RunComplete { usage: Usage },
-    Error { message: String },
+    TokenDelta {
+        text: String,
+    },
+    BlockComplete {
+        block: std::sync::Arc<HistoryNode>,
+    },
+    RunComplete {
+        usage: Usage,
+    },
+    Error {
+        message: String,
+    },
+    /// Emitted once after the agent finishes processing one inbound Block.
+    /// Subscribers use this as the "agent ready for next input" signal.
+    Idle,
 }
 
 #[derive(Debug)]

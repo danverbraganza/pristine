@@ -42,7 +42,7 @@ def read_response(proc: subprocess.Popen) -> dict:
 
 
 def drain_events(proc: subprocess.Popen) -> None:
-    """Read agent.event notifications, printing token deltas until run_complete."""
+    """Read agent.event notifications until 'idle' arrives."""
     assert proc.stdout is not None
     while True:
         line = proc.stdout.readline()
@@ -51,19 +51,32 @@ def drain_events(proc: subprocess.Popen) -> None:
             sys.exit(1)
         msg = json.loads(line)
         if "id" in msg:
-            # Unexpected response; skip it.
             continue
         params = msg.get("params", {})
         event_type = params.get("type", "")
         if event_type == "token_delta":
             text = params.get("data", {}).get("text", "")
             print(text, end="", flush=True)
+        elif event_type == "block_complete":
+            data = params.get("data", {})
+            block_type = data.get("block_type")
+            if block_type == "tool_call":
+                name = data.get("name", "?")
+                args = data.get("arguments", {})
+                print(f"\n[tool call: {name}({json.dumps(args)})]", file=sys.stderr)
+            elif block_type == "tool_result":
+                name = data.get("name", "?")
+                result = data.get("result")
+                is_error = data.get("is_error", False)
+                marker = "tool error" if is_error else "tool result"
+                print(f"[{marker}: {name} -> {json.dumps(result)}]", file=sys.stderr)
+            # user_message / agent_message / reasoning_trace are observation-only
         elif event_type == "error":
             error_msg = params.get("data", {}).get("message", "unknown error")
             print(f"\nAgent error: {error_msg}", file=sys.stderr)
             break
-        elif event_type == "run_complete":
-            print()  # newline after streamed tokens
+        elif event_type == "idle":
+            print()  # final newline after streamed tokens / tool activity
             break
 
 

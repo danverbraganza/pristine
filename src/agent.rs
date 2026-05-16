@@ -304,6 +304,7 @@ impl Agent {
                         .publish(self.id, AgentEvent::BlockComplete { block: result_node });
                 }
             }
+            let _ = self.bus.publish(self.id, AgentEvent::Idle);
         }
         Ok(())
     }
@@ -382,13 +383,13 @@ mod tests {
         let handle = tokio::spawn(agent.run());
 
         let mut events = Vec::new();
-        let mut run_complete_seen = false;
+        let mut idle_seen = false;
         let collect = async {
             while let Some(evt) = outbound.next().await {
-                let is_run_complete = matches!(evt, AgentEvent::RunComplete { .. });
+                let is_idle = matches!(evt, AgentEvent::Idle);
                 events.push(evt);
-                if is_run_complete {
-                    run_complete_seen = true;
+                if is_idle {
+                    idle_seen = true;
                     break;
                 }
             }
@@ -397,7 +398,7 @@ mod tests {
         let events = timeout(Duration::from_secs(2), collect)
             .await
             .expect("drain timed out");
-        assert!(run_complete_seen, "expected RunComplete");
+        assert!(idle_seen, "expected Idle");
 
         bus.close_inbound(agent_id);
         timeout(Duration::from_secs(2), handle)
@@ -437,6 +438,11 @@ mod tests {
         }
 
         match events.last().expect("at least one event") {
+            AgentEvent::Idle => {}
+            other => panic!("expected Idle, got {other:?}"),
+        }
+        let penultimate_idx = events.len().checked_sub(2).expect("at least two events");
+        match &events[penultimate_idx] {
             AgentEvent::RunComplete { usage } => {
                 assert_eq!(usage.input_tokens, 5);
                 assert_eq!(usage.output_tokens, 7);
@@ -507,7 +513,7 @@ mod tests {
         let mut events = Vec::new();
         let collect = async {
             while let Some(evt) = outbound.next().await {
-                let stop = matches!(evt, AgentEvent::RunComplete { .. });
+                let stop = matches!(evt, AgentEvent::Idle);
                 events.push(evt);
                 if stop {
                     break;
@@ -563,7 +569,7 @@ mod tests {
 
         let drain = async {
             while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::RunComplete { .. }) {
+                if matches!(evt, AgentEvent::Idle) {
                     break;
                 }
             }
@@ -660,7 +666,7 @@ mod tests {
 
         let drain = async {
             while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::RunComplete { .. }) {
+                if matches!(evt, AgentEvent::Idle) {
                     break;
                 }
             }
@@ -717,11 +723,11 @@ mod tests {
         let handle = tokio::spawn(agent.run());
 
         let drain = async {
-            let mut run_completes = 0;
+            let mut idles = 0;
             while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::RunComplete { .. }) {
-                    run_completes += 1;
-                    if run_completes == 2 {
+                if matches!(evt, AgentEvent::Idle) {
+                    idles += 1;
+                    if idles == 2 {
                         break;
                     }
                 }
@@ -790,11 +796,11 @@ mod tests {
         let handle = tokio::spawn(agent.run());
 
         let drain = async {
-            let mut run_completes = 0;
+            let mut idles = 0;
             while let Some(evt) = outbound.next().await {
-                if matches!(evt, AgentEvent::RunComplete { .. }) {
-                    run_completes += 1;
-                    if run_completes == 2 {
+                if matches!(evt, AgentEvent::Idle) {
+                    idles += 1;
+                    if idles == 2 {
                         break;
                     }
                 }
@@ -834,20 +840,15 @@ mod tests {
         }
     }
 
-    async fn drain_run_completes(
+    async fn drain_until_idle(
         outbound: &mut BoxStream<'static, AgentEvent>,
-        target: usize,
         sink: &mut Vec<AgentEvent>,
     ) {
-        let mut seen = 0;
         while let Some(evt) = outbound.next().await {
-            let is_run_complete = matches!(evt, AgentEvent::RunComplete { .. });
+            let is_idle = matches!(evt, AgentEvent::Idle);
             sink.push(evt);
-            if is_run_complete {
-                seen += 1;
-                if seen == target {
-                    break;
-                }
+            if is_idle {
+                break;
             }
         }
     }
@@ -922,7 +923,7 @@ mod tests {
         let mut events: Vec<AgentEvent> = Vec::new();
         timeout(
             Duration::from_secs(2),
-            drain_run_completes(&mut outbound, 2, &mut events),
+            drain_until_idle(&mut outbound, &mut events),
         )
         .await
         .expect("drain timed out");
@@ -1037,7 +1038,7 @@ mod tests {
         let mut events: Vec<AgentEvent> = Vec::new();
         timeout(
             Duration::from_secs(2),
-            drain_run_completes(&mut outbound, 2, &mut events),
+            drain_until_idle(&mut outbound, &mut events),
         )
         .await
         .expect("drain timed out");
@@ -1131,7 +1132,7 @@ mod tests {
         let mut events: Vec<AgentEvent> = Vec::new();
         timeout(
             Duration::from_secs(2),
-            drain_run_completes(&mut outbound, 2, &mut events),
+            drain_until_idle(&mut outbound, &mut events),
         )
         .await
         .expect("drain timed out");

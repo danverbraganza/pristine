@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use pristine::model::anthropic::AnthropicModelBuilder;
-use pristine::model::{ARModel, ContentPart, ModelInput, ModelStreamEvent, Role, Turn};
+use pristine::model::{ARModel, ContentPart, ModelInput, ModelStreamEvent, Role, ToolSpec, Turn};
 use std::env;
 use std::time::Duration;
 
@@ -58,4 +58,91 @@ async fn live_anthropic_smoke() {
         }
     }
     assert!(got_delta, "expected at least one ContentDelta");
+}
+
+#[tokio::test]
+#[ignore = "live API; run with `cargo nextest run --run-ignored only` and ANTHROPIC_API_KEY set"]
+async fn live_anthropic_tool_use_smoke() {
+    let api_key = match env::var("ANTHROPIC_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
+            return;
+        }
+    };
+
+    let model = AnthropicModelBuilder::new()
+        .api_key(api_key)
+        .model_name("claude-haiku-4-5-20251001")
+        .build()
+        .expect("builder should succeed");
+
+    let add_spec = ToolSpec {
+        name: "add".to_string(),
+        description: "Add two numbers and return their sum.".to_string(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "a": {"type": "number"},
+                "b": {"type": "number"}
+            },
+            "required": ["a", "b"]
+        }),
+    };
+
+    let input = ModelInput {
+        turns: vec![
+            Turn {
+                role: Role::System,
+                content: vec![ContentPart::Text(
+                    "You are a terse assistant. When arithmetic is asked, use the `add` tool. Reply in one word otherwise."
+                        .to_string(),
+                )],
+            },
+            Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text(
+                    "What is 17 plus 25? Use the add tool.".to_string(),
+                )],
+            },
+        ],
+        tools: vec![add_spec],
+    };
+
+    let mut stream = model.complete(&input);
+
+    let mut saw_tool_use_start = false;
+    let mut tool_use_complete_input: Option<serde_json::Value> = None;
+    let test_timeout = tokio::time::sleep(Duration::from_secs(30));
+    tokio::pin!(test_timeout);
+
+    loop {
+        tokio::select! {
+            _ = &mut test_timeout => panic!("timed out waiting for tool_use events"),
+            evt = stream.next() => match evt {
+                Some(Ok(ModelStreamEvent::ToolUseStart { name, .. })) => {
+                    assert_eq!(name, "add", "expected tool_use_start with name 'add'");
+                    saw_tool_use_start = true;
+                }
+                Some(Ok(ModelStreamEvent::ToolUseComplete { name, input, .. })) => {
+                    assert_eq!(name, "add");
+                    tool_use_complete_input = Some(input);
+                }
+                Some(Ok(ModelStreamEvent::MessageComplete { .. })) => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => panic!("model error: {e:?}"),
+                None => break,
+            }
+        }
+    }
+
+    assert!(
+        saw_tool_use_start,
+        "expected at least one ToolUseStart with name=add"
+    );
+    let parsed = tool_use_complete_input.expect("expected a ToolUseComplete event");
+    assert!(
+        parsed.get("a").is_some() && parsed.get("b").is_some(),
+        "expected ToolUseComplete.input to have fields 'a' and 'b', got {parsed:?}"
+    );
 }

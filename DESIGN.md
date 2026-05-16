@@ -14,33 +14,31 @@ Configuration is the primary user interface. Rather than hard-coding agent topol
 
 **JSON-RPC Server** -- Replaced the hardcoded demo with a JSON-RPC stdio server. `pristine run` reads newline-delimited JSON-RPC from stdin and writes responses and notifications to stdout. The Phase 1 demo flow is preserved as a Python client script. See ARCHITECTURE.md Phase 2 and Client Protocol.
 
+**Tool Calls** -- Agents can invoke tools registered with the Harness. Defined the `Tool` trait and a `ToolRegistry`; extended the `ModelInput` contract with `tools: Vec<ToolSpec>` and `ContentPart::ToolUse`/`ToolResult`; extended `ModelStreamEvent` with streaming `ToolUseStart`/`Delta`/`Complete`; reconciled `Block::ToolCall`/`ToolResult` with correlation IDs; refactored the Anthropic adapter to serialize tools + tool content blocks and parse tool_use streaming events; wired the registry from `HarnessBuilder` through `Harness` to each `Agent`; replaced the History-to-ContentPart skip with real emission; added a tool-call cycle to `Agent::run` that dispatches tools and re-enters the model loop until the model returns no tool calls; surfaced an `AgentEvent::Idle` signal once per inbound block; expanded the JSON-RPC `block_complete` notification payload; shipped a built-in `add` tool. See ARCHITECTURE.md Tool Calls.
+
 ## Roadmap
 
-### 1. Tool Calls
-
-Enable Agents to make tool calls during their run loop. The tool registry, `ToolSpec`/tools array, streaming tool-use events, History block compilation, and dispatch loop have all landed; remaining work is wiring a demo tool into `pristine run` and surfacing tool-call activity in `client.py`. This roadmap entry will move into Completed once those land.
-
-### 2. Configuration File
+### 1. Configuration File
 
 Replace the hardcoded `HarnessBuilder` setup with file-driven configuration (see ARCHITECTURE.md Harness). A configuration file will control how many Agents to run, their system prompts, which tools are available to each Agent, model assignments via `ModelRole`, and inter-agent routing rules. The builder remains available for programmatic use; the config file is sugar that produces the same builder calls.
 
-### 3. Multi-Model Support
+### 2. Multi-Model Support
 
 Implement the `ARModel` trait for at least one provider beyond Anthropic (see ARCHITECTURE.md Model). This validates that the trait abstraction is genuinely provider-agnostic and that `ModelInput`/`Turn`/`ContentPart` are sufficient to represent another provider's request format. The `ModelRole` indirection on Agent (see ARCHITECTURE.md Agent) should require no changes.
 
-### 4. Skills
+### 3. Skills
 
 Support Skills as a higher-level abstraction over tool calls and prompt injection. A Skill is a composable capability that can be attached to an Agent, bundling one or more tools with associated prompt fragments and lifecycle hooks. Skills allow reusable agent capabilities to be packaged, shared, and composed without requiring callers to manually wire individual tools and prompts.
 
-### 5. Multi-Agent Routing
+### 4. Multi-Agent Routing
 
 Enable the MessageBus `route(from, to)` method for inter-agent communication (see ARCHITECTURE.md MessageBus). When a route is established, completed `AgentMessage` blocks from one Agent's outbound stream are forwarded to another Agent's inbound stream. Receiving Agents see these as `AgentMessage { from }` blocks in their History, enabling peer-to-peer dialogue. This unlocks the multi-agent scenarios described in the project goals.
 
-### 6. ContextCompiler
+### 5. ContextCompiler
 
 Extract History-to-`ModelInput` compilation into a pluggable `ContextCompiler` trait (see ARCHITECTURE.md Model, History). The Agent currently linearizes its History directly; this phase moves that logic behind a trait so that selective summarization, vector-store lookups, and sequence-to-sequence context compilation can be plugged in without changing Agent or Model. The `ModelInput` shape remains the stable contract between compiler and model.
 
-### 7. DLModel
+### 6. DLModel
 
 Implement the `DLModel` trait for diffusion language models (see ARCHITECTURE.md Model). Where `ARModel` produces sequential token streams via next-token prediction, `DLModel` enables masked-text denoising -- filling in blanked regions of an input in parallel. This opens the door to hybrid agent strategies that combine auto-regressive completion with diffusion-based refinement.
 

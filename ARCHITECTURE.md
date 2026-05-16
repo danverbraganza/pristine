@@ -245,6 +245,106 @@ the single-client stdio transport.
 
 Graceful shutdown occurs on either a `shutdown` method call or EOF on stdin.
 
+## Tool Calls
+
+Agents can invoke registered tools during the run loop. The subsystem
+splits cleanly across the existing trait boundaries: tools are runtime
+behaviors held by the Harness, their schemas appear on the Model
+contract via `ModelInput.tools`, and their exchanges flow through
+History as new `Block` variants.
+
+### Tool trait and registry
+
+`Tool` (in `src/tool.rs`) is `Send + Sync` and exposes three synchronous
+getters — `name`, `description`, `input_schema` — plus an async
+`call(input) -> Result<Value, ToolError>`. Implementors are stored as
+`Arc<dyn Tool>` so they can be shared across Agent tasks.
+
+`ToolRegistry` is a name-keyed `HashMap<String, Arc<dyn Tool>>` owned by
+the Harness and shared by `Arc` with every Agent it spawns.
+`HarnessBuilder::add_tool` rejects duplicate names with
+`Error::DuplicateTool`. `ToolRegistry::dispatch(name, input)` returns
+either the tool's `Value` or a typed `ToolError` (`NotFound`,
+`InvalidInput`, `Execution`).
+
+### ToolSpec on ModelInput
+
+A `ToolSpec { name, description, input_schema }` is the provider-agnostic
+descriptor carried as `tools: Vec<ToolSpec>` alongside `turns` on each
+`ModelInput`. The Agent snapshots `self.tools.list()` into ToolSpecs per
+model call. Provider adapters translate ToolSpec into their native wire
+format; ToolSpec itself carries no behavior.
+
+### Block and ContentPart correlation
+
+`ContentPart::ToolUse { id, name, input }` and
+`ContentPart::ToolResult { tool_use_id, content, is_error }` carry tool
+exchanges at the Model boundary. `Block::ToolCall` and `Block::ToolResult`
+carry matching correlation keys (`id` and `tool_use_id`) so History →
+ContentPart compilation round-trips. `Block::ToolResult.name` is retained
+for human inspection but dropped during compilation — Anthropic
+correlates by id alone.
+
+### The tool-call cycle
+
+Per inbound Block, `Agent::run` enters an inner loop. Each iteration:
+
+1. Builds a `ModelInput { turns, tools }` snapshot from current History
+   and registry.
+2. Streams the model. `ModelStreamEvent::ToolUseComplete` events are
+   accumulated into a pending list. An `AgentMessage` Block is appended
+   only if text was produced; `RunComplete` is then emitted.
+3. If the pending list is empty, the inner loop exits.
+4. Otherwise each pending tool is dispatched sequentially. A
+   `Block::ToolCall` is appended, the registry is invoked, and a
+   `Block::ToolResult` is appended with `is_error = false` on success or
+   `is_error = true` carrying the rendered error. The loop returns to
+   step 1.
+
+After the inner loop exits, the Agent emits `AgentEvent::Idle`.
+
+### AgentEvent and JSON-RPC additions
+
+`AgentEvent::Idle` (no fields) fires once per outer inbound-block
+iteration. Subscribers use it as the "agent ready for next input"
+signal — distinct from `RunComplete`, which fires per model call and
+may occur multiple times within one tool-call cycle.
+
+The JSON-RPC `block_complete` notification's `data` payload now carries
+a `block_type` discriminator — one of `user_message`, `agent_message`,
+`tool_call`, `tool_result`, `reasoning_trace` — with variant-appropriate
+fields (e.g. `id`/`name`/`arguments` for tool_call,
+`tool_use_id`/`name`/`result`/`is_error` for tool_result). `timestamp`
+is intentionally not serialized yet; it requires an explicit format
+choice deferred to future observability work.
+
+### Error handling
+
+A `ToolError` returned from `ToolRegistry::dispatch` is NOT propagated
+as `Agent::Error`. The error is rendered as
+`{"error": "<message>"}` and stored in
+`Block::ToolResult { is_error: true, result, ... }`. The model sees the
+error on its next iteration and may recover or terminate the cycle.
+
+### Anthropic adapter
+
+The outgoing request body uses typed content blocks (`text`, `tool_use`,
+`tool_result`) instead of a flat string, and emits a top-level `tools`
+array when `input.tools` is non-empty (omitted otherwise, preserving the
+Phase 1 request shape for tool-free calls). The streaming parser
+recognises `content_block_start` with `type: tool_use` and
+`content_block_delta` with `type: input_json_delta`, accumulating partial
+JSON per content-block index and emitting
+`ModelStreamEvent::ToolUseStart` / `Delta` / `Complete` events.
+
+### Built-in tools
+
+`src/builtins.rs` ships an `AddTool` example — takes
+`{a: number, b: number}` and returns `{sum: number}`. `pristine run`
+registers it with the `HarnessBuilder` so the binary demonstrates the
+tool-call loop end-to-end. Future built-in tools live in the same
+module.
+
 ## Key Technological Choices
 
 - Tokio

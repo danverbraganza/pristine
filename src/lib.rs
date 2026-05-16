@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod agent;
+pub mod builtins;
 pub mod harness;
 pub mod history;
 pub mod messagebus;
@@ -18,12 +19,13 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::AgentId;
+use crate::builtins::AddTool;
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicModelBuilder;
 
-const SYSTEM_PROMPT: &str =
-    "You are the Pristine agent. You have an identity that is uniquely yours!";
+const SYSTEM_PROMPT: &str = "You are the Pristine agent. You have an identity that is uniquely yours! \
+     You have access to an `add` tool that returns the sum of two numbers; use it when arithmetic is requested.";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MODEL_KEY: &str = "anthropic-default";
 
@@ -83,6 +85,8 @@ async fn run_async() -> anyhow::Result<()> {
             system_prompt: SYSTEM_PROMPT.to_string(),
             model_id,
         })
+        .add_tool(Arc::new(AddTool::new()))
+        .map_err(|e| anyhow::anyhow!("failed to register AddTool: {e}"))?
         .build()?;
 
     harness.start()?;

@@ -1,5 +1,39 @@
 # ARCHITECTURE
 
+## Design Principles
+
+### Portable shape, adapter dialect
+
+Pristine's portable layer -- the engine, traits, and types that agents
+and clients touch -- carries only the information that every targeted
+provider, model, or client requires. Provider dialect (wire formats,
+naming conventions, optional fields, error vocabularies, advertisement
+mechanisms) lives in adapters at the periphery. The portable layer
+never grows speculatively; a capability is promoted from
+"adapter-specific" into the portable layer only when it surfaces as a
+common pattern across multiple providers.
+
+The principle has four consequences:
+
+1. **Information vs. dialect.** Portable types capture *what* a turn,
+   tool, or stream event is. Adapters capture *how* one provider
+   encodes it on the wire. The split is load-bearing.
+2. **No leaks downward.** When a feature is unique to one provider,
+   the rest of the engine never learns about it. Substituting providers
+   does not propagate changes through the core.
+3. **Additive evolution.** The portable layer grows when a pattern is
+   shared, not when one provider gains a feature. Promotion happens
+   with at least two cross-provider examples in view -- never on
+   speculation about one.
+4. **Separation of concerns at every boundary.** System prompts carry
+   identity and behavior. Tools carry behavior and self-description.
+   Adapters carry transport and dialect. Clients carry presentation.
+   Each layer owns what it owns and nothing else.
+
+The Goals listed below -- composability, multi-agent isolation,
+transport neutrality -- are consequences of this principle, not peer
+principles.
+
 ## Goals
 
 This document describes the architecture of Pristine's core engine. See DESIGN.md for the project's design philosophy, goals, and roadmap.

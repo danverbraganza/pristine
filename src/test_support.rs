@@ -92,22 +92,31 @@ impl crate::tool::Tool for EchoTool {
 }
 
 /// Test-only `Shell` fixture: pops scripted `Result<ShellOutput, ShellError>`
-/// entries in order on each call. Mirrors `StubArModel`'s pattern.
+/// entries in order on each call. Mirrors `StubArModel`'s pattern. Also
+/// records the most recent `timeout` argument so tests can assert on the
+/// `ExecBash` default-timeout behavior.
 pub(crate) struct StubShell {
     script: Mutex<VecDeque<Result<ShellOutput, ShellError>>>,
+    last_timeout: Mutex<Option<Duration>>,
 }
 
 impl StubShell {
     pub fn new(script: Vec<Result<ShellOutput, ShellError>>) -> Self {
         Self {
             script: Mutex::new(script.into_iter().collect()),
+            last_timeout: Mutex::new(None),
         }
+    }
+
+    pub(crate) fn last_timeout(&self) -> Option<Duration> {
+        *self.last_timeout.lock().expect("test lock")
     }
 }
 
 #[jsonrpsee::core::async_trait]
 impl Shell for StubShell {
-    async fn exec(&self, command: &str, _timeout: Duration) -> Result<ShellOutput, ShellError> {
+    async fn exec(&self, command: &str, timeout: Duration) -> Result<ShellOutput, ShellError> {
+        *self.last_timeout.lock().expect("test lock") = Some(timeout);
         let mut script = self.script.lock().expect("test lock");
         match script.pop_front() {
             Some(entry) => entry,

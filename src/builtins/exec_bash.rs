@@ -108,7 +108,6 @@ impl ExecBash {
     /// Test-only constructor that accepts an arbitrary `Shell` impl, used by
     /// `StubShell`-based unit tests in the T-3 slice.
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn with_shell(shell: Arc<dyn Shell + Send + Sync>) -> Self {
         Self {
             shell,
@@ -202,5 +201,247 @@ impl Tool for ExecBash {
 
         Ok(serde_json::to_value(output)
             .unwrap_or_else(|_| json!({"error": "internal_serialization_failure"})))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::ShellOutput;
+    use crate::test_support::StubShell;
+
+    fn stub_with(output: ShellOutput) -> Arc<StubShell> {
+        Arc::new(StubShell::new(vec![Ok(output)]))
+    }
+
+    fn stub_err(error: ShellError) -> Arc<StubShell> {
+        Arc::new(StubShell::new(vec![Err(error)]))
+    }
+
+    #[tokio::test]
+    async fn exec_bash_happy_path_echo_zero_exit() {
+        let stub = stub_with(ShellOutput {
+            stdout: b"hello\n".to_vec(),
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 0 },
+        });
+        let tool = ExecBash::with_shell(stub);
+
+        let value = tool
+            .call(json!({"command": "echo hello"}))
+            .await
+            .expect("happy path returns Ok");
+
+        assert_eq!(value["stdout"], "hello\n");
+        assert_eq!(value["stderr"], "");
+        assert_eq!(value["status"]["status"], "exit");
+        assert_eq!(value["status"]["code"], 0);
+        assert_eq!(value["stdout_truncated"], false);
+        assert_eq!(value["stderr_truncated"], false);
+        assert_eq!(value["has_invalid_utf8_stdout"], false);
+        assert_eq!(value["has_invalid_utf8_stderr"], false);
+        let execution_id = value["execution_id"].as_str().expect("execution_id string");
+        assert_eq!(
+            execution_id.len(),
+            32,
+            "execution_id should be 32 hyphenless chars, got {execution_id:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_bash_non_zero_exit_is_not_a_tool_error() {
+        let stub = stub_with(ShellOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 7 },
+        });
+        let tool = ExecBash::with_shell(stub);
+
+        let value = tool
+            .call(json!({"command": "exit 7"}))
+            .await
+            .expect("non-zero exit is Ok at the tool layer");
+
+        assert_eq!(value["status"]["status"], "exit");
+        assert_eq!(value["status"]["code"], 7);
+    }
+
+    #[tokio::test]
+    async fn exec_bash_timeout_is_not_a_tool_error() {
+        let stub = stub_with(ShellOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExecStatus::Timeout,
+        });
+        let tool = ExecBash::with_shell(stub);
+
+        let value = tool
+            .call(json!({"command": "sleep 99", "timeout_seconds": 1}))
+            .await
+            .expect("timeout is Ok at the tool layer");
+
+        assert_eq!(value["status"]["status"], "timeout");
+    }
+
+    #[tokio::test]
+    async fn exec_bash_signal_kill_status() {
+        let stub = stub_with(ShellOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExecStatus::Signal {
+                name: "SIGKILL".to_string(),
+            },
+        });
+        let tool = ExecBash::with_shell(stub);
+
+        let value = tool
+            .call(json!({"command": "kill -9 $$"}))
+            .await
+            .expect("signal status is Ok at the tool layer");
+
+        assert_eq!(value["status"]["status"], "signal");
+        assert_eq!(value["status"]["name"], "SIGKILL");
+    }
+
+    #[tokio::test]
+    async fn exec_bash_truncates_stdout_tail_to_64_kib() {
+        let huge = vec![b'A'; 70 * 1024];
+        let stub = stub_with(ShellOutput {
+            stdout: huge,
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 0 },
+        });
+        let tool = ExecBash::with_shell(stub);
+
+        let value = tool
+            .call(json!({"command": "yes A"}))
+            .await
+            .expect("call succeeds");
+
+        let stdout = value["stdout"].as_str().expect("stdout is a string");
+        assert_eq!(stdout.len(), 64 * 1024);
+        assert!(stdout.starts_with('A'));
+        assert_eq!(value["stdout_truncated"], true);
+        assert_eq!(value["stderr_truncated"], false);
+    }
+
+    #[tokio::test]
+    async fn exec_bash_lossy_utf8_marks_invalid_flag() {
+        let stub = stub_with(ShellOutput {
+            stdout: vec![0x48, 0x69, 0xFF, 0x80],
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 0 },
+        });
+        let tool = ExecBash::with_shell(stub);
+
+        let value = tool
+            .call(json!({"command": "printf '...'"}))
+            .await
+            .expect("call succeeds");
+
+        let stdout = value["stdout"].as_str().expect("stdout is a string");
+        assert!(
+            stdout.contains('\u{FFFD}'),
+            "expected U+FFFD in lossy stdout, got {stdout:?}",
+        );
+        assert_eq!(value["has_invalid_utf8_stdout"], true);
+        assert_eq!(value["has_invalid_utf8_stderr"], false);
+    }
+
+    #[tokio::test]
+    async fn exec_bash_spawn_error_maps_to_execution_dialect() {
+        let stub = stub_err(ShellError::Spawn("no such command".to_string()));
+        let tool = ExecBash::with_shell(stub);
+
+        let err = tool
+            .call(json!({"command": "nope"}))
+            .await
+            .expect_err("spawn error surfaces as ToolError::Execution");
+
+        let value = match err {
+            ToolError::Execution(v) => v,
+            other => panic!("expected Execution, got {other:?}"),
+        };
+        assert_eq!(value["kind"], "spawn");
+        let reason = value["reason"].as_str().expect("reason is a string");
+        assert!(
+            reason.contains("no such command"),
+            "unexpected reason: {reason}",
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_bash_io_error_maps_to_execution_dialect() {
+        let stub = stub_err(ShellError::Io("read failure".to_string()));
+        let tool = ExecBash::with_shell(stub);
+
+        let err = tool
+            .call(json!({"command": "anything"}))
+            .await
+            .expect_err("io error surfaces as ToolError::Execution");
+
+        let value = match err {
+            ToolError::Execution(v) => v,
+            other => panic!("expected Execution, got {other:?}"),
+        };
+        assert_eq!(value["kind"], "io");
+        let reason = value["reason"].as_str().expect("reason is a string");
+        assert!(
+            reason.contains("read failure"),
+            "unexpected reason: {reason}",
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_bash_missing_command_field_is_invalid_input() {
+        // No `command` field. This is an engine-level deserialization failure;
+        // ExecBash surfaces it as ToolError::InvalidInput, NOT as the per-tool
+        // Execution dialect.
+        let stub = Arc::new(StubShell::new(Vec::new()));
+        let tool = ExecBash::with_shell(stub);
+
+        let err = tool
+            .call(json!({"timeout_seconds": 10}))
+            .await
+            .expect_err("missing command yields an error");
+
+        match err {
+            ToolError::InvalidInput(_) => {}
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_bash_default_timeout_is_30_seconds() {
+        let stub = Arc::new(StubShell::new(vec![Ok(ShellOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 0 },
+        })]));
+        let tool = ExecBash::with_shell(stub.clone());
+
+        let _ = tool
+            .call(json!({"command": "true"}))
+            .await
+            .expect("call succeeds");
+
+        assert_eq!(stub.last_timeout(), Some(Duration::from_secs(30)));
+    }
+
+    #[tokio::test]
+    async fn exec_bash_respects_caller_supplied_timeout() {
+        let stub = Arc::new(StubShell::new(vec![Ok(ShellOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 0 },
+        })]));
+        let tool = ExecBash::with_shell(stub.clone());
+
+        let _ = tool
+            .call(json!({"command": "true", "timeout_seconds": 5}))
+            .await
+            .expect("call succeeds");
+
+        assert_eq!(stub.last_timeout(), Some(Duration::from_secs(5)));
     }
 }

@@ -412,7 +412,17 @@ file is clamped. Trailing newlines and CRLF are preserved. Other errors:
 
 ### Write
 
-*Stub -- filled in by the Write registration bead.*
+Atomic file write with auto-created parent directories. Input:
+`{path, content}` (content is UTF-8; the `String` type guarantees it).
+Output: `{bytes_written: u64}`. The target path is resolved (absolute
+or cwd-relative); the parent directory is created recursively if it
+does not exist. The write itself uses the shared atomic-rename helper:
+content is written to `{path}.tmp` then renamed atop `{path}`,
+guaranteeing readers see either the old file or the new file but
+never a partial write. Existing files are silently overwritten. Error
+variants: `InvalidPath { reason }`, `PermissionDenied { path }`,
+`IoError { reason }`. Permission errors during parent-dir creation or
+the atomic-rename steps surface as `PermissionDenied`.
 
 ### Edit
 

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::AgentId;
-use crate::builtins::{AddTool, Edit, ExecBash, Read};
+use crate::builtins::{AddTool, Edit, ExecBash, Read, Write};
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicModelBuilder;
@@ -94,6 +94,8 @@ async fn run_async() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to register Edit: {e}"))?
         .add_tool(Arc::new(Read::new()))
         .map_err(|e| anyhow::anyhow!("failed to register Read: {e}"))?
+        .add_tool(Arc::new(Write::new()))
+        .map_err(|e| anyhow::anyhow!("failed to register Write: {e}"))?
         .build()?;
 
     harness.start()?;

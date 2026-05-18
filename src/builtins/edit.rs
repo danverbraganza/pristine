@@ -1,3 +1,6 @@
+//! Edit: in-place `str_replace` with match-once safety. The atomic-rename
+//! helper guarantees the file never reflects a partial write.
+
 use std::path::PathBuf;
 
 use serde_json::{Value, json};

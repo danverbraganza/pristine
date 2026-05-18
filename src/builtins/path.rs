@@ -5,10 +5,10 @@
 //! Insert can share one implementation. Each tool maps the dialect-free
 //! `PathResolveError` onto its own `InvalidPath { reason }` variant.
 //!
-//! `atomic_write` provides the write-then-rename pattern that gives Edit (and
-//! the forthcoming Write/Insert tools) crash-safe replacement of file
-//! contents. The helper does not fsync the tmp file; callers that require
-//! durability beyond the OS page cache must layer that on top.
+//! `atomic_write` provides the write-then-rename pattern shared by the Edit,
+//! Write, and Insert tools for crash-safe replacement of file contents. The
+//! helper does not fsync the tmp file; callers that require durability beyond
+//! the OS page cache must layer that on top.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

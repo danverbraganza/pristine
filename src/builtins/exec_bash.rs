@@ -1,3 +1,6 @@
+//! ExecBash: spawns a shell command via the `Shell` trait with timeout,
+//! capture, and per-execution tmp-file staging of full stdout/stderr.
+
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -50,7 +53,7 @@ fn ensure_tmp_dir() -> Result<&'static PathBuf, ToolError> {
     if let Some(dir) = TMP_DIR.get() {
         return Ok(dir);
     }
-    // TODO: cleanup at shutdown (see PLAN.md "ExecBash tmp files" decision).
+    // TODO: cleanup at shutdown (tracked in bd-2wy)
     let pid = std::process::id();
     let dir = std::env::temp_dir().join(format!("pristine-{pid}"));
     std::fs::create_dir_all(&dir).map_err(|e| {

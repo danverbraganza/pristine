@@ -1,3 +1,7 @@
+//! Insert: inserts text at a 1-indexed line position in a UTF-8 text file.
+//! `after_line == 0` prepends, `after_line == total_lines` appends, and the
+//! file write goes through the shared atomic-rename helper.
+
 use std::path::PathBuf;
 
 use serde_json::{Value, json};

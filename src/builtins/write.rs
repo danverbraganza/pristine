@@ -1,3 +1,7 @@
+//! Write: atomic UTF-8 file write with auto-created parent directories.
+//! Existing files are silently overwritten via the shared write-then-rename
+//! helper.
+
 use std::path::PathBuf;
 
 use serde_json::{Value, json};

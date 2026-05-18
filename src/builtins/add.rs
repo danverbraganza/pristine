@@ -1,3 +1,5 @@
+//! AddTool: a demo arithmetic tool used to validate the Tool trait surface.
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 

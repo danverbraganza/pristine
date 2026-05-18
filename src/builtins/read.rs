@@ -1,3 +1,7 @@
+//! Read: reads a UTF-8 text file with an optional 1-indexed inclusive line
+//! range. The whole-file path is capped at 64 KiB; supplying a range bypasses
+//! the cap.
+
 use std::path::PathBuf;
 
 use serde_json::{Value, json};

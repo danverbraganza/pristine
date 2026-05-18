@@ -140,20 +140,10 @@ impl Tool for Write {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
+    use crate::test_support::execution_value;
 
     fn unique_tempdir() -> PathBuf {
-        let id = Uuid::new_v4().simple().to_string();
-        let dir = std::env::temp_dir().join(format!("pristine-write-test-{id}"));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn execution_value(err: ToolError) -> Value {
-        match err {
-            ToolError::Execution(v) => v,
-            other => panic!("expected ToolError::Execution, got {other:?}"),
-        }
+        crate::test_support::unique_tempdir("pristine-write-test")
     }
 
     #[tokio::test]

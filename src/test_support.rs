@@ -1,6 +1,7 @@
 //! Shared fixtures for crate-level tests.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -10,6 +11,36 @@ use futures::stream;
 
 use crate::model::{self, ARModel, ModelInput, ModelStreamEvent};
 use crate::shell::{Shell, ShellError, ShellOutput};
+use crate::tool::ToolError;
+
+/// Creates a unique tempdir under `std::env::temp_dir()` for an individual
+/// test. `prefix` namespaces the path to aid debugging when tests leave
+/// artifacts behind.
+pub(crate) fn unique_tempdir(prefix: &str) -> PathBuf {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
+}
+
+/// Writes `contents` to `dir/name` and returns the resulting path. Tests use
+/// this to seed input fixtures into a tempdir prepared by `unique_tempdir`.
+pub(crate) fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
+    let p = dir.join(name);
+    std::fs::write(&p, contents).expect("write fixture");
+    p
+}
+
+/// Unwraps a `ToolError::Execution(value)` carrier, panicking on any other
+/// variant. Built-in tools use the `Execution` carrier as the portable shape
+/// for their dialect errors; this helper lets tests assert on the inner JSON
+/// without restating the match.
+pub(crate) fn execution_value(err: ToolError) -> serde_json::Value {
+    match err {
+        ToolError::Execution(v) => v,
+        other => panic!("expected ToolError::Execution, got {other:?}"),
+    }
+}
 
 pub(crate) struct StubArModel {
     scripts: Mutex<VecDeque<Vec<Result<ModelStreamEvent, model::Error>>>>,

@@ -203,27 +203,11 @@ fn slice_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use crate::test_support::{execution_value, write_fixture};
     use uuid::Uuid;
 
     fn unique_tempdir() -> PathBuf {
-        let id = Uuid::new_v4().simple().to_string();
-        let dir = std::env::temp_dir().join(format!("pristine-read-test-{id}"));
-        std::fs::create_dir_all(&dir).expect("create temp dir");
-        dir
-    }
-
-    fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, contents).expect("write fixture");
-        path
-    }
-
-    fn execution_value(err: ToolError) -> Value {
-        match err {
-            ToolError::Execution(v) => v,
-            other => panic!("expected ToolError::Execution, got {other:?}"),
-        }
+        crate::test_support::unique_tempdir("pristine-read-test")
     }
 
     #[tokio::test]

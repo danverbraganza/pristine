@@ -403,7 +403,20 @@ error enum (the dialect) and emits errors through the shared
 
 ### Edit
 
-*Stub -- filled in by the Edit registration bead.*
+In-place text replacement with str_replace match-once safety. Input:
+`{path, old_str, new_str}`. Output: `{replaced: bool}`. Behavior:
+resolve the path (absolute or cwd-relative), read the file, validate
+strict UTF-8, count exact-byte occurrences of `old_str`. If 0 → typed
+`NoMatches` error; if ≥2 → typed `MultipleMatches { count }` error; if
+exactly 1 → atomic-rename replace and return `{replaced: true}`. If
+`old_str == new_str`, return `{replaced: true}` without writing
+(documented no-op success). Empty `old_str` short-circuits to
+`NoMatches`. Error variants (in `ToolError::Execution(Value)`):
+`MultipleMatches { count }`, `NoMatches`, `FileNotFound { path }`,
+`NotUtf8 { byte_offset }`, `InvalidPath { reason }`, `IoError {
+reason }`. Malformed input surfaces as `ToolError::InvalidInput`. The
+atomic-rename pattern (write `{path}.tmp`, then `rename` to `{path}`)
+ensures Edit never leaves a partial write on disk.
 
 ### Insert
 

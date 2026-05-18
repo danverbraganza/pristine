@@ -108,7 +108,7 @@ impl StubShell {
 #[jsonrpsee::core::async_trait]
 impl Shell for StubShell {
     async fn exec(&self, command: &str, _timeout: Duration) -> Result<ShellOutput, ShellError> {
-        let mut script = self.script.lock().unwrap_or_else(|p| p.into_inner());
+        let mut script = self.script.lock().expect("test lock");
         match script.pop_front() {
             Some(entry) => entry,
             None => panic!("StubShell script exhausted at unexpected exec call: {command}"),

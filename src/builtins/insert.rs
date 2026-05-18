@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::builtins::path::{
     AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
 };
-use crate::tool::{Tool, ToolError};
+use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
 struct InsertInput {
@@ -35,12 +35,6 @@ enum InsertError {
     },
 }
 
-fn err(e: InsertError) -> ToolError {
-    let value =
-        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
-    ToolError::Execution(value)
-}
-
 #[derive(serde::Serialize)]
 struct InsertOutput {
     lines_inserted: usize,
@@ -48,10 +42,10 @@ struct InsertOutput {
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => err(InsertError::InvalidPath {
+        PathResolveError::Empty => execution_err(InsertError::InvalidPath {
             reason: "path is empty".to_string(),
         }),
-        PathResolveError::Cwd(msg) => err(InsertError::InvalidPath {
+        PathResolveError::Cwd(msg) => execution_err(InsertError::InvalidPath {
             reason: format!("cwd: {msg}"),
         }),
     })
@@ -125,12 +119,12 @@ impl Tool for Insert {
         let bytes = match tokio::fs::read(&resolved).await {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(err(InsertError::FileNotFound {
+                return Err(execution_err(InsertError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
             Err(e) => {
-                return Err(err(InsertError::IoError {
+                return Err(execution_err(InsertError::IoError {
                     reason: format!("{e}"),
                 }));
             }
@@ -139,7 +133,7 @@ impl Tool for Insert {
         let original = match std::str::from_utf8(&bytes) {
             Ok(s) => s,
             Err(e) => {
-                return Err(err(InsertError::NotUtf8 {
+                return Err(execution_err(InsertError::NotUtf8 {
                     byte_offset: e.valid_up_to(),
                 }));
             }
@@ -148,7 +142,7 @@ impl Tool for Insert {
         let total_lines = logical_line_count(original);
 
         if parsed.after_line > total_lines {
-            return Err(err(InsertError::InvalidAfterLine {
+            return Err(execution_err(InsertError::InvalidAfterLine {
                 after_line: parsed.after_line,
                 total_lines,
             }));
@@ -159,7 +153,7 @@ impl Tool for Insert {
         // not change the file's contents.
         if parsed.content.is_empty() {
             return serde_json::to_value(InsertOutput { lines_inserted: 0 }).map_err(|e| {
-                err(InsertError::IoError {
+                execution_err(InsertError::IoError {
                     reason: format!("serialize output: {e}"),
                 })
             });
@@ -205,16 +199,16 @@ impl Tool for Insert {
         atomic_write(&resolved, new_content.as_bytes())
             .await
             .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => err(InsertError::IoError {
+                AtomicWriteError::WriteTmp(msg) => execution_err(InsertError::IoError {
                     reason: format!("write tmp: {msg}"),
                 }),
-                AtomicWriteError::Rename(msg) => err(InsertError::IoError {
+                AtomicWriteError::Rename(msg) => execution_err(InsertError::IoError {
                     reason: format!("rename: {msg}"),
                 }),
             })?;
 
         serde_json::to_value(InsertOutput { lines_inserted }).map_err(|e| {
-            err(InsertError::IoError {
+            execution_err(InsertError::IoError {
                 reason: format!("serialize output: {e}"),
             })
         })

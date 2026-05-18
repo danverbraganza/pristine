@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::builtins::path::{
     AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
 };
-use crate::tool::{Tool, ToolError};
+use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
 struct WriteInput {
@@ -21,12 +21,6 @@ enum WriteError {
     IoError { reason: String },
 }
 
-fn err(e: WriteError) -> ToolError {
-    let value =
-        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
-    ToolError::Execution(value)
-}
-
 #[derive(serde::Serialize)]
 struct WriteOutput {
     bytes_written: u64,
@@ -34,10 +28,10 @@ struct WriteOutput {
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => err(WriteError::InvalidPath {
+        PathResolveError::Empty => execution_err(WriteError::InvalidPath {
             reason: "path is empty".to_string(),
         }),
-        PathResolveError::Cwd(msg) => err(WriteError::InvalidPath {
+        PathResolveError::Cwd(msg) => execution_err(WriteError::InvalidPath {
             reason: format!("cwd: {msg}"),
         }),
     })
@@ -98,11 +92,11 @@ impl Tool for Write {
             && let Err(e) = tokio::fs::create_dir_all(parent).await
         {
             if e.kind() == std::io::ErrorKind::PermissionDenied {
-                return Err(err(WriteError::PermissionDenied {
+                return Err(execution_err(WriteError::PermissionDenied {
                     path: resolved.display().to_string(),
                 }));
             }
-            return Err(err(WriteError::IoError {
+            return Err(execution_err(WriteError::IoError {
                 reason: format!("create_dir_all: {e}"),
             }));
         }
@@ -112,22 +106,22 @@ impl Tool for Write {
             .map_err(|e| match e {
                 AtomicWriteError::WriteTmp(msg) => {
                     if msg.to_ascii_lowercase().contains("permission denied") {
-                        err(WriteError::PermissionDenied {
+                        execution_err(WriteError::PermissionDenied {
                             path: resolved.display().to_string(),
                         })
                     } else {
-                        err(WriteError::IoError {
+                        execution_err(WriteError::IoError {
                             reason: format!("write tmp: {msg}"),
                         })
                     }
                 }
                 AtomicWriteError::Rename(msg) => {
                     if msg.to_ascii_lowercase().contains("permission denied") {
-                        err(WriteError::PermissionDenied {
+                        execution_err(WriteError::PermissionDenied {
                             path: resolved.display().to_string(),
                         })
                     } else {
-                        err(WriteError::IoError {
+                        execution_err(WriteError::IoError {
                             reason: format!("rename: {msg}"),
                         })
                     }
@@ -136,7 +130,7 @@ impl Tool for Write {
 
         let bytes_written = parsed.content.len() as u64;
         serde_json::to_value(WriteOutput { bytes_written }).map_err(|e| {
-            err(WriteError::IoError {
+            execution_err(WriteError::IoError {
                 reason: format!("serialize output: {e}"),
             })
         })

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use crate::builtins::path::{
     AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
 };
-use crate::tool::{Tool, ToolError};
+use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
 struct EditInput {
@@ -25,12 +25,6 @@ enum EditError {
     IoError { reason: String },
 }
 
-fn err(e: EditError) -> ToolError {
-    let value =
-        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
-    ToolError::Execution(value)
-}
-
 #[derive(serde::Serialize)]
 struct EditOutput {
     replaced: bool,
@@ -38,10 +32,10 @@ struct EditOutput {
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => err(EditError::InvalidPath {
+        PathResolveError::Empty => execution_err(EditError::InvalidPath {
             reason: "path is empty".to_string(),
         }),
-        PathResolveError::Cwd(msg) => err(EditError::InvalidPath {
+        PathResolveError::Cwd(msg) => execution_err(EditError::InvalidPath {
             reason: format!("cwd: {msg}"),
         }),
     })
@@ -103,18 +97,18 @@ impl Tool for Edit {
         // user intent for "replace nothing" is degenerate; rejecting as
         // NoMatches is the clearer semantic.
         if parsed.old_str.is_empty() {
-            return Err(err(EditError::NoMatches));
+            return Err(execution_err(EditError::NoMatches));
         }
 
         let bytes = match tokio::fs::read(&resolved).await {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(err(EditError::FileNotFound {
+                return Err(execution_err(EditError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
             Err(e) => {
-                return Err(err(EditError::IoError {
+                return Err(execution_err(EditError::IoError {
                     reason: format!("{e}"),
                 }));
             }
@@ -123,7 +117,7 @@ impl Tool for Edit {
         let content = match std::str::from_utf8(&bytes) {
             Ok(s) => s,
             Err(e) => {
-                return Err(err(EditError::NotUtf8 {
+                return Err(execution_err(EditError::NotUtf8 {
                     byte_offset: e.valid_up_to(),
                 }));
             }
@@ -131,11 +125,13 @@ impl Tool for Edit {
 
         let count = content.matches(parsed.old_str.as_str()).count();
         if count == 0 {
-            return Err(err(EditError::NoMatches));
+            return Err(execution_err(EditError::NoMatches));
         }
         if count >= 2 {
             let count_u32 = u32::try_from(count).unwrap_or(u32::MAX);
-            return Err(err(EditError::MultipleMatches { count: count_u32 }));
+            return Err(execution_err(EditError::MultipleMatches {
+                count: count_u32,
+            }));
         }
 
         if parsed.old_str == parsed.new_str {
@@ -148,10 +144,10 @@ impl Tool for Edit {
         atomic_write(&resolved, new_content.as_bytes())
             .await
             .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => err(EditError::IoError {
+                AtomicWriteError::WriteTmp(msg) => execution_err(EditError::IoError {
                     reason: format!("write tmp: {msg}"),
                 }),
-                AtomicWriteError::Rename(msg) => err(EditError::IoError {
+                AtomicWriteError::Rename(msg) => execution_err(EditError::IoError {
                     reason: format!("rename: {msg}"),
                 }),
             })?;

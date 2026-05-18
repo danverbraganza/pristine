@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::builtins::path::{PathResolveError, resolve_path as shared_resolve_path};
-use crate::tool::{Tool, ToolError};
+use crate::tool::{Tool, ToolError, execution_err};
 
 const MAX_BYTES: u64 = 64 * 1024;
 
@@ -25,12 +25,6 @@ enum ReadError {
     IoError { reason: String },
 }
 
-fn err(e: ReadError) -> ToolError {
-    let value =
-        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
-    ToolError::Execution(value)
-}
-
 #[derive(serde::Serialize)]
 struct ReadOutput {
     content: String,
@@ -38,10 +32,10 @@ struct ReadOutput {
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => err(ReadError::InvalidPath {
+        PathResolveError::Empty => execution_err(ReadError::InvalidPath {
             reason: "path is empty".to_string(),
         }),
-        PathResolveError::Cwd(msg) => err(ReadError::InvalidPath {
+        PathResolveError::Cwd(msg) => execution_err(ReadError::InvalidPath {
             reason: format!("cwd: {msg}"),
         }),
     })
@@ -104,12 +98,12 @@ impl Tool for Read {
         let metadata = match tokio::fs::metadata(&resolved).await {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(err(ReadError::FileNotFound {
+                return Err(execution_err(ReadError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
             Err(e) => {
-                return Err(err(ReadError::IoError {
+                return Err(execution_err(ReadError::IoError {
                     reason: format!("{e}"),
                 }));
             }
@@ -117,7 +111,7 @@ impl Tool for Read {
 
         let size_bytes = metadata.len();
         if !has_range && size_bytes > MAX_BYTES {
-            return Err(err(ReadError::FileTooLarge {
+            return Err(execution_err(ReadError::FileTooLarge {
                 size_bytes,
                 max_bytes: MAX_BYTES,
             }));
@@ -126,12 +120,12 @@ impl Tool for Read {
         let bytes = match tokio::fs::read(&resolved).await {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(err(ReadError::FileNotFound {
+                return Err(execution_err(ReadError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
             Err(e) => {
-                return Err(err(ReadError::IoError {
+                return Err(execution_err(ReadError::IoError {
                     reason: format!("{e}"),
                 }));
             }
@@ -140,7 +134,7 @@ impl Tool for Read {
         let content = match std::str::from_utf8(&bytes) {
             Ok(s) => s,
             Err(e) => {
-                return Err(err(ReadError::NotUtf8 {
+                return Err(execution_err(ReadError::NotUtf8 {
                     byte_offset: e.valid_up_to(),
                 }));
             }
@@ -153,7 +147,7 @@ impl Tool for Read {
         };
 
         serde_json::to_value(ReadOutput { content: out }).map_err(|e| {
-            err(ReadError::IoError {
+            execution_err(ReadError::IoError {
                 reason: format!("serialize output: {e}"),
             })
         })
@@ -167,7 +161,7 @@ fn slice_lines(
 ) -> Result<String, ToolError> {
     // `start_line == 0` is invalid (1-indexed).
     if let Some(0) = start_line {
-        return Err(err(ReadError::InvalidRange {
+        return Err(execution_err(ReadError::InvalidRange {
             start_line: 0,
             end_line: end_line.unwrap_or(0),
         }));
@@ -175,7 +169,7 @@ fn slice_lines(
     if let (Some(s), Some(e)) = (start_line, end_line)
         && s > e
     {
-        return Err(err(ReadError::InvalidRange {
+        return Err(execution_err(ReadError::InvalidRange {
             start_line: s,
             end_line: e,
         }));

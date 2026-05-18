@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::shell::{BashShell, ExecStatus, Shell, ShellError};
-use crate::tool::{Tool, ToolError};
+use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
 struct ExecBashInput {
@@ -20,12 +20,6 @@ enum ExecBashError {
     Spawn { reason: String },
     Io { reason: String },
     TmpFile { reason: String },
-}
-
-fn err(e: ExecBashError) -> ToolError {
-    let value =
-        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
-    ToolError::Execution(value)
 }
 
 #[derive(serde::Serialize)]
@@ -60,7 +54,7 @@ fn ensure_tmp_dir() -> Result<&'static PathBuf, ToolError> {
     let pid = std::process::id();
     let dir = std::env::temp_dir().join(format!("pristine-{pid}"));
     std::fs::create_dir_all(&dir).map_err(|e| {
-        err(ExecBashError::TmpFile {
+        execution_err(ExecBashError::TmpFile {
             reason: format!("create_dir_all: {e}"),
         })
     })?;
@@ -68,7 +62,7 @@ fn ensure_tmp_dir() -> Result<&'static PathBuf, ToolError> {
     // populated afterwards, so we ignore the result and read back.
     let _ = TMP_DIR.set(dir);
     TMP_DIR.get().ok_or_else(|| {
-        err(ExecBashError::TmpFile {
+        execution_err(ExecBashError::TmpFile {
             reason: "OnceLock unexpectedly empty".to_string(),
         })
     })
@@ -167,8 +161,8 @@ impl Tool for ExecBash {
                 .exec(&parsed.command, timeout)
                 .await
                 .map_err(|e| match e {
-                    ShellError::Spawn(reason) => err(ExecBashError::Spawn { reason }),
-                    ShellError::Io(reason) => err(ExecBashError::Io { reason }),
+                    ShellError::Spawn(reason) => execution_err(ExecBashError::Spawn { reason }),
+                    ShellError::Io(reason) => execution_err(ExecBashError::Io { reason }),
                 })?;
 
         // NOTE: tmp-file staging is best-effort. The tool's primary contract is

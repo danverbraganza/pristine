@@ -1,18 +1,12 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::tool::{Tool, ToolError};
+use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum AddError {
     InvalidInput { reason: String },
-}
-
-fn err(e: AddError) -> ToolError {
-    let value =
-        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
-    ToolError::Execution(value)
 }
 
 pub struct AddTool {
@@ -62,7 +56,7 @@ impl Tool for AddTool {
 
     async fn call(&self, input: Value) -> Result<Value, ToolError> {
         let AddInput { a, b } = serde_json::from_value(input).map_err(|e| {
-            err(AddError::InvalidInput {
+            execution_err(AddError::InvalidInput {
                 reason: format!("AddTool requires numeric fields 'a' and 'b': {e}"),
             })
         })?;

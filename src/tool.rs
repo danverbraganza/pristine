@@ -31,6 +31,16 @@ impl std::error::Error for ToolError {
     }
 }
 
+/// Wraps a per-tool typed error enum into the portable
+/// `ToolError::Execution(Value)` carrier. Each built-in tool defines its own
+/// dialect enum (kept local) and routes it through this helper so the
+/// JSON-shape wrapping has a single implementation.
+pub(crate) fn execution_err<E: serde::Serialize>(e: E) -> ToolError {
+    let value =
+        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
+    ToolError::Execution(value)
+}
+
 #[jsonrpsee::core::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;

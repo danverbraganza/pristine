@@ -5,6 +5,18 @@ use serde_json::{Value, json};
 
 use crate::tool::{Tool, ToolError};
 
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AddError {
+    InvalidInput { reason: String },
+}
+
+fn err(e: AddError) -> ToolError {
+    let value =
+        serde_json::to_value(e).unwrap_or_else(|_| serde_json::json!({"kind": "internal_error"}));
+    ToolError::Execution(value)
+}
+
 pub struct AddTool {
     schema: Value,
 }
@@ -52,7 +64,9 @@ impl Tool for AddTool {
 
     async fn call(&self, input: Value) -> Result<Value, ToolError> {
         let AddInput { a, b } = serde_json::from_value(input).map_err(|e| {
-            ToolError::InvalidInput(format!("AddTool requires numeric fields 'a' and 'b': {e}"))
+            err(AddError::InvalidInput {
+                reason: format!("AddTool requires numeric fields 'a' and 'b': {e}"),
+            })
         })?;
         Ok(json!({"sum": a + b}))
     }
@@ -88,9 +102,15 @@ mod tests {
     async fn add_tool_rejects_missing_fields() {
         let tool = AddTool::new();
         let result = tool.call(json!({"a": 1})).await;
+        let value = match result {
+            Err(ToolError::Execution(v)) => v,
+            other => panic!("expected Execution(value), got {other:?}"),
+        };
+        assert_eq!(value["kind"], "invalid_input");
+        let reason = value["reason"].as_str().expect("reason is a string");
         assert!(
-            matches!(result, Err(ToolError::InvalidInput(_))),
-            "expected InvalidInput, got {result:?}"
+            reason.contains("AddTool requires numeric fields"),
+            "unexpected reason: {reason}"
         );
     }
 
@@ -98,9 +118,15 @@ mod tests {
     async fn add_tool_rejects_non_numeric_fields() {
         let tool = AddTool::new();
         let result = tool.call(json!({"a": "hello", "b": 1})).await;
+        let value = match result {
+            Err(ToolError::Execution(v)) => v,
+            other => panic!("expected Execution(value), got {other:?}"),
+        };
+        assert_eq!(value["kind"], "invalid_input");
+        let reason = value["reason"].as_str().expect("reason is a string");
         assert!(
-            matches!(result, Err(ToolError::InvalidInput(_))),
-            "expected InvalidInput, got {result:?}"
+            reason.contains("AddTool requires numeric fields"),
+            "unexpected reason: {reason}"
         );
     }
 

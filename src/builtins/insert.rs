@@ -101,9 +101,12 @@ impl Tool for Insert {
     }
 
     fn description(&self) -> &str {
-        "Insert `content` at line position `after_line` (0-based: 0 prepends, \
-         N appends after line N) in the UTF-8 text file at `path`. Empty \
-         `content` is a no-op success. Returns `{lines_inserted: usize}`."
+        "Insert `content` at line position `after_line` in the UTF-8 text file \
+         at `path`. `after_line` is 1-indexed in the intuitive sense: \
+         `after_line == 0` prepends, `after_line == total_lines` appends, and \
+         intermediate values insert between line `after_line` and line \
+         `after_line + 1`. Empty `content` is a no-op success. Returns \
+         `{lines_inserted: usize}`."
     }
 
     fn input_schema(&self) -> &Value {

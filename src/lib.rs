@@ -20,7 +20,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::AgentId;
-use crate::builtins::AddTool;
+use crate::builtins::{AddTool, ExecBash};
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicModelBuilder;
@@ -88,6 +88,8 @@ async fn run_async() -> anyhow::Result<()> {
         })
         .add_tool(Arc::new(AddTool::new()))
         .map_err(|e| anyhow::anyhow!("failed to register AddTool: {e}"))?
+        .add_tool(Arc::new(ExecBash::new()))
+        .map_err(|e| anyhow::anyhow!("failed to register ExecBash: {e}"))?
         .build()?;
 
     harness.start()?;

@@ -411,7 +411,23 @@ error enum (the dialect) and emits errors through the shared
 
 ### ExecBash
 
-*Stub -- filled in by the ExecBash registration bead.*
+Executes a single bash command via the `Shell` trait (real impl: `BashShell`,
+which spawns `/bin/bash -c <command>`). Input: `{command: String,
+timeout_seconds?: u64}`; the default timeout is 30 seconds. Output:
+`{stdout, stderr, status, stdout_truncated, stderr_truncated,
+has_invalid_utf8_stdout, has_invalid_utf8_stderr, execution_id}`. The
+returned stdout/stderr are the **last 64 KiB** of each stream
+(tail-truncated), converted via `String::from_utf8_lossy`; the
+`has_invalid_utf8_*` flags are `true` iff lossy conversion replaced any
+bytes. `status` is one of `{status:"exit", code}`, `{status:"signal",
+name}`, or `{status:"timeout"}`. `execution_id` is a hyphenless UUID v4
+(32 hex chars) that names the full-output tmp files staged at
+`tempdir()/pristine-{pid}/{execution_id}.{stdout,stderr}` (best-effort
+write; failures are logged but do not fail the call). Error variants
+(serialized as `ToolError::Execution(Value)`): `Spawn { reason }`,
+`Io { reason }`, `TmpFile { reason }`. Malformed input (missing
+`command`, non-string, etc.) surfaces as the engine-level
+`ToolError::InvalidInput`, not an ExecBash-dialect error.
 
 ### ExecBash tmp-file storage model
 

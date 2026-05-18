@@ -386,9 +386,12 @@ on `new`. The bare `new()` is the stable plugin point.
 
 ## Built-in Tools
 
-The harness registers five built-in tools that give the agent direct
-filesystem and shell capabilities: Read, Write, Edit, Insert, and
-ExecBash. Each lives in its own non-mod-rs submodule under
+The harness registers a set of built-in tools that give the agent direct
+filesystem and shell capabilities; the inter-phase target is five tools
+(Read, Write, Edit, Insert, ExecBash). As of this writing, Edit and
+ExecBash are registered; Read, Write, and Insert have placeholder
+subsections below and will be filled in as their registration beads
+land. Each tool lives in its own non-mod-rs submodule under
 `src/builtins/`, with co-located tests. Each tool owns its own typed
 error enum (the dialect) and emits errors through the shared
 `ToolError::Execution(serde_json::Value)` carrier (the portable shape).

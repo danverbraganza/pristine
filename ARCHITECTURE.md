@@ -388,8 +388,8 @@ on `new`. The bare `new()` is the stable plugin point.
 
 The harness registers a set of built-in tools that give the agent direct
 filesystem and shell capabilities; the inter-phase target is five tools
-(Read, Write, Edit, Insert, ExecBash). As of this writing, Edit and
-ExecBash are registered; Read, Write, and Insert have placeholder
+(Read, Write, Edit, Insert, ExecBash). As of this writing, Read, Edit,
+and ExecBash are registered; Write and Insert have placeholder
 subsections below and will be filled in as their registration beads
 land. Each tool lives in its own non-mod-rs submodule under
 `src/builtins/`, with co-located tests. Each tool owns its own typed
@@ -398,7 +398,17 @@ error enum (the dialect) and emits errors through the shared
 
 ### Read
 
-*Stub -- filled in by the Read registration bead.*
+Reads a UTF-8 text file with an optional 1-indexed inclusive line range.
+Input: `{path, start_line?, end_line?}`. Output: `{content: String}`. The
+file is resolved (absolute or cwd-relative); if it does not exist, the
+tool returns `FileNotFound { path }`. If the file exceeds 64 KiB and no
+line range is provided, the tool returns `FileTooLarge { size_bytes,
+max_bytes }` (a line range bypasses this cap). The file is read in full
+and UTF-8 validated; non-UTF-8 returns `NotUtf8 { byte_offset }`. Range
+semantics: `start_line` of 0 or `start > end` returns `InvalidRange`; a
+start beyond the file is empty (not an error); an `end_line` past the
+file is clamped. Trailing newlines and CRLF are preserved. Other errors:
+`InvalidPath { reason }`, `IoError { reason }`.
 
 ### Write
 

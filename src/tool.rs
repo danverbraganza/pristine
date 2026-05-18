@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub enum ToolError {
     NotFound(String),
     InvalidInput(String),
-    Execution(String),
+    Execution(serde_json::Value),
     AlreadyRegistered(String),
 }
 
@@ -16,7 +16,10 @@ impl std::fmt::Display for ToolError {
         match self {
             ToolError::NotFound(name) => write!(f, "tool not found: {name}"),
             ToolError::InvalidInput(msg) => write!(f, "invalid tool input: {msg}"),
-            ToolError::Execution(msg) => write!(f, "tool execution error: {msg}"),
+            ToolError::Execution(value) => {
+                let rendered = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+                write!(f, "tool execution error: {rendered}")
+            }
             ToolError::AlreadyRegistered(name) => write!(f, "tool already registered: {name}"),
         }
     }

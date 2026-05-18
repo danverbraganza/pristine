@@ -14,7 +14,7 @@ use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
     Usage,
 };
-use crate::tool::ToolRegistry;
+use crate::tool::{ToolError, ToolRegistry};
 
 #[derive(Debug)]
 pub enum Error {
@@ -289,7 +289,13 @@ impl Agent {
 
                     let (result_json, is_error) = match self.tools.dispatch(&name, args).await {
                         Ok(value) => (value, false),
-                        Err(err) => (serde_json::json!({ "error": err.to_string() }), true),
+                        Err(err) => {
+                            let value = match err {
+                                ToolError::Execution(v) => v,
+                                other => serde_json::json!({ "error": other.to_string() }),
+                            };
+                            (value, true)
+                        }
                     };
 
                     let result_node = self.history.append(Block::ToolResult {

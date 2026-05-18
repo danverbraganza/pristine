@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::builtins::path::{PathResolveError, resolve_path as shared_resolve_path};
+use crate::builtins::path::{
+    AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
+};
 use crate::tool::{Tool, ToolError};
 
 #[derive(serde::Deserialize)]
@@ -143,20 +145,16 @@ impl Tool for Edit {
 
         let new_content = content.replacen(&parsed.old_str, &parsed.new_str, 1);
 
-        let mut tmp_path = resolved.clone().into_os_string();
-        tmp_path.push(".tmp");
-        let tmp_path = PathBuf::from(tmp_path);
-
-        if let Err(e) = tokio::fs::write(&tmp_path, new_content.as_bytes()).await {
-            return Err(err(EditError::IoError {
-                reason: format!("write tmp: {e}"),
-            }));
-        }
-        if let Err(e) = tokio::fs::rename(&tmp_path, &resolved).await {
-            return Err(err(EditError::IoError {
-                reason: format!("rename: {e}"),
-            }));
-        }
+        atomic_write(&resolved, new_content.as_bytes())
+            .await
+            .map_err(|e| match e {
+                AtomicWriteError::WriteTmp(msg) => err(EditError::IoError {
+                    reason: format!("write tmp: {msg}"),
+                }),
+                AtomicWriteError::Rename(msg) => err(EditError::IoError {
+                    reason: format!("rename: {msg}"),
+                }),
+            })?;
 
         Ok(serde_json::to_value(EditOutput { replaced: true })
             .unwrap_or_else(|_| json!({"replaced": true})))

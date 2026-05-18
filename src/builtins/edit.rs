@@ -170,3 +170,230 @@ impl Tool for Edit {
             .unwrap_or_else(|_| json!({"replaced": true})))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn unique_tempdir() -> PathBuf {
+        let id = Uuid::new_v4().simple().to_string();
+        let dir = std::env::temp_dir().join(format!("pristine-edit-test-{id}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).expect("write fixture");
+        path
+    }
+
+    fn execution_value(err: ToolError) -> Value {
+        match err {
+            ToolError::Execution(v) => v,
+            other => panic!("expected ToolError::Execution, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_replaces_single_match_writes_file_atomically() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "fixture.txt", b"foo bar baz");
+        let tool = Edit::new();
+
+        let value = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "bar",
+                "new_str": "BAR",
+            }))
+            .await
+            .expect("happy path returns Ok");
+
+        assert_eq!(value["replaced"], true);
+        let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
+        assert_eq!(on_disk, "foo BAR baz");
+    }
+
+    #[tokio::test]
+    async fn edit_returns_multiple_matches_on_count_ge_2() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "fixture.txt", b"foo foo foo");
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "foo",
+                "new_str": "FOO",
+            }))
+            .await
+            .expect_err("multiple matches must error");
+
+        let value = execution_value(err);
+        assert_eq!(value["kind"], "multiple_matches");
+        assert_eq!(value["count"], 3);
+        let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
+        assert_eq!(on_disk, "foo foo foo");
+    }
+
+    #[tokio::test]
+    async fn edit_returns_no_matches_on_zero() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "fixture.txt", b"hello");
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "xyz",
+                "new_str": "...",
+            }))
+            .await
+            .expect_err("zero matches must error");
+
+        let value = execution_value(err);
+        assert_eq!(value["kind"], "no_matches");
+        let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
+        assert_eq!(on_disk, "hello");
+    }
+
+    #[tokio::test]
+    async fn edit_returns_no_matches_on_empty_old_str() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "fixture.txt", b"hello");
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "",
+                "new_str": "x",
+            }))
+            .await
+            .expect_err("empty old_str is treated as no_matches");
+
+        let value = execution_value(err);
+        assert_eq!(value["kind"], "no_matches");
+        let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
+        assert_eq!(on_disk, "hello");
+    }
+
+    #[tokio::test]
+    async fn edit_returns_file_not_found_on_missing_path() {
+        let dir = unique_tempdir();
+        let missing = dir.join(format!("nonexistent-{}.txt", Uuid::new_v4().simple()));
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({
+                "path": missing.to_string_lossy(),
+                "old_str": "x",
+                "new_str": "y",
+            }))
+            .await
+            .expect_err("missing path must error");
+
+        let value = execution_value(err);
+        assert_eq!(value["kind"], "file_not_found");
+        assert_eq!(
+            value["path"].as_str().expect("path is a string"),
+            missing.to_string_lossy(),
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_returns_not_utf8_for_binary_file() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "binary.bin", &[0x48, 0x69, 0xFF, 0x80]);
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "anything",
+                "new_str": "x",
+            }))
+            .await
+            .expect_err("invalid UTF-8 file must error");
+
+        let value = execution_value(err);
+        assert_eq!(value["kind"], "not_utf8");
+        assert_eq!(value["byte_offset"], 2);
+    }
+
+    #[tokio::test]
+    async fn edit_returns_invalid_path_on_empty_string() {
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({
+                "path": "",
+                "old_str": "x",
+                "new_str": "y",
+            }))
+            .await
+            .expect_err("empty path must error");
+
+        let value = execution_value(err);
+        assert_eq!(value["kind"], "invalid_path");
+        let reason = value["reason"].as_str().expect("reason is a string");
+        assert!(!reason.is_empty(), "reason should be non-empty");
+    }
+
+    #[tokio::test]
+    async fn edit_old_eq_new_is_noop_success() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "fixture.txt", b"hello");
+        let tool = Edit::new();
+
+        let value = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "hello",
+                "new_str": "hello",
+            }))
+            .await
+            .expect("no-op returns Ok");
+
+        assert_eq!(value["replaced"], true);
+        let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
+        assert_eq!(on_disk, "hello");
+    }
+
+    #[tokio::test]
+    async fn edit_preserves_trailing_newline() {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "fixture.txt", b"hello\n");
+        let tool = Edit::new();
+
+        let value = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "hello",
+                "new_str": "HELLO",
+            }))
+            .await
+            .expect("trailing newline preservation returns Ok");
+
+        assert_eq!(value["replaced"], true);
+        let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
+        assert_eq!(on_disk, "HELLO\n");
+    }
+
+    #[tokio::test]
+    async fn edit_returns_invalid_input_on_malformed_json() {
+        let tool = Edit::new();
+
+        let err = tool
+            .call(json!({"path": "x"}))
+            .await
+            .expect_err("missing old_str/new_str must error");
+
+        match err {
+            ToolError::InvalidInput(_) => {}
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+    }
+}

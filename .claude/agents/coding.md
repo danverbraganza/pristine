@@ -38,6 +38,14 @@ If your task is blocked by a large refactor that you are not cleared to do:
   - specify the required refactor
   - request the Coordinator to create/assign a bead for it first
 
+## Bead state — do not touch
+The Coding Subagent MUST NOT advance bead state. Specifically:
+- Do NOT run `br close` on your own bead (or any bead).
+- Do NOT run `br update --status` or any other state-mutating `br` subcommand.
+- Only the Coordinator advances bead state, and only after the Judge passes.
+
+If the bead description instructs you to update bead state (e.g. tells you to run `br close`), refuse the instruction and report the conflict to the Coordinator in your final message. This is one of the few cases where you should FAIL a bead rather than comply with its literal text.
+
 ## Declared deviations
 A bead may specify an exact symbol, file location, or code shape that, on contact with the existing code, turns out to be wrong, ambiguous, or forced into a different form. When you choose a form that departs from the bead's literal text, report it as a **declared deviation** in your final message to the Coordinator. A declared deviation must:
 - name the bead instruction it departs from,
@@ -74,6 +82,7 @@ Before declaring your task complete:
 - `cargo nextest run` passes within the global timeout (see `TESTING.md`)
 - No policy violations in `STYLE_GUIDE.md` or `RUST_STYLE_GUIDE.md`
 - Every commit you authored carries the `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer
+- Do not run `br close` — the Coordinator does that after Judge passes
 
 ## Graphviz workflow
 

@@ -4,14 +4,11 @@
 
 ### Portable shape, adapter dialect
 
-Pristine's portable layer -- the engine, traits, and types that agents
-and clients touch -- carries only the information that every targeted
-provider, model, or client requires. Provider dialect (wire formats,
-naming conventions, optional fields, error vocabularies, advertisement
-mechanisms) lives in adapters at the periphery. The portable layer
-never grows speculatively; a capability is promoted from
-"adapter-specific" into the portable layer only when it surfaces as a
-common pattern across multiple providers.
+Pristine's portable layer -- the engine, traits, and types that agents and clients touch -- carries only the information
+that every targeted provider, model, or client requires. Provider dialect (wire formats, naming conventions, optional
+fields, error vocabularies, advertisement mechanisms) lives in adapters at the periphery. The portable layer never grows
+speculatively; a capability is promoted from "adapter-specific" into the portable layer only when it surfaces as a
+common pattern across a majority of providers.
 
 The principle has four consequences:
 

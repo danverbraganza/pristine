@@ -16,6 +16,8 @@ Configuration is the primary user interface. Rather than hard-coding agent topol
 
 **Tool Calls** -- Agents can invoke tools registered with the Harness. Defined the `Tool` trait and a `ToolRegistry`; extended the `ModelInput` contract with `tools: Vec<ToolSpec>` and `ContentPart::ToolUse`/`ToolResult`; extended `ModelStreamEvent` with streaming `ToolUseStart`/`Delta`/`Complete`; reconciled `Block::ToolCall`/`ToolResult` with correlation IDs; refactored the Anthropic adapter to serialize tools + tool content blocks and parse tool_use streaming events; wired the registry from `HarnessBuilder` through `Harness` to each `Agent`; replaced the History-to-ContentPart skip with real emission; added a tool-call cycle to `Agent::run` that dispatches tools and re-enters the model loop until the model returns no tool calls; surfaced an `AgentEvent::Idle` signal once per inbound block; expanded the JSON-RPC `block_complete` notification payload; shipped a built-in `add` tool. See ARCHITECTURE.md Tool Calls.
 
+**Built-in Tools** -- The harness ships five built-in tools that give the agent direct filesystem and shell capabilities: `Read`, `Write`, `Edit`, `Insert`, and `ExecBash`. Each lives in its own submodule under `src/builtins/` with co-located tests, owns its own typed error enum (the dialect), and emits errors through the shared `ToolError::Execution(serde_json::Value)` carrier (the portable shape). ExecBash uses a `Shell` trait for testability (`BashShell` real impl plus `StubShell` test fixture) and stages full stdout/stderr to per-process tmp files. The tools are registered in `HarnessBuilder` alongside the existing `AddTool` demo. See ARCHITECTURE.md "Built-in Tools".
+
 ## Roadmap
 
 ### 1. Configuration File

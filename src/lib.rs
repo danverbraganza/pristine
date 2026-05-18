@@ -25,8 +25,8 @@ use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicModelBuilder;
 
-const SYSTEM_PROMPT: &str = "You are the Pristine agent. You have an identity that is uniquely yours! \
-     You have access to an `add` tool that returns the sum of two numbers; use it when arithmetic is requested.";
+const SYSTEM_PROMPT: &str =
+    "You are the Pristine agent. You have an identity that is uniquely yours!";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_MODEL_KEY: &str = "anthropic-default";
 

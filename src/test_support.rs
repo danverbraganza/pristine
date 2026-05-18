@@ -3,11 +3,13 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use futures::Stream;
 use futures::stream;
 
 use crate::model::{self, ARModel, ModelInput, ModelStreamEvent};
+use crate::shell::{Shell, ShellError, ShellOutput};
 
 pub(crate) struct StubArModel {
     scripts: Mutex<VecDeque<Vec<Result<ModelStreamEvent, model::Error>>>>,
@@ -86,5 +88,30 @@ impl crate::tool::Tool for EchoTool {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, crate::tool::ToolError> {
         Ok(serde_json::json!({ "echo": input }))
+    }
+}
+
+/// Test-only `Shell` fixture: pops scripted `Result<ShellOutput, ShellError>`
+/// entries in order on each call. Mirrors `StubArModel`'s pattern.
+pub(crate) struct StubShell {
+    script: Mutex<VecDeque<Result<ShellOutput, ShellError>>>,
+}
+
+impl StubShell {
+    pub fn new(script: Vec<Result<ShellOutput, ShellError>>) -> Self {
+        Self {
+            script: Mutex::new(script.into_iter().collect()),
+        }
+    }
+}
+
+#[jsonrpsee::core::async_trait]
+impl Shell for StubShell {
+    async fn exec(&self, command: &str, _timeout: Duration) -> Result<ShellOutput, ShellError> {
+        let mut script = self.script.lock().unwrap_or_else(|p| p.into_inner());
+        match script.pop_front() {
+            Some(entry) => entry,
+            None => panic!("StubShell script exhausted at unexpected exec call: {command}"),
+        }
     }
 }

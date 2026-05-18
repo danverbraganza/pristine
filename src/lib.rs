@@ -7,6 +7,7 @@ pub mod history;
 pub mod messagebus;
 pub mod model;
 pub mod rpc;
+pub mod shell;
 pub mod stdio;
 pub mod tool;
 pub mod user;

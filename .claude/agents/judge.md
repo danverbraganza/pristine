@@ -36,6 +36,21 @@ Run these automated checks to validate the code:
 - `cargo nextest run`
 - `ratchets check`
 
+## Commit hygiene
+Before rendering PASS, you MUST verify that the close commit at `@` carries the required trailer line:
+
+```
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+```
+
+Check with:
+
+```bash
+jj log -r @ --no-graph -T 'description'
+```
+
+If the trailer is missing on `@`, render FAIL. The trailer is a hard Definition-of-Done requirement, not advisory.
+
 ## Verdict
 - Render a **PASS** if no errors detected and all checks succeed
 - Render a **FAIL** if you detected any errors

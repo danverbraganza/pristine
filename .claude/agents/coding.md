@@ -46,12 +46,34 @@ A bead may specify an exact symbol, file location, or code shape that, on contac
 
 Do NOT declare a deviation for: choices fully within the bead's discretion, restatements of what the bead asked for, or stylistic micro-decisions invisible from the diff. Deviations exist so the Judge can audit instruction-vs-implementation drift, not as a journal of the implementation.
 
+## Commit trailer
+Every commit you create MUST end with the trailer line (with a blank line before it):
+
+```
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+```
+
+The trailer is part of the Definition of Done. The Judge will FAIL the bead if the trailer is missing on the close commit.
+
+Use this exact `printf`-based recipe so the blank line and trailer survive shell quoting:
+
+```bash
+jj desc -m "$(printf 'Close bd-XXX: <subject>\n\nCo-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>\n')"
+```
+
+After describing the commit, verify the trailer landed:
+
+```bash
+jj log -r @ --no-graph -T 'description'
+```
+
 ## Definition of Done
 Before declaring your task complete:
 - `cargo fmt --check` passes
 - `cargo clippy` passes (no warnings)
 - `cargo nextest run` passes within the global timeout (see `TESTING.md`)
 - No policy violations in `STYLE_GUIDE.md` or `RUST_STYLE_GUIDE.md`
+- Every commit you authored carries the `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` trailer
 
 ## Graphviz workflow
 

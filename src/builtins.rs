@@ -1,7 +1,9 @@
 //! Built-in tools provided by the Pristine engine.
 
 pub mod add;
+pub mod edit;
 pub mod exec_bash;
 
 pub use add::AddTool;
+pub use edit::Edit;
 pub use exec_bash::ExecBash;

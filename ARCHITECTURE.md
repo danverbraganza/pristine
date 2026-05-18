@@ -388,12 +388,10 @@ on `new`. The bare `new()` is the stable plugin point.
 
 The harness registers a set of built-in tools that give the agent direct
 filesystem and shell capabilities; the inter-phase target is five tools
-(Read, Write, Edit, Insert, ExecBash). As of this writing, Read, Edit,
-and ExecBash are registered; Write and Insert have placeholder
-subsections below and will be filled in as their registration beads
-land. Each tool lives in its own non-mod-rs submodule under
-`src/builtins/`, with co-located tests. Each tool owns its own typed
-error enum (the dialect) and emits errors through the shared
+(Read, Write, Edit, Insert, ExecBash), all of which are now registered.
+Each tool lives in its own non-mod-rs submodule under `src/builtins/`,
+with co-located tests. Each tool owns its own typed error enum (the
+dialect) and emits errors through the shared
 `ToolError::Execution(serde_json::Value)` carrier (the portable shape).
 
 ### Read
@@ -443,7 +441,21 @@ ensures Edit never leaves a partial write on disk.
 
 ### Insert
 
-*Stub -- filled in by the Insert registration bead.*
+Inserts text at a specified line position in a UTF-8 text file. Input:
+`{path, after_line: usize, content}`. Output: `{lines_inserted: usize}`.
+The path is resolved (absolute or cwd-relative); the file is read in
+full and UTF-8 validated. `after_line` is 1-indexed in the
+intuitive sense: `after_line == 0` prepends, `after_line == total_lines`
+appends, and any value in between inserts between line `after_line` and
+line `after_line + 1`. `after_line` past the end of the file returns
+`InvalidAfterLine { after_line, total_lines }`. Empty `content` is a
+no-op success returning `lines_inserted: 0`. Content without a trailing
+newline gets one appended to keep the file well-formed when inserting
+mid-file; if the original file lacked a trailing newline, one is added
+before the inserted content during append. The file write goes through
+the shared atomic-rename helper. Errors: `FileNotFound { path }`,
+`NotUtf8 { byte_offset }`, `InvalidAfterLine { after_line, total_lines }`,
+`InvalidPath { reason }`, `IoError { reason }`.
 
 ### ExecBash
 

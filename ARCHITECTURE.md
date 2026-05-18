@@ -376,6 +376,54 @@ registers it with the `HarnessBuilder` so the binary demonstrates the
 tool-call loop end-to-end. Future built-in tools live in the same
 module.
 
+### Construction surface
+
+Built-in tools follow a stable construction surface: each tool is a
+struct in `src/builtins/{name}.rs` with an explicit
+`Tool::new() -> Self` constructor. No behavioral arguments today;
+future hooks (audit, path policy, allowlists, metering) land additively
+on `new`. The bare `new()` is the stable plugin point.
+
+## Built-in Tools
+
+The harness registers five built-in tools that give the agent direct
+filesystem and shell capabilities: Read, Write, Edit, Insert, and
+ExecBash. Each lives in its own non-mod-rs submodule under
+`src/builtins/`, with co-located tests. Each tool owns its own typed
+error enum (the dialect) and emits errors through the shared
+`ToolError::Execution(serde_json::Value)` carrier (the portable shape).
+
+### Read
+
+*Stub -- filled in by the Read registration bead.*
+
+### Write
+
+*Stub -- filled in by the Write registration bead.*
+
+### Edit
+
+*Stub -- filled in by the Edit registration bead.*
+
+### Insert
+
+*Stub -- filled in by the Insert registration bead.*
+
+### ExecBash
+
+*Stub -- filled in by the ExecBash registration bead.*
+
+### ExecBash tmp-file storage model
+
+ExecBash stages full stdout and stderr for each execution to per-process
+tmp files at `tempdir()/pristine-{pid}/{execution_id}.{stdout,stderr}`,
+with `execution_id` a UUID v4 (hyphenless). The 64 KiB tail returned
+in the tool's JSON response is the live capture buffer; the full
+stream lives on disk. The tmp directory is created lazily on first
+ExecBash invocation and removed at harness shutdown. This staging is
+forward-compat for a future Read-by-id tool that fetches full output
+by execution_id (out of scope this cycle).
+
 ## Key Technological Choices
 
 - Tokio

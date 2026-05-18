@@ -53,7 +53,6 @@ fn ensure_tmp_dir() -> Result<&'static PathBuf, ToolError> {
     if let Some(dir) = TMP_DIR.get() {
         return Ok(dir);
     }
-    // TODO: cleanup at shutdown (tracked in bd-2wy)
     let pid = std::process::id();
     let dir = std::env::temp_dir().join(format!("pristine-{pid}"));
     std::fs::create_dir_all(&dir).map_err(|e| {
@@ -69,6 +68,24 @@ fn ensure_tmp_dir() -> Result<&'static PathBuf, ToolError> {
             reason: "OnceLock unexpectedly empty".to_string(),
         })
     })
+}
+
+/// Remove the per-process tmp directory if it was created.
+///
+/// No-ops if ExecBash was never invoked (TMP_DIR unset), or if the directory
+/// is already gone. Note: after cleanup the `OnceLock` retains the path
+/// (OnceLock cannot be reset on a static); a later ExecBash invocation in the
+/// same process will simply `create_dir_all` the directory again, which is
+/// idempotent.
+pub(crate) fn cleanup_tmp_dir() -> Result<(), std::io::Error> {
+    let Some(dir) = TMP_DIR.get() else {
+        return Ok(());
+    };
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 fn make_execution_id() -> String {

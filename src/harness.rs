@@ -225,6 +225,13 @@ impl Harness {
                 }
             }
         }
+        // Clean up ExecBash's per-process tmp directory if it was created.
+        // Cleanup failure does not fail the join — a leaked tmp dir is
+        // undesirable but recoverable; failing join would mask the real
+        // shutdown result.
+        if let Err(e) = crate::builtins::exec_bash::cleanup_tmp_dir() {
+            eprintln!("warning: failed to clean up ExecBash tmp directory: {e}");
+        }
         match first_err {
             Some(e) => Err(e),
             None => Ok(()),
@@ -272,9 +279,13 @@ mod tests {
     use futures::StreamExt;
     use tokio::time::timeout;
 
+    use crate::builtins::ExecBash;
     use crate::messagebus::AgentEvent;
     use crate::model::Error as ModelError;
-    use crate::test_support::{EchoTool, StubArModel};
+    use crate::shell::{ExecStatus, ShellOutput};
+    use crate::test_support::{EchoTool, StubArModel, StubShell};
+    use crate::tool::Tool;
+    use serde_json::json;
 
     fn build_harness_with_one_agent() -> (Harness, AgentId, ModelId) {
         let model_id = ModelId::new("stub");
@@ -518,6 +529,44 @@ mod tests {
             .build()
             .expect("build harness");
         assert!(harness.tools().get("echo").is_some());
+    }
+
+    #[tokio::test]
+    async fn harness_join_cleans_up_exec_bash_tmp_dir() {
+        // Prime TMP_DIR by invoking ExecBash directly via a stub shell. This
+        // populates the static OnceLock and creates the directory on disk
+        // without going through the harness/agent flow.
+        let stub = Arc::new(StubShell::new(vec![Ok(ShellOutput {
+            stdout: b"hi".to_vec(),
+            stderr: Vec::new(),
+            status: ExecStatus::Exit { code: 0 },
+        })]));
+        let prime_tool = ExecBash::with_shell(stub);
+        prime_tool
+            .call(json!({"command": "true"}))
+            .await
+            .expect("priming exec_bash call succeeds");
+
+        let expected = std::env::temp_dir().join(format!("pristine-{}", std::process::id()));
+        assert!(
+            expected.exists(),
+            "expected tmp dir {expected:?} to exist after priming",
+        );
+
+        // Build a minimal harness with ExecBash registered but no message ever
+        // sent. The harness lifecycle alone should clean up TMP_DIR on join.
+        let (mut harness, _agent_id, _model_id) = build_harness_with_one_agent();
+        harness.start().expect("start");
+        harness.shutdown();
+        timeout(Duration::from_secs(5), harness.join())
+            .await
+            .expect("join timed out")
+            .expect("clean shutdown");
+
+        assert!(
+            !expected.exists(),
+            "expected tmp dir {expected:?} to be removed after harness join",
+        );
     }
 
     #[test]

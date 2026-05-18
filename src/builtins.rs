@@ -3,6 +3,7 @@
 pub mod add;
 pub mod edit;
 pub mod exec_bash;
+mod path;
 
 pub use add::AddTool;
 pub use edit::Edit;

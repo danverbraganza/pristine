@@ -1,7 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
+use crate::builtins::path::{PathResolveError, resolve_path as shared_resolve_path};
 use crate::tool::{Tool, ToolError};
 
 #[derive(serde::Deserialize)]
@@ -34,23 +35,14 @@ struct EditOutput {
 }
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
-    if input.is_empty() {
-        return Err(err(EditError::InvalidPath {
+    shared_resolve_path(input).map_err(|e| match e {
+        PathResolveError::Empty => err(EditError::InvalidPath {
             reason: "path is empty".to_string(),
-        }));
-    }
-    let p = Path::new(input);
-    let resolved = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        let cwd = std::env::current_dir().map_err(|e| {
-            err(EditError::InvalidPath {
-                reason: format!("cwd: {e}"),
-            })
-        })?;
-        cwd.join(p)
-    };
-    Ok(resolved)
+        }),
+        PathResolveError::Cwd(msg) => err(EditError::InvalidPath {
+            reason: format!("cwd: {msg}"),
+        }),
+    })
 }
 
 pub struct Edit {
@@ -174,6 +166,7 @@ impl Tool for Edit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use uuid::Uuid;
 
     fn unique_tempdir() -> PathBuf {

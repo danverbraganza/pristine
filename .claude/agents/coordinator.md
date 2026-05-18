@@ -59,6 +59,39 @@ When delegating to a subagent, use the Task tool with the appropriate agent:
 | Tidy Agent | `tidy` | Reduce codebase entropy |
 | Reflection Agent | `reflection` | Analyze and improve the process |
 
+## Bead close recipe
+After Judge passes, close the bead using this canonical recipe. It produces TWO commits per bead:
+
+- `Close bd-XXX: <subject>` — the content commit authored by the Coding Subagent (already on `@`).
+- `Close bd-XXX bead state` — a jsonl-only commit holding the `.beads/issues.jsonl` and `.beads/last-touched` state transitions.
+
+Keeping bead-state changes in a separate commit keeps the content commit atomic and trivially revertable if Judge ever fails post-merge. `.beads/beads.db` is gitignored, so only `.beads/issues.jsonl` and `.beads/last-touched` need to be in the bead-state commit.
+
+```bash
+# 1. Close the bead in br (mutates .beads/issues.jsonl and .beads/last-touched).
+br close bd-XXX
+
+# 2. Save the bead-state file changes outside the working copy.
+cp .beads/issues.jsonl /tmp/issues.jsonl.bd-XXX
+cp .beads/last-touched /tmp/last-touched.bd-XXX
+
+# 3. Clear the bead-state changes from the content commit at @.
+jj restore .beads/issues.jsonl .beads/last-touched
+
+# 4. New empty working copy for the bead-state commit.
+jj new
+
+# 5. Replay the bead-state changes into the new working copy.
+cp /tmp/issues.jsonl.bd-XXX .beads/issues.jsonl
+cp /tmp/last-touched.bd-XXX .beads/last-touched
+
+# 6. Describe the bead-state commit.
+jj desc -m "Close bd-XXX bead state"
+
+# 7. New empty working copy for the next bead.
+jj new
+```
+
 ## Operational notes
 - Bead list is stored in `.beads/issues.jsonl`
 - **Bead IDs**: `br create` auto-generates short random IDs (e.g. `code-9y0`). Do not override them.

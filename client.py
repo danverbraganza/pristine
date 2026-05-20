@@ -5,11 +5,13 @@
 # ]
 # ///
 
-"""Interactive chat REPL for the Pristine agent harness.
+"""Chat REPL for the Pristine agent harness.
 
-Spawns `cargo run -- run` as a subprocess and provides an interactive prompt.
-User input is sent as messages to the agent; streamed token deltas are printed
-inline until the run completes.  Runnable as `uv run client.py`.
+Spawns `cargo run -- run` as a subprocess and drives one user turn per input
+line.  When stdin is a TTY this runs as an interactive prompt; when stdin is
+not a TTY (e.g. piped from a fixture or heredoc) it runs in scripted mode --
+each input line is echoed to stderr for transcript clarity and the client
+exits cleanly on EOF.  Runnable as `uv run client.py`.
 """
 
 import json
@@ -95,10 +97,21 @@ def main() -> None:
         result = resp["result"]
         agent_id = result["agent_id"]
         print(f"Pristine ({agent_id[:8]})", file=sys.stderr)
+        scripted = not sys.stdin.isatty()
+        if scripted:
+            print("(scripted mode: reading turns from stdin)", file=sys.stderr)
 
         while True:
             try:
-                user_input = input("> ")
+                if scripted:
+                    line = sys.stdin.readline()
+                    if not line:
+                        raise EOFError
+                    user_input = line.rstrip("\n")
+                    if user_input.strip():
+                        print(f"> {user_input}", file=sys.stderr, flush=True)
+                else:
+                    user_input = input("> ")
             except (EOFError, KeyboardInterrupt):
                 print(file=sys.stderr)
                 break

@@ -1,0 +1,11 @@
+# Placeholder default topology embedded by pristine_config::load when no
+# `-c/--config` override is supplied. Phase E1 of the configuration-file plan
+# replaces this with the real coding-assistant system prompt and the five-tool
+# (read / write / edit / insert / exec_bash) registration; do not depend on
+# this body remaining stable.
+
+[[agents]]
+name = "default"
+model = "default"
+system_prompt = "You are the Pristine agent."
+tools = []

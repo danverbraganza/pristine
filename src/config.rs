@@ -22,7 +22,7 @@ pub mod topology;
 pub mod validate;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub use auth::{AuthConfig, ModelAliasConfig, ProviderConfig};
 pub use autowrite::ensure_auth_file;
@@ -36,6 +36,15 @@ pub use resolve::{ResolvedAgent, ResolvedModel, resolve_aliases};
 pub use template::{EnvSource, ProcessEnv, template_value};
 pub use topology::{AgentConfig, ToolConfig, TopologyConfig};
 pub use validate::validate_tool_refs;
+
+/// Embedded fallback topology used when `LoadArgs::config` is `None`. This is a
+/// placeholder during the configuration-file rollout; Phase E1 replaces it
+/// with the real coding-assistant prompt + five-tool registration.
+const DEFAULT_TOPOLOGY: &str = include_str!("../default.toml");
+
+/// Synthetic path label attached to TOML errors raised against the embedded
+/// `default.toml`. Has no on-disk counterpart.
+const EMBEDDED_DEFAULT_LABEL: &str = "<embedded default.toml>";
 
 /// Inert, fully-resolved configuration handed from `pristine_config::load(...)`
 /// to `run_async`. Agents have their model aliases pre-resolved into a
@@ -119,6 +128,123 @@ pub fn assemble_config<E: EnvSource>(
         tools: topology.tools.clone(),
         providers: auth.providers.clone(),
     })
+}
+
+/// CLI-supplied inputs that select the topology and auth files for one call to
+/// [`load`]. Both fields are optional overrides; their `None` shapes select the
+/// embedded `default.toml` (for `config`) and `<home>/pristine-auth.toml` (for
+/// `auth`).
+///
+/// Borrow-based to avoid `PathBuf` clones at the CLI boundary; the binary owns
+/// the parsed clap values and passes them by reference.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadArgs<'a> {
+    /// CLI `-c/--config` override. `None` selects the embedded `default.toml`.
+    pub config: Option<&'a Path>,
+    /// CLI `--auth` override. `None` selects `<home>/pristine-auth.toml`.
+    pub auth: Option<&'a Path>,
+}
+
+impl<'a> LoadArgs<'a> {
+    /// Construct a `LoadArgs` with both overrides absent.
+    pub fn new() -> Self {
+        Self {
+            config: None,
+            auth: None,
+        }
+    }
+}
+
+impl Default for LoadArgs<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Top-level config orchestration. Resolves both file paths against the
+/// supplied `HomeSource`, auto-writes the auth file if it is missing, reads
+/// both files (falling back to the embedded `default.toml` when no override is
+/// supplied), and hands the contents to [`assemble_config`].
+///
+/// "Parse don't validate": collects every recoverable failure into a
+/// [`ConfigErrors`] before returning. Hard short-circuits are limited to cases
+/// where no input is available at all — no auth path, no readable auth
+/// content, no topology path.
+pub fn load_with<H: HomeSource, E: EnvSource>(
+    args: LoadArgs<'_>,
+    home: &H,
+    env: &E,
+) -> Result<Config, ConfigErrors> {
+    let mut errors = ConfigErrors::new();
+
+    let auth_path = match resolve_auth_path(args.auth, home) {
+        Ok(p) => p,
+        Err(err) => {
+            errors.push(err);
+            return Err(errors);
+        }
+    };
+
+    if let Err(err) = ensure_auth_file(&auth_path) {
+        errors.push(err);
+    }
+
+    let auth_input = match std::fs::read_to_string(&auth_path) {
+        Ok(s) => s,
+        Err(source) => {
+            errors.push(ConfigError::IoError {
+                path: auth_path.clone(),
+                source,
+            });
+            return Err(errors);
+        }
+    };
+
+    let topology_path_override = match resolve_topology_path(args.config, home) {
+        Ok(p) => p,
+        Err(err) => {
+            errors.push(err);
+            return Err(errors);
+        }
+    };
+
+    let (topology_input, topology_path) = match topology_path_override {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(s) => (s, p),
+            Err(source) => {
+                errors.push(ConfigError::IoError {
+                    path: p.clone(),
+                    source,
+                });
+                (String::new(), p)
+            }
+        },
+        None => (
+            DEFAULT_TOPOLOGY.to_string(),
+            PathBuf::from(EMBEDDED_DEFAULT_LABEL),
+        ),
+    };
+
+    match assemble_config(
+        &topology_input,
+        &topology_path,
+        &auth_input,
+        &auth_path,
+        env,
+    ) {
+        Ok(config) if errors.is_empty() => Ok(config),
+        Ok(_) => Err(errors),
+        Err(assemble_errors) => {
+            errors.extend(assemble_errors);
+            Err(errors)
+        }
+    }
+}
+
+/// Production entry point: forwards to [`load_with`] using the real process
+/// environment for `HOME` and env-var lookups.
+pub fn load(args: LoadArgs<'_>) -> Result<Config, ConfigErrors> {
+    load_with(args, &ProcessHome, &ProcessEnv)
 }
 
 #[cfg(test)]
@@ -303,5 +429,118 @@ tools = ["nonsense"]
         assert_eq!(config.tools.len(), 2);
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.agents[0].model.api_key, "sk-bar");
+    }
+
+    /// In-memory `HomeSource` for deterministic `load_with` tests.
+    struct MockHome(Option<PathBuf>);
+
+    impl MockHome {
+        fn some(path: PathBuf) -> Self {
+            Self(Some(path))
+        }
+
+        fn none() -> Self {
+            Self(None)
+        }
+    }
+
+    impl HomeSource for MockHome {
+        fn home_dir(&self) -> Option<PathBuf> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn load_with_succeeds_for_valid_paths_and_env() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let topology_path = dir.path().join("topology.toml");
+        let auth_path = dir.path().join("auth.toml");
+        std::fs::write(&topology_path, valid_topology()).expect("write topology");
+        std::fs::write(&auth_path, valid_auth()).expect("write auth");
+
+        let home = MockHome::some(dir.path().to_path_buf());
+        let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-load")]);
+        let args = LoadArgs {
+            config: Some(&topology_path),
+            auth: Some(&auth_path),
+        };
+        let config = load_with(args, &home, &env).expect("load_with succeeds");
+
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.agents[0].name, "default");
+        assert_eq!(config.agents[0].model.api_key, "sk-load");
+        assert_eq!(config.tools.len(), 2);
+        assert_eq!(config.providers.len(), 1);
+    }
+
+    #[test]
+    fn load_with_embedded_default_topology_when_no_override() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let auth_path = dir.path().join("auth.toml");
+        std::fs::write(&auth_path, valid_auth()).expect("write auth");
+
+        let home = MockHome::some(dir.path().to_path_buf());
+        let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-embedded")]);
+        let args = LoadArgs {
+            config: None,
+            auth: Some(&auth_path),
+        };
+        let config = load_with(args, &home, &env).expect("embedded default loads");
+
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.agents[0].name, "default");
+        assert_eq!(config.agents[0].model.alias, "default");
+    }
+
+    #[test]
+    fn load_with_auto_writes_missing_auth_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let topology_path = dir.path().join("topology.toml");
+        std::fs::write(&topology_path, valid_topology()).expect("write topology");
+        // Auth path under a nested subdirectory that does not exist; the
+        // auto-write step must create it.
+        let auth_path = dir.path().join("nested").join("pristine-auth.toml");
+        assert!(!auth_path.exists(), "precondition: auth file absent");
+
+        let home = MockHome::some(dir.path().to_path_buf());
+        let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-autowrite")]);
+        let args = LoadArgs {
+            config: Some(&topology_path),
+            auth: Some(&auth_path),
+        };
+        let config = load_with(args, &home, &env).expect("auto-write + load succeeds");
+
+        assert!(
+            auth_path.is_file(),
+            "ensure_auth_file should have written the auth file"
+        );
+        let written = std::fs::read_to_string(&auth_path).expect("read back auth file");
+        assert!(
+            written.contains("[providers.anthropic]"),
+            "auto-written file must contain the anthropic provider section: {written:?}"
+        );
+        // The template's `[models.default]` survives load_with because
+        // ANTHROPIC_API_KEY was set in the env.
+        assert_eq!(config.agents.len(), 1);
+        assert_eq!(config.agents[0].model.api_key, "sk-autowrite");
+    }
+
+    #[test]
+    fn load_with_missing_home_when_default_auth_path_used() {
+        let home = MockHome::none();
+        let env = MapEnv::default();
+        let args = LoadArgs::new();
+        let errors =
+            load_with(args, &home, &env).expect_err("missing home with default auth fails");
+        let mut saw_missing_home = false;
+        for err in errors.as_slice() {
+            if matches!(err, ConfigError::MissingHome) {
+                saw_missing_home = true;
+            }
+        }
+        assert!(
+            saw_missing_home,
+            "expected ConfigError::MissingHome; got {errors}"
+        );
     }
 }

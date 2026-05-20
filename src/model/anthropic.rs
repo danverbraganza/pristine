@@ -106,7 +106,7 @@ enum AnthropicContentBlock {
     },
     ToolResult {
         tool_use_id: String,
-        content: serde_json::Value,
+        content: AnthropicToolResultContent,
         #[serde(skip_serializing_if = "is_false")]
         is_error: bool,
     },
@@ -114,6 +114,24 @@ enum AnthropicContentBlock {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// Wire shape for `tool_result.content`. Anthropic rejects raw JSON objects
+/// here; the newtype constrains the field so a `serde_json::Value` cannot be
+/// assigned to it accidentally. Serializes transparently as a bare string.
+#[derive(serde::Serialize)]
+#[serde(transparent)]
+struct AnthropicToolResultContent(String);
+
+/// The single sanctioned path from the portable `serde_json::Value` carried by
+/// `ContentPart::ToolResult` into the constrained Anthropic wire shape.
+/// String values pass through; every other JSON shape is rendered as a JSON
+/// string so the model receives a faithful, lossless representation.
+fn tool_result_content_from_value(v: &serde_json::Value) -> AnthropicToolResultContent {
+    match v {
+        serde_json::Value::String(s) => AnthropicToolResultContent(s.clone()),
+        other => AnthropicToolResultContent(other.to_string()),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -171,7 +189,7 @@ fn model_input_to_anthropic(
                         } => {
                             content.push(AnthropicContentBlock::ToolResult {
                                 tool_use_id: tool_use_id.clone(),
-                                content: result_content.clone(),
+                                content: tool_result_content_from_value(result_content),
                                 is_error: *is_error,
                             });
                         }
@@ -773,6 +791,37 @@ mod tests {
         };
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["messages"][0]["content"][0]["is_error"], true);
+    }
+
+    #[test]
+    fn tool_result_object_value_is_stringified_for_anthropic() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::ToolResult {
+                    tool_use_id: "use_1".into(),
+                    content: serde_json::json!({ "content": "# README" }),
+                    is_error: false,
+                }],
+            }],
+            tools: Vec::new(),
+        };
+        let (system, messages, tools) = model_input_to_anthropic(&input);
+        let request = AnthropicRequest {
+            model: "test-model",
+            max_tokens: MAX_TOKENS,
+            stream: true,
+            system: &system,
+            messages,
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        let content = &value["messages"][0]["content"][0]["content"];
+        assert!(
+            content.is_string(),
+            "tool_result.content must be a string, got {content}"
+        );
+        assert_eq!(content.as_str().unwrap(), r##"{"content":"# README"}"##);
     }
 
     #[test]

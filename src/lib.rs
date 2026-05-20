@@ -17,21 +17,20 @@ pub mod user;
 #[cfg(test)]
 mod test_support;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use crate::agent::AgentId;
 use crate::builtins::{AddTool, Edit, ExecBash, Insert, Read, Write};
-use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
+use crate::config::{
+    Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, load as load_config,
+};
+use crate::harness::{Harness, HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicProvider;
 use crate::provider::{ModelInstanceConfig, ModelProvider};
-
-const SYSTEM_PROMPT: &str =
-    "You are the Pristine agent. You have an identity that is uniquely yours!";
-const DEFAULT_MODEL: &str = "claude-sonnet-4-6";
-const ANTHROPIC_MODEL_KEY: &str = "anthropic-default";
 
 #[derive(Parser, Debug)]
 #[command(name = "pristine", about = "Pristine agent harness")]
@@ -44,9 +43,11 @@ struct Cli {
 enum Command {
     /// Start the JSON-RPC stdio server.
     Run {
-        /// Anthropic model identifier.
-        #[arg(long, default_value = DEFAULT_MODEL)]
-        model: String,
+        /// Anthropic model identifier. Retained for backward compatibility;
+        /// the active model is now selected by the auth file's `[models.X]`
+        /// table. E3 will remove this flag.
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -68,28 +69,157 @@ async fn run_async() -> anyhow::Result<()> {
     let command = cli
         .command
         .ok_or_else(|| anyhow::anyhow!("a subcommand is required; try `pristine run`"))?;
-    let Command::Run { model } = command;
+    let Command::Run { model: _ } = command;
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-    if api_key.is_empty() {
-        return Err(anyhow::anyhow!("ANTHROPIC_API_KEY not set"));
+    let config = match load_config(LoadArgs::default()) {
+        Ok(c) => c,
+        Err(errors) => {
+            eprintln!("{errors}");
+            std::process::exit(1);
+        }
+    };
+
+    let (mut harness, agent_ids) = match build_harness_from_config(config) {
+        Ok(value) => value,
+        Err(HarnessAssemblyError::Config(errors)) => {
+            eprintln!("{errors}");
+            std::process::exit(1);
+        }
+        Err(HarnessAssemblyError::Other(err)) => return Err(err),
+    };
+    let primary_agent_id = agent_ids
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("config produced no agents; nothing to run"))?;
+
+    harness.start()?;
+
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+    let owner_id = harness.owner_id();
+    let bus = harness.bus().clone() as Arc<dyn MessageBus>;
+
+    crate::stdio::run_server(bus, primary_agent_id, owner_id, shutdown_token).await?;
+
+    harness.shutdown();
+    harness.join().await?;
+    Ok(())
+}
+
+/// Failure modes for [`build_harness_from_config`]. Config-level failures
+/// (an agent referencing a provider absent from the registry) are surfaced
+/// as `ConfigErrors` so the caller can render them with the same machinery
+/// it uses for the `load` path; everything else is collapsed into a single
+/// opaque `anyhow::Error`.
+#[derive(Debug)]
+enum HarnessAssemblyError {
+    Config(ConfigErrors),
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for HarnessAssemblyError {
+    fn from(err: anyhow::Error) -> Self {
+        HarnessAssemblyError::Other(err)
+    }
+}
+
+/// Walk a fully-resolved [`Config`] into a built [`Harness`].
+///
+/// Registers the `anthropic` provider, the five built-in tools, and one
+/// `(model, agent)` pair per resolved agent. The returned `Vec<AgentId>`
+/// preserves the order of `config.agents` so callers can identify the
+/// primary agent (the stdio JSON-RPC server is single-agent today).
+///
+/// Provider-name resolution is the one validation step layered in here
+/// rather than inside `pristine_config::load`: alias resolution leaves
+/// `provider_name` as a free-form string, and only the binary's
+/// `ProviderRegistry` knows which provider names are valid. Lookup misses
+/// surface as `ConfigError::UnknownProvider` collected into a
+/// `ConfigErrors` aggregate so multiple bad provider names render together.
+fn build_harness_from_config(
+    config: Config,
+) -> Result<(Harness, Vec<AgentId>), HarnessAssemblyError> {
+    // Maintain a parallel `HashMap<String, Arc<dyn ModelProvider>>` because
+    // `HarnessBuilder` does not expose its `ProviderRegistry` pre-build. The
+    // map is kept in lock-step with `HarnessBuilder::add_provider` calls so
+    // unknown-provider validation can run against the same names the
+    // harness will resolve at agent-build time.
+    let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
+    let anthropic: Arc<dyn ModelProvider> = Arc::new(AnthropicProvider::new());
+    providers.insert("anthropic".to_string(), anthropic.clone());
+
+    let mut builder = HarnessBuilder::new()
+        .add_provider("anthropic", anthropic)
+        .map_err(|e| anyhow::anyhow!("failed to register AnthropicProvider: {e}"))?;
+
+    builder = register_builtin_tools(builder)?;
+
+    let mut provider_errors = ConfigErrors::new();
+    for agent in &config.agents {
+        if !providers.contains_key(&agent.model.provider_name) {
+            provider_errors.push(ConfigError::UnknownProvider {
+                name: agent.model.provider_name.clone(),
+            });
+        }
+    }
+    if !provider_errors.is_empty() {
+        return Err(HarnessAssemblyError::Config(provider_errors));
     }
 
-    let provider = AnthropicProvider::new();
-    let anthropic = provider.build_model(ModelInstanceConfig::new(
-        model,
-        serde_json::json!({ "api_key": api_key }),
-    ))?;
+    let mut agent_ids = Vec::with_capacity(config.agents.len());
+    for (idx, agent) in config.agents.iter().enumerate() {
+        let provider = providers.get(&agent.model.provider_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "internal: provider '{}' disappeared from registry after validation",
+                agent.model.provider_name
+            )
+        })?;
 
-    let model_id = ModelId::new(ANTHROPIC_MODEL_KEY);
-    let agent_id = AgentId::new();
-    let mut harness = HarnessBuilder::new()
-        .add_model(model_id.clone(), anthropic)
-        .add_agent(PendingAgent {
-            id: agent_id,
-            system_prompt: SYSTEM_PROMPT.to_string(),
-            model_id,
-        })
+        let mut extras = serde_json::Map::new();
+        extras.insert(
+            "api_key".to_string(),
+            serde_json::Value::String(agent.model.api_key.clone()),
+        );
+        if let Some(ProviderConfig::Anthropic {
+            base_url: Some(url),
+        }) = config.providers.get(&agent.model.provider_name)
+        {
+            extras.insert(
+                "base_url".to_string(),
+                serde_json::Value::String(url.clone()),
+            );
+        }
+        let instance = ModelInstanceConfig::new(
+            agent.model.model_name.clone(),
+            serde_json::Value::Object(extras),
+        );
+        let model = provider.build_model(instance).map_err(|e| {
+            anyhow::anyhow!("failed to build model for agent '{}': {e}", agent.name)
+        })?;
+
+        let model_id = ModelId::new(format!("{}-{}", agent.model.alias, idx));
+        let agent_id = AgentId::new();
+        builder = builder
+            .add_model(model_id.clone(), model)
+            .add_agent(PendingAgent {
+                id: agent_id,
+                system_prompt: agent.system_prompt.clone(),
+                model_id,
+            });
+        agent_ids.push(agent_id);
+    }
+
+    let harness = builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build harness: {e}"))?;
+    Ok((harness, agent_ids))
+}
+
+/// Register the five built-in tools shipped with pristine. Kept here, rather
+/// than driven by `Config.tools`, because E4 will fold the per-tool builder
+/// calls into a name-based registry lookup; this bead keeps that change out
+/// of scope.
+fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuilder> {
+    let builder = builder
         .add_tool(Arc::new(AddTool::new()))
         .map_err(|e| anyhow::anyhow!("failed to register AddTool: {e}"))?
         .add_tool(Arc::new(ExecBash::new()))
@@ -101,18 +231,145 @@ async fn run_async() -> anyhow::Result<()> {
         .add_tool(Arc::new(Write::new()))
         .map_err(|e| anyhow::anyhow!("failed to register Write: {e}"))?
         .add_tool(Arc::new(Insert::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Insert: {e}"))?
-        .build()?;
+        .map_err(|e| anyhow::anyhow!("failed to register Insert: {e}"))?;
+    Ok(builder)
+}
 
-    harness.start()?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{ResolvedAgent, ResolvedModel};
+    use std::collections::HashMap;
 
-    let shutdown_token = tokio_util::sync::CancellationToken::new();
-    let owner_id = harness.owner_id();
-    let bus = harness.bus().clone() as Arc<dyn MessageBus>;
+    fn anthropic_provider_only() -> HashMap<String, ProviderConfig> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "anthropic".to_string(),
+            ProviderConfig::Anthropic { base_url: None },
+        );
+        providers
+    }
 
-    crate::stdio::run_server(bus, agent_id, owner_id, shutdown_token).await?;
+    fn one_agent_config() -> Config {
+        Config {
+            agents: vec![ResolvedAgent {
+                name: "default".to_string(),
+                system_prompt: "test prompt".to_string(),
+                tools: vec!["read".to_string(), "write".to_string()],
+                model: ResolvedModel {
+                    alias: "default".to_string(),
+                    provider_name: "anthropic".to_string(),
+                    model_name: "claude-sonnet-4-6".to_string(),
+                    api_key: "sk-test".to_string(),
+                },
+            }],
+            tools: HashMap::new(),
+            providers: anthropic_provider_only(),
+        }
+    }
 
-    harness.shutdown();
-    harness.join().await?;
-    Ok(())
+    #[test]
+    fn build_harness_from_config_happy_path_registers_one_agent_and_five_tools() {
+        let config = one_agent_config();
+        let result = build_harness_from_config(config);
+        let (harness, agent_ids) = match result {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                panic!("expected Ok build, got Config errors: {errors}")
+            }
+            Err(HarnessAssemblyError::Other(err)) => panic!("expected Ok build, got Other: {err}"),
+        };
+
+        assert_eq!(agent_ids.len(), 1);
+        assert!(harness.provider_registry().get("anthropic").is_some());
+
+        let mut tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            vec![
+                "add".to_string(),
+                "edit".to_string(),
+                "exec_bash".to_string(),
+                "insert".to_string(),
+                "read".to_string(),
+                "write".to_string(),
+            ],
+            "expected the six built-in tools (five plus AddTool) registered",
+        );
+    }
+
+    #[test]
+    fn build_harness_from_config_zero_agents_yields_empty_agent_id_list() {
+        let config = Config {
+            agents: Vec::new(),
+            tools: HashMap::new(),
+            providers: anthropic_provider_only(),
+        };
+        let (_harness, agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                panic!("expected Ok build, got Config errors: {errors}")
+            }
+            Err(HarnessAssemblyError::Other(err)) => panic!("expected Ok build, got Other: {err}"),
+        };
+        assert!(agent_ids.is_empty());
+    }
+
+    #[test]
+    fn build_harness_from_config_unknown_provider_yields_config_error() {
+        let mut config = one_agent_config();
+        config.agents[0].model.provider_name = "nonesuch".to_string();
+        match build_harness_from_config(config) {
+            Ok(_) => panic!("unknown provider must fail"),
+            Err(HarnessAssemblyError::Config(errors)) => {
+                let mut saw_unknown = false;
+                for entry in errors.as_slice() {
+                    if let ConfigError::UnknownProvider { name } = entry {
+                        assert_eq!(name, "nonesuch");
+                        saw_unknown = true;
+                    }
+                }
+                assert!(
+                    saw_unknown,
+                    "expected ConfigError::UnknownProvider; got {errors}"
+                );
+            }
+            Err(HarnessAssemblyError::Other(e)) => {
+                panic!("expected Config variant, got Other: {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn build_harness_from_config_multiple_agents_get_distinct_model_ids() {
+        let mut config = one_agent_config();
+        let second = ResolvedAgent {
+            name: "second".to_string(),
+            system_prompt: "second prompt".to_string(),
+            tools: Vec::new(),
+            model: ResolvedModel {
+                alias: "default".to_string(),
+                provider_name: "anthropic".to_string(),
+                model_name: "claude-sonnet-4-6".to_string(),
+                api_key: "sk-test-2".to_string(),
+            },
+        };
+        config.agents.push(second);
+
+        let (_harness, agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                panic!("expected Ok build, got Config errors: {errors}")
+            }
+            Err(HarnessAssemblyError::Other(err)) => panic!("expected Ok build, got Other: {err}"),
+        };
+        assert_eq!(agent_ids.len(), 2);
+        assert_ne!(agent_ids[0], agent_ids[1]);
+    }
 }

@@ -12,6 +12,7 @@ use crate::agent::AgentBuilder;
 use crate::history::{AgentId, Block};
 use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
 use crate::model::{ARModel, ModelRole};
+use crate::provider::{ModelProvider, ProviderError, ProviderRegistry};
 use crate::tool::{Tool, ToolError, ToolRegistry};
 use crate::user::{User, UserId};
 
@@ -45,6 +46,7 @@ pub enum Error {
     Bus(crate::messagebus::Error),
     Join(String),
     DuplicateTool(String),
+    DuplicateProvider(String),
 }
 
 impl std::fmt::Display for Error {
@@ -56,6 +58,7 @@ impl std::fmt::Display for Error {
             Error::Bus(err) => write!(f, "message bus error: {err}"),
             Error::Join(msg) => write!(f, "task join error: {msg}"),
             Error::DuplicateTool(name) => write!(f, "duplicate tool: {name}"),
+            Error::DuplicateProvider(name) => write!(f, "duplicate provider: {name}"),
         }
     }
 }
@@ -65,6 +68,7 @@ impl std::error::Error for Error {
         match self {
             Error::Bus(err) => Some(err),
             Error::DuplicateTool(_) => None,
+            Error::DuplicateProvider(_) => None,
             _ => None,
         }
     }
@@ -94,12 +98,14 @@ pub struct Harness {
     cancel: CancellationToken,
     pending: Vec<PendingAgent>,
     tools: Arc<ToolRegistry>,
+    provider_registry: Arc<ProviderRegistry>,
 }
 
 pub struct HarnessBuilder {
     models: HashMap<ModelId, Arc<dyn ARModel>>,
     pending: Vec<PendingAgent>,
     tools: Arc<ToolRegistry>,
+    provider_registry: Arc<ProviderRegistry>,
 }
 
 impl HarnessBuilder {
@@ -108,6 +114,7 @@ impl HarnessBuilder {
             models: HashMap::new(),
             pending: Vec::new(),
             tools: Arc::new(ToolRegistry::new()),
+            provider_registry: Arc::new(ProviderRegistry::new()),
         }
     }
 
@@ -132,6 +139,21 @@ impl HarnessBuilder {
         Ok(self)
     }
 
+    pub fn add_provider(
+        mut self,
+        name: impl Into<String>,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Result<Self, Error> {
+        let registry = Arc::get_mut(&mut self.provider_registry).ok_or_else(|| {
+            Error::Lifecycle("provider registry has been shared; cannot mutate".to_string())
+        })?;
+        registry.add(name, provider).map_err(|e| match e {
+            ProviderError::DuplicateProvider(name) => Error::DuplicateProvider(name),
+            other => Error::Lifecycle(other.to_string()),
+        })?;
+        Ok(self)
+    }
+
     pub fn build(self) -> Result<Harness, Error> {
         for pending in &self.pending {
             if !self.models.contains_key(&pending.model_id) {
@@ -146,6 +168,7 @@ impl HarnessBuilder {
             cancel: CancellationToken::new(),
             pending: self.pending,
             tools: self.tools,
+            provider_registry: self.provider_registry,
         })
     }
 }
@@ -268,6 +291,10 @@ impl Harness {
 
     pub fn tools(&self) -> &Arc<ToolRegistry> {
         &self.tools
+    }
+
+    pub fn provider_registry(&self) -> &Arc<ProviderRegistry> {
+        &self.provider_registry
     }
 }
 
@@ -579,6 +606,40 @@ mod tests {
             Err(Error::DuplicateTool(name)) => assert_eq!(name, "echo"),
             Err(other) => panic!("expected DuplicateTool, got {other:?}"),
             Ok(_) => panic!("second add_tool should fail"),
+        }
+    }
+
+    struct StubProvider;
+
+    impl crate::provider::ModelProvider for StubProvider {
+        fn build_model(
+            &self,
+            _config: crate::provider::ModelInstanceConfig,
+        ) -> Result<Arc<dyn crate::model::ARModel>, crate::provider::ProviderError> {
+            Ok(Arc::new(StubArModel::empty()))
+        }
+    }
+
+    #[test]
+    fn harness_builder_add_provider_makes_provider_visible() {
+        let harness = HarnessBuilder::new()
+            .add_provider("stub", Arc::new(StubProvider))
+            .expect("add_provider succeeds")
+            .build()
+            .expect("build harness");
+        assert!(harness.provider_registry().get("stub").is_some());
+    }
+
+    #[test]
+    fn harness_builder_duplicate_provider_returns_error() {
+        let builder = HarnessBuilder::new()
+            .add_provider("stub", Arc::new(StubProvider))
+            .expect("first add_provider succeeds");
+        let result = builder.add_provider("stub", Arc::new(StubProvider));
+        match result {
+            Err(Error::DuplicateProvider(name)) => assert_eq!(name, "stub"),
+            Err(other) => panic!("expected DuplicateProvider, got {other:?}"),
+            Ok(_) => panic!("second add_provider should fail"),
         }
     }
 }

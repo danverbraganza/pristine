@@ -16,6 +16,7 @@ pub mod parse;
 pub mod resolve;
 pub mod template;
 pub mod topology;
+pub mod validate;
 
 use std::collections::HashMap;
 
@@ -28,6 +29,7 @@ pub use parse::{
 pub use resolve::{ResolvedAgent, ResolvedModel, resolve_aliases};
 pub use template::{EnvSource, ProcessEnv, template_value};
 pub use topology::{AgentConfig, ToolConfig, ToolKind, TopologyConfig};
+pub use validate::validate_tool_refs;
 
 /// Inert, fully-resolved configuration handed from `pristine_config::load(...)`
 /// to `run_async`. Agents have their model aliases pre-resolved into a

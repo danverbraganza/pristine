@@ -58,8 +58,8 @@ On startup, read these files in order:
     A transient Judge failure means no verdict was rendered. If the Judge rendered FAIL — even briefly, even with a partial reason — that is a substantive FAIL and follows the abandon-and-retry protocol.
   - **Revert tool selection.** For full-content reverts when retrying: `jj abandon @` (removes the failed content commit; descendants rebase). For partial reverts that strip uncommitted contamination (e.g. `.beads/*` files in a working copy): `jj restore <paths>`.
 - **Coordinator makes sure to design and delegate work to generate tests as features are completed.**
-- **Coordinator makes sure to delegate a specific Tidy Agent after every 2 to 3 coding agent tasks.** Beads created by the Tidy agent must be completed at the priority they are filed.
-- **Coordinator makes sure to delegate a specific Reflection Agent after every 6 to 8 coding agent tasks.** Prompt the Reflection agent with a summary of the progress so far since the last run, paying particular attention to any problems (coding agent error rates, flaky tests, delays and timeouts). Beads created by the Reflection agent must be filed at P1 priority, and completed before any regular coding work.
+- **Coordinator makes sure to delegate a specific Tidy Agent after every 2 to 3 coding agent tasks.** Beads created by the Tidy agent must be completed at the priority they are filed. Tidy P1s do NOT block regular coding work; they ride in the queue at P1 and land when their turn comes up. Tidy P1 means "should land soon"; it does not mean "must precede the next Phase task."
+- **Coordinator makes sure to delegate a specific Reflection Agent after every 6 to 8 coding agent tasks.** Prompt the Reflection agent with a summary of the progress so far since the last run, paying particular attention to any problems (coding agent error rates, flaky tests, delays and timeouts). Beads created by the Reflection agent must be filed at P1 priority, and MUST be completed before any regular coding work resumes. Reflection P1 means "process-blocking": the Coordinator drains all Reflection P1s before picking up the next Phase bead.
 
 ## Subagent delegation
 

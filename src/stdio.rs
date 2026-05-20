@@ -156,10 +156,7 @@ async fn drain_events(
 ) -> Result<(), StdioError> {
     let mut events = bus.subscribe(agent_id)?;
     while let Some(event) = events.next().await {
-        let is_terminal = matches!(
-            event,
-            AgentEvent::RunComplete { .. } | AgentEvent::Error { .. }
-        );
+        let is_terminal = matches!(event, AgentEvent::Idle | AgentEvent::Error { .. });
         let notification = AgentEventNotification::from_event(agent_id, &event);
         let jsonrpc = serde_json::json!({
             "jsonrpc": "2.0",

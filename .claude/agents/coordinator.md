@@ -40,10 +40,16 @@ On startup, read these files in order:
 - **Judge verifies both correctness AND style guide compliance.**
 - **If Judge passes**: mark bead done with `br update <id> --status done`, move to next bead.
 - **If Judge fails**:
-  - Run `git reset --hard` to revert to pre-attempt commit.
+  - Run `jj abandon @` (or, if multiple intermediate commits were made, abandon each in turn) to revert to the pre-attempt commit.
   - Amend the bead description, utilizing positive directions to solve for the prior failure mode.
   - Retry with a fresh Coding Subagent (max 4 attempts total).
   - After 4 failed attempts, escalate for human input.
+  - **Metadata-only fix exception.** A "metadata-only fix" applies ONLY when ALL of the following hold:
+    - The diff is correct and accepted by Judge on substance.
+    - The Judge's FAIL reason is purely on commit metadata (trailer missing, description typo, wrong commit author, etc.).
+    - No code, tests, or file-structure changes are needed.
+    In that case the Coordinator may amend the metadata on `@` directly (e.g. `jj desc -m ...`) and re-judge. A metadata-only fix does NOT count against the 4-attempt cap, MUST be re-judged before close, and MUST be noted in the Coordinator's bead-close summary. For any FAIL that touches the diff itself (code, tests, file layout), the reset + retry protocol above stands unchanged.
+  - **Revert tool selection.** For full-content reverts when retrying: `jj abandon @` (removes the failed content commit; descendants rebase). For partial reverts that strip uncommitted contamination (e.g. `.beads/*` files in a working copy): `jj restore <paths>`.
 - **Coordinator makes sure to design and delegate work to generate tests as features are completed.**
 - **Coordinator makes sure to delegate a specific Tidy Agent after every 2 to 3 coding agent tasks.** Beads created by the Tidy agent must be completed at the priority they are filed.
 - **Coordinator makes sure to delegate a specific Reflection Agent after every 6 to 8 coding agent tasks.** Prompt the Reflection agent with a summary of the progress so far since the last run, paying particular attention to any problems (coding agent error rates, flaky tests, delays and timeouts). Beads created by the Reflection agent must be filed at P1 priority, and completed before any regular coding work.
@@ -98,7 +104,7 @@ jj new
 - Update bead status with: `br update <id> --status done`
 - When creating, updating, or closing beads, commit the changes to `.beads/issues.jsonl` and `.beads/last-touched` to ensure bead state is tracked in version control.
 - If a subagent fails:
-  - hard reset to pre-attempt commit: `git reset --hard <good_commit>`
+  - hard reset to pre-attempt commit: `jj abandon @` (or abandon each intermediate commit in turn)
   - run a Judge subagent to analyze the failure mode
   - retry with a fresh worker prompt that avoids the failure mode
 - Success criteria:
@@ -126,7 +132,7 @@ digraph CoordinatorWorkflow {
   END [shape=ellipse, style=filled, fillcolor=lightgreen];
 
   RETRIES [shape=diamond, style=filled, fillcolor=lightyellow, label="Retries < 4?"];
-  RESET [label="git reset --hard\n(revert to pre-attempt commit)"];
+  RESET [label="jj abandon @\n(revert to pre-attempt commit)"];
   JUDGE_FAILURE [label="Run Judge Subagent\n(analyze failure mode)"];
   REPROMPT [label="Retry with fresh Coding Subagent\n(amend bead, avoid failure mode)"];
   ESCALATE [shape=box, style=filled, fillcolor=lightcoral, label="Escalate for human input"];

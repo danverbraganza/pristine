@@ -80,6 +80,12 @@ The Coordinator's only authorized bead-state mutation is `br close <id>` after J
 2. **Clean working copy before delegating.** Before invoking any Coding, Tidy, or Reflection Subagent, the Coordinator MUST confirm `.beads/issues.jsonl` and `.beads/last-touched` are clean in the working copy (i.e. `jj st` shows no modifications to those paths). If they are dirty, the Coordinator MUST commit them as a bead-state commit FIRST, then delegate.
 3. **Bead-creation hygiene by Tidy / Reflection.** When the Tidy or Reflection Subagent files new beads via `br create`, the Coordinator commits the resulting `.beads/*` changes as a descriptive commit (e.g. `Tidy: file bd-XXX ...`) BEFORE starting the next Coding Subagent. This keeps bead-creation traceable in history and avoids leaking it into a content commit.
 
+   The commit description follows the canonical form:
+   ```
+   <Tidy|Reflection>: file bd-XXX, bd-YYY, bd-ZZZ for <one-line reason>
+   ```
+   Bead IDs are comma-space separated. The reason is a short noun phrase, not a sentence; no trailing period.
+
 ## Bead close recipe
 After Judge passes, close the bead using this canonical recipe. It produces TWO commits per bead:
 

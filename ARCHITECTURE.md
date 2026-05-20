@@ -488,6 +488,107 @@ ExecBash invocation and removed at harness shutdown. This staging is
 forward-compat for a future Read-by-id tool that fetches full output
 by execution_id (out of scope this cycle).
 
+## Configuration
+
+The Harness setup that drives `pristine run` is produced from declarative
+configuration rather than hardcoded in the binary. The configuration layer
+lives in `src/config/` (with the `src/config.rs` module root holding the
+`Config` value, `assemble_config`, and the `load` / `load_with` orchestrators)
+and is the single boundary between on-disk artefacts and the engine. The
+engine itself — `Harness`, `HarnessBuilder`, `Agent`, `ARModel`, `Tool`,
+`MessageBus` — never touches TOML, file paths, or environment variables.
+
+### Two-file model
+
+Configuration is split across two orthogonal files that own two orthogonal
+concerns:
+
+- **Topology** — an embedded `default.toml` (overridable per invocation via
+  `-c/--config`) describing the agents to run, the tools each agent holds,
+  the system prompts, and the model alias each agent uses. Topology is
+  provider-agnostic; nothing in a topology file names Anthropic or any other
+  specific provider.
+- **Identity** — a user-global `pristine-auth.toml` (default
+  `~/pristine-auth.toml`, overridable via `--auth`) declaring the available
+  providers, model aliases, and credentials. The auth file is the only place
+  API keys live.
+
+The split is load-bearing. A user can keep many topologies — a coding-assistant
+shape, a game-simulator shape, a critic/actor pair — and share a single auth
+file across all of them. One identity, many topologies. Topology files can be
+checked into version control; the auth file cannot. The embedded
+`default.toml` is documented under "Embedded default topology" in §Key
+Technological Choices, including the `include_str!` build-time coupling.
+
+### Parse-don't-validate boundary
+
+`pristine_config::load(args)` returns either `Ok(Config)` or
+`Err(ConfigErrors)`. A successful `Config` is an inert, fully-resolved data
+struct: agents carry pre-resolved `ResolvedModel` values, tool declarations
+have been validated against their references, and credentials have already
+been substituted in via `{{ENV_VAR}}` templating. Once `load` succeeds, no
+further validation is required — every consumer can trust the contents.
+
+The binary's `run_async` walks the returned `Config` and issues
+`HarnessBuilder` calls: `add_provider` for each provider, `add_tool` for each
+declared tool, `add_model` for each resolved alias, and `add_agent` for each
+agent. Nothing else translates the file into the engine. This keeps the engine
+free of any configuration concerns and makes the contract between layers
+exactly one type wide.
+
+### `ModelProvider` and `ProviderRegistry`
+
+`ModelProvider` (in `src/provider.rs`) is the runtime analogue of `Tool`. It
+exposes one method, `build_model(ModelInstanceConfig) -> Result<Arc<dyn
+ARModel>, ProviderError>`. The `ModelInstanceConfig` carries a typed
+`model_name` plus an opaque `extras: serde_json::Value` carrier so the trait
+never names provider-specific fields. Provider-specific dialect — Anthropic's
+`base_url`, future providers' organisation IDs, project tags, region hints —
+lives only inside the provider impl and the matching `[providers.X]` section
+in the auth file. The trait surface remains provider-agnostic.
+
+`ProviderRegistry` is a name-keyed `HashMap<String, Arc<dyn ModelProvider>>`,
+parallel to `ToolRegistry`. `HarnessBuilder::add_provider` rejects duplicate
+names with `ProviderError::DuplicateProvider`. v1 ships `AnthropicProvider` as
+the only registered provider; Multi-Model support (the next roadmap item)
+plugs additional providers in at this seam without changes elsewhere.
+
+### `{{ENV_VAR}}` templating
+
+Credentials and other environment-sourced values are referenced inside the
+auth file as `{{NAME}}` placeholders. Templating walks the parsed
+`toml::Value` tree after the initial TOML lex but before final
+deserialization into the typed structs: every string node is scanned, every
+`{{NAME}}` placeholder is substituted with the corresponding env-var value,
+and the resulting tree is deserialized into `AuthConfig` /
+`TopologyConfig`. Missing variables do not abort the walk — each becomes a
+`ConfigError::UnknownEnvVar { name, location }` recorded against the TOML
+key path so the eventual diagnostic points at the right line.
+
+The env lookup is abstracted behind the `EnvSource` trait
+(`src/config/template.rs`). The production impl, `ProcessEnv`, defers to
+`std::env::var`. Tests use an in-memory map. This is the only place in the
+crate that touches the process environment for configuration; the binary no
+longer reads `ANTHROPIC_API_KEY` directly.
+
+### Error model
+
+`ConfigErrors` is a `Vec`-backed aggregate of `ConfigError` values. Every
+parse, templating, resolution, and validation pass that runs during one call
+to `assemble_config` or `load_with` pushes its failures into this aggregate;
+the call returns `Err(ConfigErrors)` only after every recoverable pass has had
+a chance to run. Hard short-circuits are limited to cases where no input is
+available at all (e.g. an unreadable auth file path).
+
+The `Display` impl renders every contained error in registration order, with
+file path plus line/column information when the underlying error carries it
+(notably for `TomlParse`). The full list of failure modes lives on the
+`ConfigError` enum (`src/config/error.rs`): `TomlParse`, `UnknownEnvVar`,
+`DanglingAlias`, `ExtraneousAlias`, `UndeclaredTool`, `DuplicateToolRef`,
+`UnknownProvider`, `IoError`, and `MissingHome`. Unknown TOML keys are
+rejected by `#[serde(deny_unknown_fields)]` on every typed struct and surface
+through `TomlParse`. No configuration failure is silent.
+
 ## Key Technological Choices
 
 - Tokio

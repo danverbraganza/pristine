@@ -2,6 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = [
 #     "jsonrpcclient",
+#     "rich",
 # ]
 # ///
 
@@ -19,6 +20,11 @@ import subprocess
 import sys
 
 from jsonrpcclient import request_json
+from rich.console import Console
+
+# Rich console for highlighted event output; auto-disables color when
+# stderr is not a TTY (e.g. piped to a file).
+err_console = Console(stderr=True, highlight=False)
 
 
 HELP_TEXT = """\
@@ -107,13 +113,17 @@ def drain_events(proc: subprocess.Popen) -> None:
             if block_type == "tool_call":
                 name = data.get("name", "?")
                 args = data.get("arguments", {})
-                print(f"\n[tool call: {name}({json.dumps(args)})]", file=sys.stderr)
+                err_console.print(f"\n[bold cyan]>>[/] [cyan]tool call[/] [bold]{name}[/]")
+                err_console.print_json(data=args)
             elif block_type == "tool_result":
                 name = data.get("name", "?")
                 result = data.get("result")
                 is_error = data.get("is_error", False)
-                marker = "tool error" if is_error else "tool result"
-                print(f"[{marker}: {name} -> {json.dumps(result)}]", file=sys.stderr)
+                if is_error:
+                    err_console.print(f"[bold red]!![/] [red]tool error[/] [bold]{name}[/]")
+                else:
+                    err_console.print(f"[bold green]<<[/] [green]tool result[/] [bold]{name}[/]")
+                err_console.print_json(data=result)
             # user_message / agent_message / reasoning_trace are observation-only
         elif event_type == "error":
             error_msg = params.get("data", {}).get("message", "unknown error")

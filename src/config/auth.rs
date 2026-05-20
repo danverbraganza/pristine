@@ -25,9 +25,8 @@ pub struct AuthConfig {
 /// `base_url`) is decoded inline. v1 ships only `Anthropic`; future providers
 /// plug in here.
 ///
-/// `ProviderConfig` and `ProviderKind` are intentionally the same type:
-/// serde's `flatten` is incompatible with `deny_unknown_fields`, so the
-/// canonical shape is a directly-tagged enum.
+/// `ProviderConfig` is a directly-tagged enum because serde's `flatten` is
+/// incompatible with `deny_unknown_fields`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProviderConfig {
@@ -36,9 +35,6 @@ pub enum ProviderConfig {
         base_url: Option<String>,
     },
 }
-
-/// Alias retained so downstream beads can name the variant set explicitly.
-pub type ProviderKind = ProviderConfig;
 
 /// One entry of `[models.X]` in the auth file. Points at a `[providers.Y]`
 /// entry by name and carries the provider-native model name plus the api key

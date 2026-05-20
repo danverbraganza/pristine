@@ -22,7 +22,7 @@ pub mod validate;
 use std::collections::HashMap;
 use std::path::Path;
 
-pub use auth::{AuthConfig, ModelAliasConfig, ProviderConfig, ProviderKind};
+pub use auth::{AuthConfig, ModelAliasConfig, ProviderConfig};
 pub use error::{ConfigError, ConfigErrors};
 pub use parse::{
     parse_auth, parse_auth_with_env, parse_topology, parse_topology_with_env, read_auth_file,
@@ -30,7 +30,7 @@ pub use parse::{
 };
 pub use resolve::{ResolvedAgent, ResolvedModel, resolve_aliases};
 pub use template::{EnvSource, ProcessEnv, template_value};
-pub use topology::{AgentConfig, ToolConfig, ToolKind, TopologyConfig};
+pub use topology::{AgentConfig, ToolConfig, TopologyConfig};
 pub use validate::validate_tool_refs;
 
 /// Inert, fully-resolved configuration handed from `pristine_config::load(...)`

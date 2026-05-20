@@ -35,9 +35,8 @@ pub struct AgentConfig {
 /// selects the variant; per-variant fields are decoded inline. v1 ships only
 /// `Builtin`; future variants (MCP, scripted, etc.) plug in here.
 ///
-/// `ToolConfig` and `ToolKind` are intentionally the same type: serde's
-/// `flatten` is incompatible with `deny_unknown_fields`, so the canonical
-/// shape is a directly-tagged enum.
+/// `ToolConfig` is a directly-tagged enum because serde's `flatten` is
+/// incompatible with `deny_unknown_fields`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ToolConfig {
@@ -45,9 +44,6 @@ pub enum ToolConfig {
     /// `"exec_bash"`).
     Builtin { builtin: String },
 }
-
-/// Alias retained so downstream beads can name the variant set explicitly.
-pub type ToolKind = ToolConfig;
 
 #[cfg(test)]
 mod tests {

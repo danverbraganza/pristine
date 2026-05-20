@@ -47,6 +47,19 @@ def send(proc: subprocess.Popen, method: str, params: dict | None = None) -> dic
     return msg.get("result", {})
 
 
+def _parse_message(line: str) -> dict | None:
+    """Parse one JSON-RPC line from the server.
+
+    Returns None for malformed lines (logged to stderr) so the read
+    loops can skip them rather than crashing the client.
+    """
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        print(f"[server stdout (non-JSON)]: {line.rstrip()}", file=sys.stderr)
+        return None
+
+
 def read_response(proc: subprocess.Popen) -> dict:
     """Read lines until we get a JSON-RPC response (has an 'id' field)."""
     assert proc.stdout is not None
@@ -55,7 +68,9 @@ def read_response(proc: subprocess.Popen) -> dict:
         if not line:
             print("Server closed stdout unexpectedly", file=sys.stderr)
             sys.exit(1)
-        msg = json.loads(line)
+        msg = _parse_message(line)
+        if msg is None:
+            continue
         if "id" in msg:
             return msg
 
@@ -68,7 +83,9 @@ def drain_events(proc: subprocess.Popen) -> None:
         if not line:
             print("\nServer closed stdout unexpectedly", file=sys.stderr)
             sys.exit(1)
-        msg = json.loads(line)
+        msg = _parse_message(line)
+        if msg is None:
+            continue
         if "id" in msg:
             continue
         params = msg.get("params", {})

@@ -1,12 +1,14 @@
 //! Anthropic ARModel implementation.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{ARModel, ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage};
+use crate::provider::{ModelInstanceConfig, ModelProvider, ProviderError};
 
 // Phase 1 cap; revisited when tool use / config land.
 const MAX_TOKENS: u32 = 1024;
@@ -21,58 +23,62 @@ pub struct AnthropicModel {
     base_url: String,
 }
 
-pub struct AnthropicModelBuilder {
-    api_key: Option<String>,
-    model_name: Option<String>,
-    base_url: Option<String>,
+/// `ModelProvider` implementation for Anthropic. Carries no per-provider
+/// state today; reads `api_key` and an optional `base_url` from
+/// `ModelInstanceConfig::extras` on each `build_model` call. The
+/// `base_url` knob is the only Anthropic-specific dialect and is kept out
+/// of the provider-agnostic `ModelProvider` trait by design.
+#[derive(Default)]
+pub struct AnthropicProvider;
+
+impl AnthropicProvider {
+    pub fn new() -> Self {
+        Self
+    }
 }
 
-impl AnthropicModelBuilder {
-    pub fn new() -> Self {
-        Self {
-            api_key: None,
-            model_name: None,
-            base_url: None,
-        }
-    }
+impl ModelProvider for AnthropicProvider {
+    fn build_model(&self, config: ModelInstanceConfig) -> Result<Arc<dyn ARModel>, ProviderError> {
+        let extras = config
+            .extras
+            .as_object()
+            .ok_or_else(|| ProviderError::BuildFailure {
+                reason: "anthropic provider requires extras to be a JSON object".to_string(),
+            })?;
 
-    pub fn api_key(mut self, key: impl Into<String>) -> Self {
-        self.api_key = Some(key.into());
-        self
-    }
+        let api_key = match extras.get("api_key") {
+            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+            Some(_) => {
+                return Err(ProviderError::BuildFailure {
+                    reason:
+                        "anthropic provider requires api_key in extras to be a non-empty string"
+                            .to_string(),
+                });
+            }
+            None => {
+                return Err(ProviderError::BuildFailure {
+                    reason: "anthropic provider requires api_key in extras".to_string(),
+                });
+            }
+        };
 
-    pub fn model_name(mut self, name: impl Into<String>) -> Self {
-        self.model_name = Some(name.into());
-        self
-    }
+        let base_url = match extras.get("base_url") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(_) => {
+                return Err(ProviderError::BuildFailure {
+                    reason: "anthropic provider requires base_url in extras to be a string"
+                        .to_string(),
+                });
+            }
+            None => DEFAULT_BASE_URL.to_string(),
+        };
 
-    pub fn base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = Some(url.into());
-        self
-    }
-
-    pub fn build(self) -> Result<AnthropicModel, Error> {
-        let api_key = self
-            .api_key
-            .ok_or_else(|| Error::Configuration("missing api_key".to_string()))?;
-        let model_name = self
-            .model_name
-            .ok_or_else(|| Error::Configuration("missing model_name".to_string()))?;
-        let base_url = self
-            .base_url
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        Ok(AnthropicModel {
+        Ok(Arc::new(AnthropicModel {
             client: reqwest::Client::new(),
             api_key,
-            model_name,
+            model_name: config.model_name,
             base_url,
-        })
-    }
-}
-
-impl Default for AnthropicModelBuilder {
-    fn default() -> Self {
-        Self::new()
+        }))
     }
 }
 
@@ -578,28 +584,94 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
-    fn builder_requires_api_key() {
-        let result = AnthropicModelBuilder::new().model_name("x").build();
+    fn provider_build_requires_api_key() {
+        let provider = AnthropicProvider::new();
+        let result = provider.build_model(ModelInstanceConfig::new("x", serde_json::json!({})));
         match result {
-            Err(Error::Configuration(msg)) => assert_eq!(msg, "missing api_key"),
-            Err(e) => panic!("expected Configuration error, got {e:?}"),
-            Ok(_) => panic!("expected Configuration error, got Ok"),
+            Err(ProviderError::BuildFailure { reason }) => {
+                assert!(
+                    reason.contains("api_key"),
+                    "expected api_key in reason, got {reason:?}"
+                );
+            }
+            Err(e) => panic!("expected BuildFailure, got {e:?}"),
+            Ok(_) => panic!("expected BuildFailure, got Ok"),
         }
     }
 
     #[test]
-    fn builder_requires_model_name() {
-        let result = AnthropicModelBuilder::new().api_key("k").build();
+    fn provider_build_rejects_non_string_api_key() {
+        let provider = AnthropicProvider::new();
+        let result = provider.build_model(ModelInstanceConfig::new(
+            "x",
+            serde_json::json!({ "api_key": 42 }),
+        ));
         match result {
-            Err(Error::Configuration(msg)) => assert_eq!(msg, "missing model_name"),
-            Err(e) => panic!("expected Configuration error, got {e:?}"),
-            Ok(_) => panic!("expected Configuration error, got Ok"),
+            Err(ProviderError::BuildFailure { reason }) => {
+                assert!(
+                    reason.contains("api_key"),
+                    "expected api_key in reason, got {reason:?}"
+                );
+            }
+            Err(e) => panic!("expected BuildFailure, got {e:?}"),
+            Ok(_) => panic!("expected BuildFailure, got Ok"),
+        }
+    }
+
+    #[test]
+    fn provider_build_rejects_non_object_extras() {
+        let provider = AnthropicProvider::new();
+        let result = provider.build_model(ModelInstanceConfig::new("x", serde_json::Value::Null));
+        match result {
+            Err(ProviderError::BuildFailure { reason }) => {
+                assert!(
+                    reason.contains("JSON object"),
+                    "expected JSON object in reason, got {reason:?}"
+                );
+            }
+            Err(e) => panic!("expected BuildFailure, got {e:?}"),
+            Ok(_) => panic!("expected BuildFailure, got Ok"),
+        }
+    }
+
+    #[test]
+    fn provider_build_succeeds_with_minimum_extras() {
+        let provider = AnthropicProvider::new();
+        provider
+            .build_model(ModelInstanceConfig::new(
+                "claude-test",
+                serde_json::json!({ "api_key": "k" }),
+            ))
+            .expect("provider builds with api_key alone");
+    }
+
+    #[test]
+    fn provider_build_rejects_non_string_base_url() {
+        let provider = AnthropicProvider::new();
+        let result = provider.build_model(ModelInstanceConfig::new(
+            "x",
+            serde_json::json!({ "api_key": "k", "base_url": 42 }),
+        ));
+        match result {
+            Err(ProviderError::BuildFailure { reason }) => {
+                assert!(
+                    reason.contains("base_url"),
+                    "expected base_url in reason, got {reason:?}"
+                );
+            }
+            Err(e) => panic!("expected BuildFailure, got {e:?}"),
+            Ok(_) => panic!("expected BuildFailure, got Ok"),
         }
     }
 
     #[test]
     fn anthropic_model_is_send_sync() {
         assert_send_sync::<AnthropicModel>();
+    }
+
+    #[test]
+    fn anthropic_provider_is_send_sync() {
+        assert_send_sync::<AnthropicProvider>();
     }
 
     #[test]

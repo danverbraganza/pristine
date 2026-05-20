@@ -1,6 +1,7 @@
 use futures::StreamExt;
-use pristine::model::anthropic::AnthropicModelBuilder;
-use pristine::model::{ARModel, ContentPart, ModelInput, ModelStreamEvent, Role, ToolSpec, Turn};
+use pristine::model::anthropic::AnthropicProvider;
+use pristine::model::{ContentPart, ModelInput, ModelStreamEvent, Role, ToolSpec, Turn};
+use pristine::provider::{ModelInstanceConfig, ModelProvider};
 use std::env;
 use std::time::Duration;
 
@@ -15,11 +16,12 @@ async fn live_anthropic_smoke() {
         }
     };
 
-    let model = AnthropicModelBuilder::new()
-        .api_key(api_key)
-        .model_name("claude-haiku-4-5-20251001")
-        .build()
-        .expect("builder should succeed");
+    let model = AnthropicProvider::new()
+        .build_model(ModelInstanceConfig::new(
+            "claude-haiku-4-5-20251001",
+            serde_json::json!({ "api_key": api_key }),
+        ))
+        .expect("provider should build model");
 
     let input = ModelInput {
         turns: vec![
@@ -71,11 +73,12 @@ async fn live_anthropic_tool_use_smoke() {
         }
     };
 
-    let model = AnthropicModelBuilder::new()
-        .api_key(api_key)
-        .model_name("claude-haiku-4-5-20251001")
-        .build()
-        .expect("builder should succeed");
+    let model = AnthropicProvider::new()
+        .build_model(ModelInstanceConfig::new(
+            "claude-haiku-4-5-20251001",
+            serde_json::json!({ "api_key": api_key }),
+        ))
+        .expect("provider should build model");
 
     let add_spec = ToolSpec {
         name: "add".to_string(),

@@ -24,7 +24,8 @@ use crate::agent::AgentId;
 use crate::builtins::{AddTool, Edit, ExecBash, Insert, Read, Write};
 use crate::harness::{HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
-use crate::model::anthropic::AnthropicModelBuilder;
+use crate::model::anthropic::AnthropicProvider;
+use crate::provider::{ModelInstanceConfig, ModelProvider};
 
 const SYSTEM_PROMPT: &str =
     "You are the Pristine agent. You have an identity that is uniquely yours!";
@@ -73,15 +74,16 @@ async fn run_async() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("ANTHROPIC_API_KEY not set"));
     }
 
-    let anthropic = AnthropicModelBuilder::new()
-        .api_key(api_key)
-        .model_name(model)
-        .build()?;
+    let provider = AnthropicProvider::new();
+    let anthropic = provider.build_model(ModelInstanceConfig::new(
+        model,
+        serde_json::json!({ "api_key": api_key }),
+    ))?;
 
     let model_id = ModelId::new(ANTHROPIC_MODEL_KEY);
     let agent_id = AgentId::new();
     let mut harness = HarnessBuilder::new()
-        .add_model(model_id.clone(), Arc::new(anthropic))
+        .add_model(model_id.clone(), anthropic)
         .add_agent(PendingAgent {
             id: agent_id,
             system_prompt: SYSTEM_PROMPT.to_string(),

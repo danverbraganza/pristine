@@ -25,7 +25,8 @@ use pristine::builtins::{AddTool, Edit, ExecBash, Insert, Read, Write};
 use pristine::harness::{HarnessBuilder, ModelId, PendingAgent};
 use pristine::history::Block;
 use pristine::messagebus::AgentEvent;
-use pristine::model::anthropic::AnthropicModelBuilder;
+use pristine::model::anthropic::AnthropicProvider;
+use pristine::provider::{ModelInstanceConfig, ModelProvider};
 
 const SYSTEM_PROMPT: &str =
     "You are the Pristine agent. You have an identity that is uniquely yours!";
@@ -64,16 +65,17 @@ async fn builtin_tools_live_read_edit_exec() {
 
     // Harness construction mirrors `src/lib.rs::run_async` -- the
     // canonical six-tool registration plus a real Anthropic ARModel.
-    let anthropic = AnthropicModelBuilder::new()
-        .api_key(api_key)
-        .model_name(MODEL_NAME)
-        .build()
+    let anthropic = AnthropicProvider::new()
+        .build_model(ModelInstanceConfig::new(
+            MODEL_NAME,
+            serde_json::json!({ "api_key": api_key }),
+        ))
         .expect("anthropic model builds");
 
     let model_id = ModelId::new(ANTHROPIC_MODEL_KEY);
     let agent_id = AgentId::new();
     let mut harness = HarnessBuilder::new()
-        .add_model(model_id.clone(), Arc::new(anthropic))
+        .add_model(model_id.clone(), anthropic)
         .add_agent(PendingAgent {
             id: agent_id,
             system_prompt: SYSTEM_PROMPT.to_string(),

@@ -54,6 +54,14 @@ A bead may specify an exact symbol, file location, or code shape that, on contac
 
 Do NOT declare a deviation for: choices fully within the bead's discretion, restatements of what the bead asked for, or stylistic micro-decisions invisible from the diff. Deviations exist so the Judge can audit instruction-vs-implementation drift, not as a journal of the implementation.
 
+## Working copy handoff
+The Coordinator hands you an empty working copy at `@`. Work directly on it.
+
+- Do NOT run `jj new` to start a new commit. Reuse the empty `@` you were given.
+- Verify first: run `jj st` and confirm `@` reports no changes.
+- Contamination: if `@` is NOT empty AND you did not author the contents, STOP and report the contamination to the Coordinator. Do not silently absorb it.
+- Second commits: if the bead's scope genuinely requires a second logical commit, run `jj new` explicitly at that point, after the first commit has been described.
+
 ## Commit trailer
 Every commit you create MUST end with the trailer line (with a blank line before it):
 

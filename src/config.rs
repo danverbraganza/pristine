@@ -12,6 +12,7 @@
 //! either `Ok(Config)` or `Err(ConfigErrors)`.
 
 pub mod auth;
+pub mod discover;
 pub mod error;
 pub mod parse;
 pub mod resolve;
@@ -23,6 +24,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub use auth::{AuthConfig, ModelAliasConfig, ProviderConfig};
+pub use discover::{HomeSource, ProcessHome, resolve_auth_path, resolve_topology_path};
 pub use error::{ConfigError, ConfigErrors};
 pub use parse::{
     parse_auth, parse_auth_with_env, parse_topology, parse_topology_with_env, read_auth_file,

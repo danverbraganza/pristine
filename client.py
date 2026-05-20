@@ -21,13 +21,30 @@ import sys
 from jsonrpcclient import request_json
 
 
+class RpcError(Exception):
+    """JSON-RPC error response returned by the server."""
+
+    def __init__(self, method: str, code: int | None, message: str) -> None:
+        super().__init__(f"{method} -> [{code}] {message}")
+        self.method = method
+        self.code = code
+        self.message = message
+
+
 def send(proc: subprocess.Popen, method: str, params: dict | None = None) -> dict:
-    """Send a JSON-RPC request and return the parsed response."""
+    """Send a JSON-RPC request and return its `result` payload.
+
+    Raises RpcError if the server returned an `error` response.
+    """
     req = request_json(method, params=params)
     assert proc.stdin is not None
     proc.stdin.write(req + "\n")
     proc.stdin.flush()
-    return read_response(proc)
+    msg = read_response(proc)
+    if "error" in msg:
+        err = msg["error"]
+        raise RpcError(method, err.get("code"), err.get("message", ""))
+    return msg.get("result", {})
 
 
 def read_response(proc: subprocess.Popen) -> dict:
@@ -93,8 +110,11 @@ def main() -> None:
     )
 
     try:
-        resp = send(proc, "initialize")
-        result = resp["result"]
+        try:
+            result = send(proc, "initialize")
+        except RpcError as e:
+            print(f"Failed to initialize: {e}", file=sys.stderr)
+            sys.exit(1)
         agent_id = result["agent_id"]
         print(f"Pristine ({agent_id[:8]})", file=sys.stderr)
         scripted = not sys.stdin.isatty()
@@ -117,11 +137,18 @@ def main() -> None:
                 break
             if not user_input.strip():
                 continue
-            send(proc, "send_message", {"agent_id": agent_id, "content": user_input})
+            try:
+                send(proc, "send_message", {"agent_id": agent_id, "content": user_input})
+            except RpcError as e:
+                print(f"send_message failed: {e}", file=sys.stderr)
+                continue
             drain_events(proc)
     finally:
         if proc.poll() is None:
-            send(proc, "shutdown")
+            try:
+                send(proc, "shutdown")
+            except RpcError as e:
+                print(f"shutdown error: {e}", file=sys.stderr)
         proc.stdin.close()
         proc.wait()
 

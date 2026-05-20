@@ -60,7 +60,6 @@ pub enum Error {
     Http(String),
     Deserialization(String),
     Api { status: u16, message: String },
-    Configuration(String),
 }
 
 impl std::fmt::Display for Error {
@@ -69,7 +68,6 @@ impl std::fmt::Display for Error {
             Error::Http(msg) => write!(f, "http error: {msg}"),
             Error::Deserialization(msg) => write!(f, "deserialization error: {msg}"),
             Error::Api { status, message } => write!(f, "api error (status {status}): {message}"),
-            Error::Configuration(msg) => write!(f, "configuration error: {msg}"),
         }
     }
 }

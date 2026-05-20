@@ -25,3 +25,4 @@ jsonrpsee = { version = "0.26.0", features = ["server-core", "macros"] }
 eventsource-stream = "0.2"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+toml = "0.8"

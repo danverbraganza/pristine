@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod builtins;
+pub mod config;
 pub mod harness;
 pub mod history;
 pub mod messagebus;

@@ -21,6 +21,14 @@ import sys
 from jsonrpcclient import request_json
 
 
+HELP_TEXT = """\
+Client commands (handled locally, not sent to the agent):
+  /help   show this message
+  /quit   exit the client (Ctrl+D / Ctrl+C also work)
+Any other input is forwarded to the agent as a user message.\
+"""
+
+
 class RpcError(Exception):
     """JSON-RPC error response returned by the server."""
 
@@ -133,7 +141,7 @@ def main() -> None:
             print(f"Failed to initialize: {e}", file=sys.stderr)
             sys.exit(1)
         agent_id = result["agent_id"]
-        print(f"Pristine ({agent_id[:8]})", file=sys.stderr)
+        print(f"Pristine ({agent_id[:8]}) -- type /help for client commands", file=sys.stderr)
         scripted = not sys.stdin.isatty()
         if scripted:
             print("(scripted mode: reading turns from stdin)", file=sys.stderr)
@@ -152,7 +160,13 @@ def main() -> None:
             except (EOFError, KeyboardInterrupt):
                 print(file=sys.stderr)
                 break
-            if not user_input.strip():
+            stripped = user_input.strip()
+            if not stripped:
+                continue
+            if stripped == "/quit":
+                break
+            if stripped == "/help":
+                print(HELP_TEXT, file=sys.stderr)
                 continue
             try:
                 send(proc, "send_message", {"agent_id": agent_id, "content": user_input})

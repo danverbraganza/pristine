@@ -494,6 +494,15 @@ by execution_id (out of scope this cycle).
 - Command line parsing with Clap
 - `jsonrpsee` 0.26 (`server-core`, `macros`) for JSON-RPC dispatch
 
+### Embedded default topology
+
+The canonical fallback topology lives at `default.toml` in the repository root
+and is embedded into the binary at compile time via
+`include_str!("../default.toml")` in `src/config.rs`. This is the topology
+served when `pristine run` is invoked without a `-c/--config` override. Moving
+or renaming `default.toml` will break the build unless the `include_str!` path
+in `src/config.rs` is updated in lockstep.
+
 ## Phase 1: Initial Build
 
 To validate the core engine design, Phase 1 implemented `pristine run` as a

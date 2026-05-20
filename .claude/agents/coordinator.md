@@ -49,6 +49,13 @@ On startup, read these files in order:
     - The Judge's FAIL reason is purely on commit metadata (trailer missing, description typo, wrong commit author, etc.).
     - No code, tests, or file-structure changes are needed.
     In that case the Coordinator may amend the metadata on `@` directly (e.g. `jj desc -m ...`) and re-judge. A metadata-only fix does NOT count against the 4-attempt cap, MUST be re-judged before close, and MUST be noted in the Coordinator's bead-close summary. For any FAIL that touches the diff itself (code, tests, file layout), the reset + retry protocol above stands unchanged.
+  - **Transient Judge failure exception.** If the Judge Subagent fails before rendering a verdict — Task tool returns an error, agent crashes, socket/API timeout, or the agent's final message contains no PASS/FAIL — this is NOT a substantive FAIL. The Coordinator MUST:
+    - Leave `@` untouched (do NOT run `jj abandon @`).
+    - Re-run the Judge Subagent with the same prompt.
+    - NOT count the crash against the 4-attempt cap.
+    - If the Judge crashes three times in a row, escalate for human input (Judge tooling itself may be broken).
+
+    A transient Judge failure means no verdict was rendered. If the Judge rendered FAIL — even briefly, even with a partial reason — that is a substantive FAIL and follows the abandon-and-retry protocol.
   - **Revert tool selection.** For full-content reverts when retrying: `jj abandon @` (removes the failed content commit; descendants rebase). For partial reverts that strip uncommitted contamination (e.g. `.beads/*` files in a working copy): `jj restore <paths>`.
 - **Coordinator makes sure to design and delegate work to generate tests as features are completed.**
 - **Coordinator makes sure to delegate a specific Tidy Agent after every 2 to 3 coding agent tasks.** Beads created by the Tidy agent must be completed at the priority they are filed.

@@ -120,7 +120,7 @@ async fn run_async() -> anyhow::Result<()> {
 /// it uses for the `load` path; everything else is collapsed into a single
 /// opaque `anyhow::Error`.
 #[derive(Debug)]
-enum HarnessAssemblyError {
+pub enum HarnessAssemblyError {
     Config(ConfigErrors),
     Other(anyhow::Error),
 }
@@ -144,7 +144,7 @@ impl From<anyhow::Error> for HarnessAssemblyError {
 /// `ProviderRegistry` knows which provider names are valid. Lookup misses
 /// surface as `ConfigError::UnknownProvider` collected into a
 /// `ConfigErrors` aggregate so multiple bad provider names render together.
-fn build_harness_from_config(
+pub fn build_harness_from_config(
     config: Config,
 ) -> Result<(Harness, Vec<AgentId>), HarnessAssemblyError> {
     // Maintain a parallel `HashMap<String, Arc<dyn ModelProvider>>` because

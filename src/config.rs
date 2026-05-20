@@ -12,11 +12,16 @@
 pub mod auth;
 pub mod error;
 pub mod parse;
+pub mod template;
 pub mod topology;
 
 pub use auth::{AuthConfig, ModelAliasConfig, ProviderConfig, ProviderKind};
 pub use error::{ConfigError, ConfigErrors};
-pub use parse::{parse_auth, parse_topology, read_auth_file, read_topology_file};
+pub use parse::{
+    parse_auth, parse_auth_with_env, parse_topology, parse_topology_with_env, read_auth_file,
+    read_topology_file,
+};
+pub use template::{EnvSource, ProcessEnv, template_value};
 pub use topology::{AgentConfig, ToolConfig, ToolKind, TopologyConfig};
 
 /// Inert, fully-resolved configuration handed from `pristine_config::load(...)`

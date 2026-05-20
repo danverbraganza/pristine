@@ -6,6 +6,7 @@ pub mod harness;
 pub mod history;
 pub mod messagebus;
 pub mod model;
+pub mod provider;
 pub mod rpc;
 pub mod shell;
 pub mod stdio;

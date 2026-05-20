@@ -526,6 +526,60 @@ tools = ["nonsense"]
     }
 
     #[test]
+    fn embedded_default_topology_has_five_builtin_tools() {
+        let topology: TopologyConfig =
+            toml::from_str(DEFAULT_TOPOLOGY).expect("embedded default.toml parses");
+
+        let mut keys: Vec<&str> = topology.tools.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["edit", "exec_bash", "insert", "read", "write"]);
+
+        for expected in ["read", "write", "edit", "insert", "exec_bash"] {
+            let tool = topology
+                .tools
+                .get(expected)
+                .unwrap_or_else(|| panic!("embedded topology declares `{expected}` tool"));
+            match tool {
+                ToolConfig::Builtin { builtin } => assert_eq!(
+                    builtin, expected,
+                    "tool `{expected}` registers built-in named `{expected}`"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn embedded_default_topology_has_default_agent_with_five_tools() {
+        let topology: TopologyConfig =
+            toml::from_str(DEFAULT_TOPOLOGY).expect("embedded default.toml parses");
+
+        assert_eq!(
+            topology.agents.len(),
+            1,
+            "embedded topology has exactly one agent"
+        );
+        let agent = &topology.agents[0];
+        assert_eq!(agent.name, "default");
+        assert_eq!(agent.model, "default");
+        assert_eq!(
+            agent.tools,
+            vec![
+                "read".to_string(),
+                "write".to_string(),
+                "edit".to_string(),
+                "insert".to_string(),
+                "exec_bash".to_string(),
+            ]
+        );
+        assert!(
+            agent.system_prompt.len() > 100,
+            "system prompt is a real coding-assistant prompt, not a placeholder \
+             (got {} chars)",
+            agent.system_prompt.len()
+        );
+    }
+
+    #[test]
     fn load_with_missing_home_when_default_auth_path_used() {
         let home = MockHome::none();
         let env = MapEnv::default();

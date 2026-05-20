@@ -1,14 +1,15 @@
-//! Configuration types for the two-file split (topology + auth).
+//! Two-file TOML configuration model: a topology file (agents, tools, prompts)
+//! and an auth file (providers, model aliases, credentials).
 //!
-//! `TopologyConfig` mirrors the embedded `default.toml`: agents, prompts, and
-//! tool declarations. `AuthConfig` mirrors the user-global `pristine-auth.toml`:
-//! providers, model aliases, and credentials. `Config` is the inert,
-//! fully-resolved value that the rest of the binary walks: a list of resolved
-//! agents (alias -> provider/model/api_key already looked up) plus the tool
-//! and provider tables it needs at HarnessBuilder time.
+//! `{{ENV_VAR}}` templating walks the parsed `toml::Value` tree and substitutes
+//! placeholders using an `EnvSource`. Alias resolution looks up each agent's
+//! `model = "X"` against `auth.models[X]`. Tool-reference validation requires
+//! every entry of an agent's `tools = [...]` to be a key declared in
+//! `topology.tools`.
 //!
-//! No file IO, env-var access, or templating lives here — those layers are
-//! added in subsequent beads on top of these types.
+//! `assemble_config<E: EnvSource>` is the orchestrator: parse, template,
+//! resolve, validate. Errors accumulate into `ConfigErrors`; the call returns
+//! either `Ok(Config)` or `Err(ConfigErrors)`.
 
 pub mod auth;
 pub mod error;

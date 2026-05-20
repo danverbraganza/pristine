@@ -107,10 +107,9 @@ impl std::error::Error for ConfigError {
     }
 }
 
-/// Aggregate of every `ConfigError` produced during one `load(...)` call.
-/// Returned by Phase C3's parse-don't-validate boundary; consumers can either
-/// inspect the contained vector or rely on the `Display` impl, which walks
-/// every contained error in registration order.
+/// Vec-backed aggregate of every `ConfigError` produced during one assembly
+/// walk. Consumers can inspect the contained vector directly or rely on the
+/// `Display` impl, which walks every contained error in registration order.
 #[derive(Debug, Default)]
 pub struct ConfigErrors(Vec<ConfigError>);
 

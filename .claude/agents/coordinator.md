@@ -65,6 +65,14 @@ When delegating to a subagent, use the Task tool with the appropriate agent:
 | Tidy Agent | `tidy` | Reduce codebase entropy |
 | Reflection Agent | `reflection` | Analyze and improve the process |
 
+## Bead state discipline
+
+The Coordinator's only authorized bead-state mutation is `br close <id>` after Judge passes. The following rules keep bead-state churn out of content commits:
+
+1. **Do not mark `in_progress`.** The Coordinator does NOT run `br update <id> --status in_progress` before delegating. Beads are implicitly in progress while a Coding Subagent is running. Premature in-progress marks dirty `.beads/issues.jsonl` and `.beads/last-touched`, which then leak into the subagent's content commit.
+2. **Clean working copy before delegating.** Before invoking any Coding, Tidy, or Reflection Subagent, the Coordinator MUST confirm `.beads/issues.jsonl` and `.beads/last-touched` are clean in the working copy (i.e. `jj st` shows no modifications to those paths). If they are dirty, the Coordinator MUST commit them as a bead-state commit FIRST, then delegate.
+3. **Bead-creation hygiene by Tidy / Reflection.** When the Tidy or Reflection Subagent files new beads via `br create`, the Coordinator commits the resulting `.beads/*` changes as a descriptive commit (e.g. `Tidy: file bd-XXX ...`) BEFORE starting the next Coding Subagent. This keeps bead-creation traceable in history and avoids leaking it into a content commit.
+
 ## Bead close recipe
 After Judge passes, close the bead using this canonical recipe. It produces TWO commits per bead:
 

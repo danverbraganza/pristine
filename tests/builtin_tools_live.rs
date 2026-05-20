@@ -1,9 +1,9 @@
 //! End-to-end chained live integration test for the built-in tools.
 //!
-//! Builds a real `Harness` with all six tools registered (the five
-//! filesystem/shell tools plus `AddTool`), wires it to a real Anthropic
-//! `ARModel`, and drives one inbound `UserMessage` instructing the agent
-//! to Read a Python fixture, Edit it, then ExecBash to run it. Asserts
+//! Builds a real `Harness` with all five filesystem/shell tools
+//! registered, wires it to a real Anthropic `ARModel`, and drives one
+//! inbound `UserMessage` instructing the agent to Read a Python
+//! fixture, Edit it, then ExecBash to run it. Asserts
 //! that the file was modified, that an ExecBash tool call ran, and that
 //! the agent's final `AgentMessage` mentions the expected output digit.
 //!
@@ -21,7 +21,7 @@ use tokio::time::timeout;
 use uuid::Uuid;
 
 use pristine::agent::AgentId;
-use pristine::builtins::{AddTool, Edit, ExecBash, Insert, Read, Write};
+use pristine::builtins::{Edit, ExecBash, Insert, Read, Write};
 use pristine::harness::{HarnessBuilder, ModelId, PendingAgent};
 use pristine::history::Block;
 use pristine::messagebus::AgentEvent;
@@ -64,7 +64,7 @@ async fn builtin_tools_live_read_edit_exec() {
         .to_string();
 
     // Harness construction mirrors `src/lib.rs::run_async` -- the
-    // canonical six-tool registration plus a real Anthropic ARModel.
+    // canonical five-tool registration plus a real Anthropic ARModel.
     let anthropic = AnthropicProvider::new()
         .build_model(ModelInstanceConfig::new(
             MODEL_NAME,
@@ -81,8 +81,6 @@ async fn builtin_tools_live_read_edit_exec() {
             system_prompt: SYSTEM_PROMPT.to_string(),
             model_id,
         })
-        .add_tool(Arc::new(AddTool::new()))
-        .expect("register AddTool")
         .add_tool(Arc::new(ExecBash::new()))
         .expect("register ExecBash")
         .add_tool(Arc::new(Edit::new()))

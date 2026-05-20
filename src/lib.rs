@@ -24,7 +24,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::AgentId;
-use crate::builtins::{AddTool, Edit, ExecBash, Insert, Read, Write};
+use crate::builtins::{Edit, ExecBash, Insert, Read, Write};
 use crate::config::{
     Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, load as load_config,
 };
@@ -229,8 +229,6 @@ fn build_harness_from_config(
 /// of scope.
 fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuilder> {
     let builder = builder
-        .add_tool(Arc::new(AddTool::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register AddTool: {e}"))?
         .add_tool(Arc::new(ExecBash::new()))
         .map_err(|e| anyhow::anyhow!("failed to register ExecBash: {e}"))?
         .add_tool(Arc::new(Edit::new()))
@@ -369,14 +367,13 @@ mod tests {
         assert_eq!(
             tool_names,
             vec![
-                "add".to_string(),
                 "edit".to_string(),
                 "exec_bash".to_string(),
                 "insert".to_string(),
                 "read".to_string(),
                 "write".to_string(),
             ],
-            "expected the six built-in tools (five plus AddTool) registered",
+            "expected the five built-in tools registered",
         );
     }
 

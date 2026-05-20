@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Comparative engine analysis — configuration patterns for Pristine</title>
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --muted: #555;
+    --accent: #245;
+    --rule: #ddd;
+    --bg: #fafaf7;
+    --code-bg: #f0eee6;
+  }
+  html { background: var(--bg); }
+  body {
+    color: var(--fg);
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 17px;
+    line-height: 1.55;
+    max-width: 44rem;
+    margin: 2rem auto;
+    padding: 0 1.25rem 4rem;
+  }
+  h1, h2, h3 {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: var(--accent);
+    line-height: 1.25;
+  }
+  h1 { font-size: 1.8rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.25rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.2rem; }
+  h3 { font-size: 1.1rem; margin-top: 1.5rem; }
+  .subtitle { color: var(--muted); font-style: italic; margin-top: 0; }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 2rem; }
+  code, pre {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    background: var(--code-bg);
+  }
+  code { padding: 0.05em 0.3em; border-radius: 3px; }
+  pre { padding: 0.75rem 1rem; border-radius: 4px; overflow-x: auto; }
+  pre code { background: transparent; padding: 0; }
+  blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 1rem 0;
+    padding: 0.25rem 1rem;
+    color: var(--muted);
+    font-style: italic;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    font-size: 0.95em;
+  }
+  th, td {
+    border-bottom: 1px solid var(--rule);
+    padding: 0.5rem 0.6rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    background: var(--code-bg);
+  }
+  td strong { color: var(--accent); }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: 0.25rem 0; }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+  .callout {
+    background: var(--code-bg);
+    border-left: 3px solid var(--accent);
+    padding: 0.75rem 1rem;
+    margin: 1.25rem 0;
+  }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+
+<h1>Comparative engine analysis</h1>
+<p class="subtitle">Configuration patterns from Unity, WebKit, Unreal, Godot, and VS Code &mdash; and which survive translation to Pristine.</p>
+<p class="meta">Pristine harness engine &middot; pre-blueprint research for the Configuration File roadmap item</p>
+
+<h2>Framing</h2>
+<p>
+  Pristine is positioned as a harness <em>engine</em>: not an agent, not a UI, not a product, but the core that those layers are built on. The analogy is Unity to games or WebKit to browsers. That positioning sets the bar for the configuration story: deep, structured, evolvable over many years, and never the engine's master.
+</p>
+<p>
+  This document surveys how four mature engines (and one editor for contrast) handle configuration, then distills the patterns that translate to Pristine and the ones that do not.
+</p>
+
+<h2>Existing project material</h2>
+<p>The Configuration File phase is already anchored in repo docs. Three excerpts:</p>
+
+<blockquote>
+  <p><strong>DESIGN.md (roadmap item 1):</strong> Replace the hardcoded <code>HarnessBuilder</code> setup with file-driven configuration. A configuration file will control how many Agents to run, their system prompts, which tools are available to each Agent, model assignments via <code>ModelRole</code>, and inter-agent routing rules. The builder remains available for programmatic use; the config file is sugar that produces the same builder calls.</p>
+</blockquote>
+
+<blockquote>
+  <p><strong>DESIGN.md (philosophy):</strong> Configuration is the primary user interface. Rather than hard-coding agent topologies, Pristine will support declarative configuration files that describe which agents to run, how they are wired together, and what capabilities each has. The builder API remains the programmatic escape hatch for cases configuration cannot express.</p>
+</blockquote>
+
+<blockquote>
+  <p><strong>ARCHITECTURE.md (Harness):</strong> Initially, the Harness will be constructed via a builder function pattern, but the eventual goal is going to be for the Harness to be customized via a configuration file, which will control how many agents to run, any custom prompts, what tools they have and how they can interact with each other.</p>
+</blockquote>
+
+<p>The hardcoded surface being replaced lives in <code>src/lib.rs::run_async</code> (lines 63&ndash;113):</p>
+<ul>
+  <li>One Anthropic model, name from <code>--model</code> CLI flag, key from <code>ANTHROPIC_API_KEY</code> env.</li>
+  <li>One agent with hardcoded <code>SYSTEM_PROMPT</code>, single <code>ModelRole::Default</code> mapping.</li>
+  <li>Hardcoded tool set: <code>AddTool</code>, <code>ExecBash</code>, <code>Edit</code>, <code>Read</code>, <code>Write</code>, <code>Insert</code> &mdash; every agent gets every tool.</li>
+  <li>No routing; one agent; stdio JSON-RPC client.</li>
+</ul>
+<p>
+  <code>HarnessBuilder</code> (src/harness.rs:99) is the programmatic API the config layer must produce calls into:
+  <code>add_model(ModelId, Arc&lt;dyn ARModel&gt;)</code>,
+  <code>add_agent(PendingAgent { id, system_prompt, model_id })</code>,
+  <code>add_tool(Arc&lt;dyn Tool&gt;)</code>,
+  <code>build()</code>.
+</p>
+
+<h2>Case studies</h2>
+
+<h3>1. Unity &mdash; composition-first, sharded, ID-stable</h3>
+<ul>
+  <li><strong>ProjectSettings/</strong> is not one file; it is roughly 30 YAML files, each scoped to one subsystem (Audio, Graphics, Input, Physics, Quality, Tags, Time, Editor&hellip;). Each carries a serialization version key.</li>
+  <li><strong>ScriptableObjects</strong> = config-as-data: typed assets authored once and referenced by components. The Pristine analog would be tool configurations, system prompts, ModelRole bindings &mdash; named, typed, reusable.</li>
+  <li><strong>GUIDs over names.</strong> Every asset has a stable GUID; renames don't break references. The <code>.meta</code> sidecar file exists for this alone.</li>
+  <li><strong>Composition by attachment.</strong> A GameObject is a list of Components, each with serialized fields. Topology <em>is</em> the config; there is no separate "wiring" file.</li>
+  <li><strong>Per-target overlays.</strong> PlayerSettings has per-platform sections; QualitySettings has tiers. The same logical config evaluates differently per target.</li>
+</ul>
+
+<h3>2. WebKit &mdash; typed schema, codegen, embedder-owned</h3>
+<ul>
+  <li><strong>Settings.yaml</strong> is the source of truth: roughly 800 preferences, each declared with type, default, per-port override, and lifecycle tier. A build script generates C++ accessors, defaults table, and the IPC marshalling. Hand-written settings code does not exist.</li>
+  <li><strong>Layered tiers</strong>: build-time <code>FEATURE_DEFINES</code>, runtime defaults, runtime overrides via <code>WKPreferences</code>, experimental flags via <code>WebPreferencesExperimental.yaml</code>. Each tier has different mutability and audit semantics.</li>
+  <li><strong>Embedder owns the top level.</strong> <code>WKWebViewConfiguration</code>, <code>WKProcessPool</code>, <code>WKPreferences</code> are config <em>objects</em> the embedder constructs and hands to the engine. There is no file the engine reads on its own &mdash; config flows in through the API. The file/schema exists for the embedder's tooling, not the engine's runtime.</li>
+  <li><strong>Per-context, not global.</strong> Each WebView has its own configuration; sharing happens by sharing config objects, not by global state.</li>
+</ul>
+
+<h3>3. Unreal &mdash; three-tier INI layering, partial hot reload</h3>
+<ul>
+  <li><code>Base*.ini</code> (engine defaults) &rarr; <code>Default*.ini</code> (project overrides, in-repo) &rarr; <code>User*.ini</code> (per-developer, gitignored). Three layers, deterministic precedence.</li>
+  <li><strong>Per-platform overlays</strong>: <code>Windows/WindowsEngine.ini</code> overrides <code>DefaultEngine.ini</code> only on that target.</li>
+  <li><strong>cvars</strong> are runtime experimental knobs, exposed via the console and persisted to user config if pinned. Distinct from settings; closer to feature flags.</li>
+  <li>Most keys are restart-required; a documented subset hot-reloads.</li>
+</ul>
+
+<h3>4. Godot / VS Code &mdash; the lightweight end</h3>
+<ul>
+  <li><strong>Godot</strong>: <code>project.godot</code> is a single INI-ish manifest; scenes (<code>.tscn</code>) carry their own data. Plugins register via <code>plugin.cfg</code>.</li>
+  <li><strong>VS Code</strong>: layered JSON &mdash; default &rarr; user &rarr; workspace &rarr; folder. Schema-defined; extensions contribute settings via <code>contributes.configuration</code> in <code>package.json</code>.</li>
+</ul>
+
+<h2>What survives translation to Pristine</h2>
+
+<table>
+  <thead>
+    <tr><th>Pattern</th><th>Source</th><th>Verdict</th><th>Why</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Config file produces builder calls, never owns the runtime</td>
+      <td>DESIGN.md already + WebKit embedder model</td>
+      <td><strong>Yes &mdash; load-bearing.</strong></td>
+      <td>Keeps SDK-first posture intact. Config is one of several front-ends.</td>
+    </tr>
+    <tr>
+      <td>Schema-as-source-of-truth, codegen the rest</td>
+      <td>WebKit</td>
+      <td><strong>Partially, deferred.</strong></td>
+      <td>Premature at v1; commit to a single <code>pristine-config</code> module now, add <code>schemars</code>-driven JSON Schema later.</td>
+    </tr>
+    <tr>
+      <td>Subsystem sharding (multiple files, top-level sections)</td>
+      <td>Unity, Unreal</td>
+      <td><strong>Yes &mdash; as sections, not files, at v1.</strong></td>
+      <td>One <code>pristine.toml</code> with <code>[harness]</code>, <code>[[models]]</code>, <code>[[agents]]</code>, <code>[[tools]]</code>, <code>[[routes]]</code>. File sharding via <code>include = […]</code> can come later without breaking schema.</td>
+    </tr>
+    <tr>
+      <td>Three-tier layering: shipped defaults &rarr; project &rarr; user</td>
+      <td>Unreal, VS Code</td>
+      <td><strong>Yes.</strong></td>
+      <td>Solves secrets (user tier is gitignored), solves "what does pristine do with zero config" (shipped defaults supply a single-agent harness), keeps the builder-only path alive (user-supplied builder == top tier).</td>
+    </tr>
+    <tr>
+      <td>Stable IDs, not names, for references</td>
+      <td>Unity GUIDs</td>
+      <td><strong>Adopt the spirit, not the cost.</strong></td>
+      <td><code>ModelId</code> and <code>AgentId</code> already exist. Config references must use these. No <code>.meta</code>-file overhead &mdash; the name in TOML <em>is</em> the id (<code>models.anthropic-default</code> keys the table). Renames break references loudly during validation.</td>
+    </tr>
+    <tr>
+      <td>Per-target / per-environment overlays</td>
+      <td>Unity, Unreal</td>
+      <td><strong>Reserve, don't build.</strong></td>
+      <td>A <code>[profile.dev]</code> / <code>[profile.prod]</code> namespace can be left out at v1 but the schema shouldn't preclude it.</td>
+    </tr>
+    <tr>
+      <td>Env-var indirection for secrets (<code>${ANTHROPIC_API_KEY}</code>)</td>
+      <td>Universal</td>
+      <td><strong>Yes.</strong></td>
+      <td>The repo already pulls the key from env; the config layer must preserve that without inviting plaintext keys into files.</td>
+    </tr>
+    <tr>
+      <td>Typed validation phases (parse &rarr; resolve &rarr; semantic-validate &rarr; build)</td>
+      <td>WebKit codegen, every game-engine loader</td>
+      <td><strong>Yes.</strong></td>
+      <td>Each phase has its own typed errors with span info. Bad configs must fail clearly and early.</td>
+    </tr>
+    <tr>
+      <td>Unknown-keys = warn, not error</td>
+      <td>Unreal, Unity</td>
+      <td><strong>Yes.</strong></td>
+      <td>Long-lived engines outlive their schemas; forward-compat by ignoring unknown sections with a warning.</td>
+    </tr>
+    <tr>
+      <td>Forward-compat slots for roadmap items</td>
+      <td>(discipline)</td>
+      <td><strong>Yes.</strong></td>
+      <td>Reserve <code>[[skills]]</code> and <code>[[routes]]</code> keys in the v1 schema even though feature work lands later &mdash; squatting on the namespace now avoids breaking changes later.</td>
+    </tr>
+    <tr>
+      <td>Hot reload</td>
+      <td>WebKit, Unity</td>
+      <td><strong>Defer.</strong></td>
+      <td>Restart-only at v1. But Harness owns the resolved config &mdash; no global static &mdash; so hot-reload remains a future option.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>The one shape-defining call</h2>
+<div class="callout">
+  <p>The deepest pattern across all four engines, and the one Pristine should commit to first:</p>
+  <p><strong>The engine never reads config files. The engine consumes typed config objects through its construction API. Files exist for the embedder's tooling layer, not the engine's runtime.</strong></p>
+</div>
+
+<p>
+  Concretely for Pristine: <code>Harness</code> and <code>HarnessBuilder</code> know nothing about TOML, file paths, env vars, or layering. There is a separate <code>pristine-config</code> (module or crate) whose job is <em>file &rarr; builder calls</em>, and a separate concern again for "the <code>pristine run</code> binary's policy for finding and layering files." This keeps the engine-as-library-engine posture and matches WebKit's split exactly.
+</p>
+
+<h2>Decisions (round 1)</h2>
+<p>Captured from a vision-holder pass over the survives-translation table. Each item closes (or sharpens) one or more of the open questions below.</p>
+
+<h3>Schema source of truth: Rust structs, not codegen</h3>
+<p>
+  The WebKit YAML-plus-codegen pattern is rejected as not Rust-native. <code>pristine-config</code> will define <code>pub struct Config { &hellip; }</code> with <code>#[derive(Deserialize)]</code>; TOML is one serde front-end among potentially several (JSON Schema export later via a <code>schemars</code> derive remains an option, still no build-step codegen).
+</p>
+
+<h3>Crate boundary: separate library</h3>
+<p>
+  <code>pristine-config</code> is a separate library invoked from the binary's <code>main</code>. <code>Harness</code> and <code>HarnessBuilder</code> know nothing about TOML, file paths, env vars, or templating. File-to-builder translation is the library's sole responsibility.
+</p>
+
+<h3>Subsystem sharding by sections</h3>
+<p>
+  One file, top-level sections. File-level sharding (multiple files with <code>include = […]</code>) is deferred &mdash; not needed at v1.
+</p>
+
+<h3>Layering / discovery: two-mode, no merging</h3>
+<ul>
+  <li>No CLI flag &rarr; read shipped <code>default.toml</code> (a single-agent vanilla coding agent).</li>
+  <li><code>1p -c &lt;file&gt;</code> / <code>--config &lt;file&gt;</code> &rarr; that file is used entirely. No fallback to <code>default.toml</code>. No separate user-tier overlay.</li>
+</ul>
+<p>The three-tier Unreal/VS Code layering pattern is rejected. There is no merging behavior to document and no precedence rules to debug.</p>
+
+<h3>Unknown keys: error, do not limp</h3>
+<p>
+  <code>#[serde(deny_unknown_fields)]</code> on every config struct. A typo in a key name or an obsolete field surfaces as a load-time error with the key name and line. Failing loudly beats silently running a different topology than the one the operator authored.
+</p>
+
+<h3>Secrets: <code>{{ENV_VAR}}</code> templating, resolved at config-load time</h3>
+<p>
+  The TOML carries placeholders like <code>api_key = "{{ANTHROPIC_API_KEY}}"</code>. <code>pristine-config</code> substitutes from the process environment as it loads. Missing env vars are a hard error.
+</p>
+<p>
+  Engineering note (no decision required yet): the substitution should walk the parsed <code>toml::Value</code> tree rather than mutate the raw text, to avoid TOML-injection from env-var contents containing quotes or backslashes. The user-visible behavior is text replacement either way.
+</p>
+
+<h3><code>--model</code> CLI flag goes away</h3>
+<p>
+  Model name lives in <code>default.toml</code> (or the supplied config). One source of truth; no flag-vs-file precedence to reason about.
+</p>
+
+<h3>No reserved forward-looking slots</h3>
+<p>
+  Skills, routes, profiles, hot-reload &mdash; none get placeholder sections in the v1 schema. They are added when their feature work lands. The smallness of the team makes coordinated schema extensions cheap, and avoiding speculative slots avoids the cost of designing the wrong shape twice.
+</p>
+
+<h3>Hot reload: deferred</h3>
+<p>
+  Harness owns the resolved config (no global static), so adding hot-reload later remains an option, but it is not built in v1.
+</p>
+
+<h3>Stable IDs vs names: TBD</h3>
+<p>
+  No decision. Names are the identifiers for now; the question is left open pending evidence (rename-pain, cross-file references, etc.).
+</p>
+
+<h2>Open questions remaining for the blueprint phase</h2>
+<ul>
+  <li><strong>File format.</strong> TOML is now the working assumption (<code>default.toml</code> shipped, <code>rust-bucket.toml</code> precedent, Rust-ecosystem default). Flagging for the blueprint to confirm or contradict.</li>
+  <li><strong>Tool wiring shape.</strong> Enumerate per-agent tool lists vs. global registry + per-agent allowlist. Affects both the schema and the <code>HarnessBuilder</code> &harr; <code>Agent</code> wiring path.</li>
+  <li><strong>ModelRole keying.</strong> Free-form strings vs. enum-with-extension-point. Today only <code>Default</code> exists; future Summarizer/Critic etc. arrive without warning.</li>
+  <li><strong>Stable IDs vs names</strong> (carryover from round 1).</li>
+  <li><strong>Templating implementation.</strong> Raw-text substitution before TOML parse vs. <code>toml::Value</code>-tree walk after parse. Same user-visible behavior; different failure surface.</li>
+  <li><strong>Per-agent tool configuration data.</strong> If a tool ever takes constructor parameters (allowlists, audit hooks, etc.), the config schema needs a shape for that. Today's built-ins all take a bare <code>new()</code>; this is preview-only until a tool needs it.</li>
+</ul>
+
+<hr>
+<p class="meta">Drafted as input to the Blueprint phase for the Configuration File roadmap item. Round 1 of vision-holder decisions recorded. No implementation work has been started.</p>
+
+</body>
+</html>

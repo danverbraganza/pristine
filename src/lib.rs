@@ -18,6 +18,7 @@ pub mod user;
 mod test_support;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -35,6 +36,16 @@ use crate::provider::{ModelInstanceConfig, ModelProvider};
 #[derive(Parser, Debug)]
 #[command(name = "pristine", about = "Pristine agent harness")]
 struct Cli {
+    /// Path to a topology TOML file. When supplied, replaces the embedded
+    /// `default.toml` entirely (no merging). Accepted at any position.
+    #[arg(short = 'c', long = "config", global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Path to the auth TOML file. When supplied, overrides the default
+    /// `<home>/pristine-auth.toml` location. Accepted at any position.
+    #[arg(long = "auth", global = true, value_name = "PATH")]
+    auth: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -42,13 +53,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Start the JSON-RPC stdio server.
-    Run {
-        /// Anthropic model identifier. Retained for backward compatibility;
-        /// the active model is now selected by the auth file's `[models.X]`
-        /// table. E3 will remove this flag.
-        #[arg(long)]
-        model: Option<String>,
-    },
+    Run,
 }
 
 /// Entry point shared by the `pristine` and `1p` binaries.
@@ -68,10 +73,14 @@ async fn run_async() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let command = cli
         .command
+        .as_ref()
         .ok_or_else(|| anyhow::anyhow!("a subcommand is required; try `pristine run`"))?;
-    let Command::Run { model: _ } = command;
+    let Command::Run = command;
 
-    let config = match load_config(LoadArgs::default()) {
+    let config = match load_config(LoadArgs {
+        config: cli.config.as_deref(),
+        auth: cli.auth.as_deref(),
+    }) {
         Ok(c) => c,
         Err(errors) => {
             eprintln!("{errors}");
@@ -239,7 +248,74 @@ fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuil
 mod tests {
     use super::*;
     use crate::config::{ResolvedAgent, ResolvedModel};
+    use clap::Parser;
     use std::collections::HashMap;
+
+    #[test]
+    fn cli_accepts_config_flag() {
+        let cli = Cli::try_parse_from(["pristine", "-c", "/tmp/topo.toml", "run"])
+            .expect("CLI accepts -c flag before the subcommand");
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/topo.toml"))
+        );
+        assert!(cli.auth.is_none());
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_accepts_auth_flag() {
+        let cli = Cli::try_parse_from(["pristine", "--auth", "/tmp/auth.toml", "run"])
+            .expect("CLI accepts --auth flag before the subcommand");
+        assert_eq!(
+            cli.auth.as_deref(),
+            Some(std::path::Path::new("/tmp/auth.toml"))
+        );
+        assert!(cli.config.is_none());
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_accepts_both_flags() {
+        let cli = Cli::try_parse_from([
+            "pristine",
+            "-c",
+            "/tmp/topo.toml",
+            "--auth",
+            "/tmp/auth.toml",
+            "run",
+        ])
+        .expect("CLI accepts both global flags together");
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/topo.toml"))
+        );
+        assert_eq!(
+            cli.auth.as_deref(),
+            Some(std::path::Path::new("/tmp/auth.toml"))
+        );
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_rejects_model_flag() {
+        let result = Cli::try_parse_from(["pristine", "--model", "foo", "run"]);
+        assert!(
+            result.is_err(),
+            "the --model flag was removed in E3; CLI must reject it"
+        );
+    }
+
+    #[test]
+    fn cli_global_flag_at_any_position() {
+        let cli = Cli::try_parse_from(["pristine", "run", "-c", "/tmp/topo.toml"])
+            .expect("CLI accepts -c flag in subcommand position via global = true");
+        assert_eq!(
+            cli.config.as_deref(),
+            Some(std::path::Path::new("/tmp/topo.toml"))
+        );
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
 
     fn anthropic_provider_only() -> HashMap<String, ProviderConfig> {
         let mut providers = HashMap::new();

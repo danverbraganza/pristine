@@ -2,7 +2,8 @@
 //!
 //! Pure path math: resolves CLI overrides against an injected `HomeSource`,
 //! expanding a leading `~` where applicable. No file IO and no auto-write —
-//! those responsibilities belong to later phases of the config-load pipeline.
+//! `autowrite::ensure_auth_file` handles missing-file materialization and
+//! `config::load_with` orchestrates the full read + parse + assemble pipeline.
 //!
 //! The `HomeSource` trait mirrors `EnvSource` from `template.rs`: production
 //! code uses `ProcessHome` which reads `HOME` from the process environment;

@@ -37,9 +37,9 @@ pub use template::{EnvSource, ProcessEnv, template_value};
 pub use topology::{AgentConfig, ToolConfig, TopologyConfig};
 pub use validate::validate_tool_refs;
 
-/// Embedded fallback topology used when `LoadArgs::config` is `None`. This is a
-/// placeholder during the configuration-file rollout; Phase E1 replaces it
-/// with the real coding-assistant prompt + five-tool registration.
+/// Canonical default topology shipped with pristine: the coding-assistant
+/// prompt plus the five built-in tools, embedded at compile time and used as
+/// the fallback when no `-c/--config` override is supplied.
 const DEFAULT_TOPOLOGY: &str = include_str!("../default.toml");
 
 /// Synthetic path label attached to TOML errors raised against the embedded

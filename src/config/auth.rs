@@ -39,8 +39,8 @@ pub enum ProviderConfig {
 /// One entry of `[models.X]` in the auth file. Points at a `[providers.Y]`
 /// entry by name and carries the provider-native model name plus the api key
 /// used when invoking that model. The api key is a verbatim string at this
-/// stage; the templating layer (Phase B3) substitutes `{{ENV_VAR}}`
-/// placeholders before this struct is constructed.
+/// stage; `config::template` substitutes `{{ENV_VAR}}` placeholders against
+/// the process environment before this struct is constructed.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelAliasConfig {

@@ -1,4 +1,10 @@
-//! AddTool: a demo arithmetic tool used to validate the Tool trait surface.
+//! AddTool: an example [`Tool`](crate::tool::Tool) implementation for SDK
+//! consumers writing their own tools.
+//!
+//! Not registered by the `pristine run` binary (see
+//! `src/lib.rs::register_builtin_tools` and `default.toml` for the binary's
+//! tool surface). It is exported as `pristine::builtins::AddTool` purely as
+//! a reference implementation for embedders.
 
 use serde::Deserialize;
 use serde_json::{Value, json};

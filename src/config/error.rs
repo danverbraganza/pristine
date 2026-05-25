@@ -23,9 +23,6 @@ pub enum ConfigError {
     /// A topology agent referenced a `model = "X"` whose alias is absent from
     /// the auth file.
     DanglingAlias { alias: String },
-    /// The auth file declared a `[models.X]` alias that no topology agent
-    /// references.
-    ExtraneousAlias { alias: String },
     /// An agent listed a tool name that is not declared in the topology's
     /// `[tools]` table.
     UndeclaredTool { agent: String, tool: String },
@@ -63,12 +60,6 @@ impl std::fmt::Display for ConfigError {
                     "model alias '{alias}' referenced by topology but absent from auth file"
                 )
             }
-            ConfigError::ExtraneousAlias { alias } => {
-                write!(
-                    f,
-                    "model alias '{alias}' declared in auth file but unused by topology"
-                )
-            }
             ConfigError::UndeclaredTool { agent, tool } => {
                 write!(
                     f,
@@ -98,7 +89,6 @@ impl std::error::Error for ConfigError {
             ConfigError::IoError { source, .. } => Some(source),
             ConfigError::UnknownEnvVar { .. }
             | ConfigError::DanglingAlias { .. }
-            | ConfigError::ExtraneousAlias { .. }
             | ConfigError::UndeclaredTool { .. }
             | ConfigError::DuplicateToolRef { .. }
             | ConfigError::UnknownProvider { .. }

@@ -14,8 +14,7 @@ pub mod stdio;
 pub mod tool;
 pub mod user;
 
-#[cfg(test)]
-mod test_support;
+pub mod test_support;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

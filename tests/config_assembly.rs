@@ -5,36 +5,12 @@
 //! and provider registrations. The harness is never started; no live API
 //! calls are made.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use pristine::HarnessAssemblyError;
 use pristine::build_harness_from_config;
-use pristine::config::{EnvSource, HomeSource, LoadArgs, load_with};
-
-// Temporary local copies of the in-memory `EnvSource` and `HomeSource` test
-// helpers. Duplicate copies live in `src/config/parse.rs`, `src/config/template.rs`,
-// `src/config.rs::tests`, and `src/config/discover.rs`; consolidation is owned by
-// the existing Tidy beads bd-3dd and bd-2w5. Promoting these to a `pub(crate)`
-// test helper would be out of scope for an F3 integration test.
-
-struct MapEnv(HashMap<String, String>);
-
-impl MapEnv {
-    fn new<const N: usize>(entries: [(&str, &str); N]) -> Self {
-        let mut map = HashMap::new();
-        for (k, v) in entries {
-            map.insert(k.to_string(), v.to_string());
-        }
-        Self(map)
-    }
-}
-
-impl EnvSource for MapEnv {
-    fn get(&self, name: &str) -> Option<String> {
-        self.0.get(name).cloned()
-    }
-}
+use pristine::config::{HomeSource, LoadArgs, load_with};
+use pristine::test_support::MapEnv;
 
 struct MockHome(Option<PathBuf>);
 

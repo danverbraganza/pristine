@@ -1,6 +1,16 @@
 //! Shared fixtures for crate-level tests.
+//!
+//! Exposed as `pub` so integration tests under `tests/` can reach the
+//! fixtures that have to round-trip through the crate's public API
+//! (notably [`MapEnv`], a deterministic [`crate::config::EnvSource`]
+//! implementation). Fixtures used only by `#[cfg(test)]` modules inside
+//! `src/` remain `pub(crate)` and become dead code in non-test builds;
+//! `#![allow(dead_code)]` silences the resulting warnings so the module
+//! can carry both kinds of helper without per-item cfg gates.
 
-use std::collections::VecDeque;
+#![allow(dead_code)]
+
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Mutex;
@@ -9,6 +19,7 @@ use std::time::Duration;
 use futures::Stream;
 use futures::stream;
 
+use crate::config::EnvSource;
 use crate::model::{self, ARModel, ModelInput, ModelStreamEvent};
 use crate::shell::{Shell, ShellError, ShellOutput};
 use crate::tool::ToolError;
@@ -153,5 +164,30 @@ impl Shell for StubShell {
             Some(entry) => entry,
             None => panic!("StubShell script exhausted at unexpected exec call: {command}"),
         }
+    }
+}
+
+/// In-memory [`EnvSource`] for deterministic config tests. Reachable from
+/// both `#[cfg(test)]` modules inside `src/` and integration tests under
+/// `tests/`, so the hoisted fixture is `pub` (not `pub(crate)`) and is
+/// not gated on `#[cfg(test)]`. `Default` matches the empty-env shape the
+/// hoisted callers expect.
+#[derive(Default)]
+pub struct MapEnv(HashMap<String, String>);
+
+impl MapEnv {
+    pub fn new<const N: usize>(entries: [(&str, &str); N]) -> Self {
+        Self(
+            entries
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
+    }
+}
+
+impl EnvSource for MapEnv {
+    fn get(&self, name: &str) -> Option<String> {
+        self.0.get(name).cloned()
     }
 }

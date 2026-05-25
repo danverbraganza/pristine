@@ -250,30 +250,10 @@ pub fn load(args: LoadArgs<'_>) -> Result<Config, ConfigErrors> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap as StdHashMap;
+    use crate::test_support::MapEnv;
 
     const TOPOLOGY_PATH: &str = "/virtual/topology.toml";
     const AUTH_PATH: &str = "/virtual/auth.toml";
-
-    /// In-memory `EnvSource` for deterministic assembly tests.
-    #[derive(Default)]
-    struct MapEnv(StdHashMap<String, String>);
-
-    impl MapEnv {
-        fn new<const N: usize>(entries: [(&str, &str); N]) -> Self {
-            let mut map = StdHashMap::new();
-            for (k, v) in entries {
-                map.insert(k.to_string(), v.to_string());
-            }
-            Self(map)
-        }
-    }
-
-    impl EnvSource for MapEnv {
-        fn get(&self, name: &str) -> Option<String> {
-            self.0.get(name).cloned()
-        }
-    }
 
     fn valid_topology() -> &'static str {
         r#"

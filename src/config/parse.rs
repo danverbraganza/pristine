@@ -260,27 +260,7 @@ tools = []
         assert_eq!(cfg.agents[0].name, "default");
     }
 
-    use std::collections::HashMap;
-
-    /// In-memory `EnvSource` for the `_with_env` entry-point tests.
-    #[derive(Default)]
-    struct MapEnv(HashMap<String, String>);
-
-    impl MapEnv {
-        fn new<const N: usize>(entries: [(&str, &str); N]) -> Self {
-            let mut map = HashMap::new();
-            for (k, v) in entries {
-                map.insert(k.to_string(), v.to_string());
-            }
-            Self(map)
-        }
-    }
-
-    impl EnvSource for MapEnv {
-        fn get(&self, name: &str) -> Option<String> {
-            self.0.get(name).cloned()
-        }
-    }
+    use crate::test_support::MapEnv;
 
     #[test]
     fn parse_auth_with_env_substitutes_api_key() {

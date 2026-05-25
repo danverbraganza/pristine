@@ -223,9 +223,8 @@ pub fn build_harness_from_config(
 }
 
 /// Register the five built-in tools shipped with pristine. Kept here, rather
-/// than driven by `Config.tools`, because E4 will fold the per-tool builder
-/// calls into a name-based registry lookup; this bead keeps that change out
-/// of scope.
+/// than driven by `Config.tools`; a future bead may fold these into a
+/// `Config.tools`-driven registration loop.
 fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuilder> {
     let builder = builder
         .add_tool(Arc::new(ExecBash::new()))
@@ -299,7 +298,7 @@ mod tests {
         let result = Cli::try_parse_from(["pristine", "--model", "foo", "run"]);
         assert!(
             result.is_err(),
-            "the --model flag was removed in E3; CLI must reject it"
+            "the --model flag is no longer accepted by the CLI"
         );
     }
 

@@ -1,7 +1,7 @@
-//! Integration test for Phase F3 of the configuration-file plan: load the
+//! Integration test: load + assemble produces an expected harness. Loads the
 //! embedded `default.toml` topology together with a fixture
-//! `pristine-auth.toml`, drive [`pristine::build_harness_from_config`], and
-//! assert the assembled `Harness` carries the expected agent, model, tools,
+//! `pristine-auth.toml`, drives [`pristine::build_harness_from_config`], and
+//! asserts the assembled `Harness` carries the expected agent, model, tools,
 //! and provider registrations. The harness is never started; no live API
 //! calls are made.
 

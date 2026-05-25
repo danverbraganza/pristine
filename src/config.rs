@@ -250,7 +250,7 @@ pub fn load(args: LoadArgs<'_>) -> Result<Config, ConfigErrors> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::MapEnv;
+    use crate::test_support::{MapEnv, MockHome};
 
     const TOPOLOGY_PATH: &str = "/virtual/topology.toml";
     const AUTH_PATH: &str = "/virtual/auth.toml";
@@ -409,25 +409,6 @@ tools = ["nonsense"]
         assert_eq!(config.tools.len(), 2);
         assert_eq!(config.providers.len(), 1);
         assert_eq!(config.agents[0].model.api_key, "sk-bar");
-    }
-
-    /// In-memory `HomeSource` for deterministic `load_with` tests.
-    struct MockHome(Option<PathBuf>);
-
-    impl MockHome {
-        fn some(path: PathBuf) -> Self {
-            Self(Some(path))
-        }
-
-        fn none() -> Self {
-            Self(None)
-        }
-    }
-
-    impl HomeSource for MockHome {
-        fn home_dir(&self) -> Option<PathBuf> {
-            self.0.clone()
-        }
     }
 
     #[test]

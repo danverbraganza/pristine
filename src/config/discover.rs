@@ -86,25 +86,7 @@ fn expand_tilde<H: HomeSource>(path: &Path, home: &H) -> Result<PathBuf, ConfigE
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// In-memory `HomeSource` for deterministic discovery tests.
-    struct MockHome(Option<PathBuf>);
-
-    impl MockHome {
-        fn some(path: &str) -> Self {
-            Self(Some(PathBuf::from(path)))
-        }
-
-        fn none() -> Self {
-            Self(None)
-        }
-    }
-
-    impl HomeSource for MockHome {
-        fn home_dir(&self) -> Option<PathBuf> {
-            self.0.clone()
-        }
-    }
+    use crate::test_support::MockHome;
 
     #[test]
     fn resolve_auth_default_path_uses_home() {

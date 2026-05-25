@@ -19,7 +19,7 @@ use std::time::Duration;
 use futures::Stream;
 use futures::stream;
 
-use crate::config::EnvSource;
+use crate::config::{EnvSource, HomeSource};
 use crate::model::{self, ARModel, ModelInput, ModelStreamEvent};
 use crate::shell::{Shell, ShellError, ShellOutput};
 use crate::tool::ToolError;
@@ -189,5 +189,29 @@ impl MapEnv {
 impl EnvSource for MapEnv {
     fn get(&self, name: &str) -> Option<String> {
         self.0.get(name).cloned()
+    }
+}
+
+/// In-memory [`HomeSource`] for deterministic config tests. Reachable from
+/// both `#[cfg(test)]` modules inside `src/` and integration tests under
+/// `tests/`, so the hoisted fixture is `pub` (not `pub(crate)`) and is not
+/// gated on `#[cfg(test)]`. `Default` matches the `None`-home shape used by
+/// callers that bypass home-dir lookup entirely.
+#[derive(Default)]
+pub struct MockHome(Option<PathBuf>);
+
+impl MockHome {
+    pub fn some(path: impl Into<PathBuf>) -> Self {
+        Self(Some(path.into()))
+    }
+
+    pub fn none() -> Self {
+        Self(None)
+    }
+}
+
+impl HomeSource for MockHome {
+    fn home_dir(&self) -> Option<PathBuf> {
+        self.0.clone()
     }
 }

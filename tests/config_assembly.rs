@@ -5,26 +5,10 @@
 //! and provider registrations. The harness is never started; no live API
 //! calls are made.
 
-use std::path::PathBuf;
-
 use pristine::HarnessAssemblyError;
 use pristine::build_harness_from_config;
-use pristine::config::{HomeSource, LoadArgs, load_with};
-use pristine::test_support::MapEnv;
-
-struct MockHome(Option<PathBuf>);
-
-impl MockHome {
-    fn none() -> Self {
-        Self(None)
-    }
-}
-
-impl HomeSource for MockHome {
-    fn home_dir(&self) -> Option<PathBuf> {
-        self.0.clone()
-    }
-}
+use pristine::config::{LoadArgs, load_with};
+use pristine::test_support::{MapEnv, MockHome};
 
 /// Auth fixture mirrors the `AuthConfig` shape. The `default` model alias
 /// points at the `anthropic` provider with `claude-opus-4-7` and an

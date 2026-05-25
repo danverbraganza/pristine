@@ -4,29 +4,41 @@
 //! fixtures that have to round-trip through the crate's public API
 //! (notably [`MapEnv`], a deterministic [`crate::config::EnvSource`]
 //! implementation). Fixtures used only by `#[cfg(test)]` modules inside
-//! `src/` remain `pub(crate)` and become dead code in non-test builds;
-//! `#![allow(dead_code)]` silences the resulting warnings so the module
-//! can carry both kinds of helper without per-item cfg gates.
+//! `src/` remain `pub(crate)` and are per-item gated on `#[cfg(test)]`
+//! so they do not produce dead-code warnings in non-test builds.
 
-#![allow(dead_code)]
-
-use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::Mutex;
-use std::time::Duration;
-
-use futures::Stream;
-use futures::stream;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::config::{EnvSource, HomeSource};
+
+#[cfg(test)]
+use std::collections::VecDeque;
+#[cfg(test)]
+use std::path::Path;
+#[cfg(test)]
+use std::pin::Pin;
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::time::Duration;
+
+#[cfg(test)]
+use futures::Stream;
+#[cfg(test)]
+use futures::stream;
+
+#[cfg(test)]
 use crate::model::{self, ARModel, ModelInput, ModelStreamEvent};
+#[cfg(test)]
 use crate::shell::{Shell, ShellError, ShellOutput};
+#[cfg(test)]
 use crate::tool::ToolError;
 
 /// Creates a unique tempdir under `std::env::temp_dir()` for an individual
 /// test. `prefix` namespaces the path to aid debugging when tests leave
 /// artifacts behind.
+#[cfg(test)]
 pub(crate) fn unique_tempdir(prefix: &str) -> PathBuf {
     let id = uuid::Uuid::new_v4().simple().to_string();
     let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
@@ -36,6 +48,7 @@ pub(crate) fn unique_tempdir(prefix: &str) -> PathBuf {
 
 /// Writes `contents` to `dir/name` and returns the resulting path. Tests use
 /// this to seed input fixtures into a tempdir prepared by `unique_tempdir`.
+#[cfg(test)]
 pub(crate) fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
     let p = dir.join(name);
     std::fs::write(&p, contents).expect("write fixture");
@@ -46,6 +59,7 @@ pub(crate) fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf 
 /// variant. Built-in tools use the `Execution` carrier as the portable shape
 /// for their dialect errors; this helper lets tests assert on the inner JSON
 /// without restating the match.
+#[cfg(test)]
 pub(crate) fn execution_value(err: ToolError) -> serde_json::Value {
     match err {
         ToolError::Execution(v) => v,
@@ -53,11 +67,13 @@ pub(crate) fn execution_value(err: ToolError) -> serde_json::Value {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct StubArModel {
     scripts: Mutex<VecDeque<Vec<Result<ModelStreamEvent, model::Error>>>>,
     last_input: Mutex<Option<ModelInput>>,
 }
 
+#[cfg(test)]
 impl StubArModel {
     pub fn with_call_scripts(scripts: Vec<Vec<Result<ModelStreamEvent, model::Error>>>) -> Self {
         Self {
@@ -79,6 +95,7 @@ impl StubArModel {
     }
 }
 
+#[cfg(test)]
 impl ARModel for StubArModel {
     fn complete<'a>(
         &'a self,
@@ -95,12 +112,14 @@ impl ARModel for StubArModel {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct EchoTool {
     name: String,
     description: String,
     schema: serde_json::Value,
 }
 
+#[cfg(test)]
 impl EchoTool {
     pub fn new(name: &str) -> Self {
         Self {
@@ -111,6 +130,7 @@ impl EchoTool {
     }
 }
 
+#[cfg(test)]
 #[jsonrpsee::core::async_trait]
 impl crate::tool::Tool for EchoTool {
     fn name(&self) -> &str {
@@ -137,11 +157,13 @@ impl crate::tool::Tool for EchoTool {
 /// entries in order on each call. Mirrors `StubArModel`'s pattern. Also
 /// records the most recent `timeout` argument so tests can assert on the
 /// `ExecBash` default-timeout behavior.
+#[cfg(test)]
 pub(crate) struct StubShell {
     script: Mutex<VecDeque<Result<ShellOutput, ShellError>>>,
     last_timeout: Mutex<Option<Duration>>,
 }
 
+#[cfg(test)]
 impl StubShell {
     pub fn new(script: Vec<Result<ShellOutput, ShellError>>) -> Self {
         Self {
@@ -155,6 +177,7 @@ impl StubShell {
     }
 }
 
+#[cfg(test)]
 #[jsonrpsee::core::async_trait]
 impl Shell for StubShell {
     async fn exec(&self, command: &str, timeout: Duration) -> Result<ShellOutput, ShellError> {

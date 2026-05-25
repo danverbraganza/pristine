@@ -10,7 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::{ARModel, ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage};
 use crate::provider::{ModelInstanceConfig, ModelProvider, ProviderError};
 
-// Phase 1 cap; revisited when tool use / config land.
+// Hard-coded request-shape default; configurability (e.g. via ModelInstanceConfig extras) is deferred.
 const MAX_TOKENS: u32 = 1024;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";

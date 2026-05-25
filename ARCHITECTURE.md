@@ -370,11 +370,13 @@ JSON per content-block index and emitting
 
 ### Built-in tools
 
-`src/builtins.rs` ships an `AddTool` example — takes
-`{a: number, b: number}` and returns `{sum: number}`. `pristine run`
-registers it with the `HarnessBuilder` so the binary demonstrates the
-tool-call loop end-to-end. Future built-in tools live in the same
-module.
+`src/builtins.rs` retains an `AddTool` example — takes
+`{a: number, b: number}` and returns `{sum: number}` — exported as
+`pristine::builtins::AddTool` for SDK consumers writing their own `Tool`
+implementations. `pristine run` does not register it; the binary's
+tool-call surface is the five real built-ins (Read, Write, Edit, Insert,
+ExecBash), registered by `src/lib.rs::register_builtin_tools` and listed
+in the embedded `default.toml`.
 
 ### Construction surface
 
@@ -386,12 +388,11 @@ on `new`. The bare `new()` is the stable plugin point.
 
 ## Built-in Tools
 
-The harness registers a set of built-in tools that give the agent direct
-filesystem and shell capabilities; the inter-phase target is five tools
-(Read, Write, Edit, Insert, ExecBash), all of which are now registered.
-Each tool lives in its own non-mod-rs submodule under `src/builtins/`,
-with co-located tests. Each tool owns its own typed error enum (the
-dialect) and emits errors through the shared
+The harness registers five built-in tools — Read, Write, Edit, Insert,
+and ExecBash — that give the agent direct filesystem and shell
+capabilities. Each tool lives in its own non-mod-rs submodule under
+`src/builtins/`, with co-located tests. Each tool owns its own typed
+error enum (the dialect) and emits errors through the shared
 `ToolError::Execution(serde_json::Value)` carrier (the portable shape).
 
 ### Read

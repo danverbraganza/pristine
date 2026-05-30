@@ -393,7 +393,7 @@ def main() -> None:
         if proc.poll() is None:
             try:
                 send(proc, "shutdown")
-            except RpcError as e:
+            except (RpcError, OSError, SystemExit) as e:
                 print(f"shutdown error: {e}", file=sys.stderr)
         proc.stdin.close()
         proc.wait()

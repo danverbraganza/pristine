@@ -154,7 +154,7 @@ class WriteTool(Tool):
 
     def call_signature(self, args: dict) -> str:
         path = args.get("path", "?")
-        size = len(args.get("content", ""))
+        size = len(args.get("content", "").encode("utf-8"))
         return f'write("{path}", {size} bytes)'
 
     def result_summary(self, result: object, is_error: bool) -> str:

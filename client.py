@@ -173,7 +173,7 @@ class EditTool(Tool):
     def result_summary(self, result: object, is_error: bool) -> str:
         if is_error or not isinstance(result, dict):
             return super().result_summary(result, is_error)
-        return "replaced" if result.get("replaced") else "unchanged"
+        return "success" if "bytes_written" in result else "unchanged"
 
 
 class InsertTool(Tool):

@@ -99,10 +99,16 @@ class Tool:
 
     def result_summary(self, result: object, is_error: bool) -> str:
         """Short outcome string that follows `->` on the result line."""
+        def _safe_json(obj: object) -> str:
+            try:
+                return json.dumps(obj)
+            except (TypeError, ValueError):
+                return repr(obj)
+
         if is_error:
             msg = result.get("error") if isinstance(result, dict) else None  # type: ignore[union-attr]
-            return f"error: {msg or json.dumps(result)}"
-        return _truncate(json.dumps(result), 80)
+            return f"error: {msg or _safe_json(result)}"
+        return _truncate(_safe_json(result), 80)
 
     def print_result_body(self, result: object, is_error: bool) -> None:
         """Emit long-form body content (e.g. file text, stdout).

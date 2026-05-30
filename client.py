@@ -288,6 +288,7 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
         if msg is None:
             continue
         if "id" in msg:
+            print(f"[drain_events] unexpected response message (id={msg['id']}); ignoring", file=sys.stderr)
             continue
         params = msg.get("params", {})
         event_type = params.get("type", "")

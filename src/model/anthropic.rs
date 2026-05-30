@@ -11,7 +11,7 @@ use super::{ARModel, ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usa
 use crate::provider::{ModelInstanceConfig, ModelProvider, ProviderError};
 
 // Hard-coded request-shape default; configurability (e.g. via ModelInstanceConfig extras) is deferred.
-const MAX_TOKENS: u32 = 1024;
+const MAX_TOKENS: u32 = 64000;
 
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -706,7 +706,7 @@ mod tests {
         };
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["model"], "test-model");
-        assert_eq!(value["max_tokens"], 1024);
+        assert_eq!(value["max_tokens"], 64000);
         assert_eq!(value["stream"], true);
         assert_eq!(value["system"], "sys");
         assert_eq!(value["messages"][0]["role"], "user");

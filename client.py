@@ -216,7 +216,7 @@ class ExecBashTool(Tool):
             elif kind == "timeout":
                 parts.append("timeout")
             else:
-                parts.append(json.dumps(status))
+                parts.append(f"unknown status: {json.dumps(status)}")
         else:
             parts.append(str(status))
         if result.get("stdout_truncated"):

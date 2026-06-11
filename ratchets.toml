@@ -1,0 +1,16 @@
+# Rules are opt-in. Enable rule IDs or $set references here; entries in
+# disabled_ratchets subtract from this union (disabled always wins).
+enabled_ratchets = ["$common-starter", "no-unwrap", "no-panic"]
+
+[ratchets]
+version = "2"
+languages = ["rust"]
+
+# File patterns to include (defaults to all)
+# include = ["src/**", "tests/**"]
+
+# File patterns to exclude
+# exclude = ["**/generated/**"]
+
+[output]
+format = "human"

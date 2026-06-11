@@ -584,7 +584,7 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
-    fn provider_build_requires_api_key() {
+    fn provider_build_requires_api_key() -> Result<(), Box<dyn std::error::Error>> {
         let provider = AnthropicProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new("x", serde_json::json!({})));
         match result {
@@ -594,13 +594,14 @@ mod tests {
                     "expected api_key in reason, got {reason:?}"
                 );
             }
-            Err(e) => panic!("expected BuildFailure, got {e:?}"),
-            Ok(_) => panic!("expected BuildFailure, got Ok"),
+            Err(e) => return Err(format!("expected BuildFailure, got {e:?}").into()),
+            Ok(_) => return Err("expected BuildFailure, got Ok".into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn provider_build_rejects_non_string_api_key() {
+    fn provider_build_rejects_non_string_api_key() -> Result<(), Box<dyn std::error::Error>> {
         let provider = AnthropicProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new(
             "x",
@@ -613,13 +614,14 @@ mod tests {
                     "expected api_key in reason, got {reason:?}"
                 );
             }
-            Err(e) => panic!("expected BuildFailure, got {e:?}"),
-            Ok(_) => panic!("expected BuildFailure, got Ok"),
+            Err(e) => return Err(format!("expected BuildFailure, got {e:?}").into()),
+            Ok(_) => return Err("expected BuildFailure, got Ok".into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn provider_build_rejects_non_object_extras() {
+    fn provider_build_rejects_non_object_extras() -> Result<(), Box<dyn std::error::Error>> {
         let provider = AnthropicProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new("x", serde_json::Value::Null));
         match result {
@@ -629,9 +631,10 @@ mod tests {
                     "expected JSON object in reason, got {reason:?}"
                 );
             }
-            Err(e) => panic!("expected BuildFailure, got {e:?}"),
-            Ok(_) => panic!("expected BuildFailure, got Ok"),
+            Err(e) => return Err(format!("expected BuildFailure, got {e:?}").into()),
+            Ok(_) => return Err("expected BuildFailure, got Ok".into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -646,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_build_rejects_non_string_base_url() {
+    fn provider_build_rejects_non_string_base_url() -> Result<(), Box<dyn std::error::Error>> {
         let provider = AnthropicProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new(
             "x",
@@ -659,9 +662,10 @@ mod tests {
                     "expected base_url in reason, got {reason:?}"
                 );
             }
-            Err(e) => panic!("expected BuildFailure, got {e:?}"),
-            Ok(_) => panic!("expected BuildFailure, got Ok"),
+            Err(e) => return Err(format!("expected BuildFailure, got {e:?}").into()),
+            Ok(_) => return Err("expected BuildFailure, got Ok".into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -931,7 +935,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_content_block_start_text() {
+    fn parses_content_block_start_text() -> Result<(), Box<dyn std::error::Error>> {
         let data =
             r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#;
         let payload: ContentBlockStartPayload =
@@ -939,12 +943,13 @@ mod tests {
         assert_eq!(payload.index, 0);
         match payload.content_block {
             ContentBlockStartInner::Text { text } => assert_eq!(text, ""),
-            _ => panic!("expected ContentBlockStartInner::Text"),
+            _ => return Err("expected ContentBlockStartInner::Text".into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn parses_content_block_start_tool_use() {
+    fn parses_content_block_start_tool_use() -> Result<(), Box<dyn std::error::Error>> {
         let data = r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01abc","name":"echo","input":{}}}"#;
         let payload: ContentBlockStartPayload =
             serde_json::from_str(data).expect("parse content_block_start tool_use");
@@ -955,24 +960,27 @@ mod tests {
                 assert_eq!(name, "echo");
                 assert_eq!(input, serde_json::json!({}));
             }
-            _ => panic!("expected ContentBlockStartInner::ToolUse"),
+            _ => return Err("expected ContentBlockStartInner::ToolUse".into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn parses_content_block_start_unknown_type_falls_back_to_other() {
+    fn parses_content_block_start_unknown_type_falls_back_to_other()
+    -> Result<(), Box<dyn std::error::Error>> {
         let data = r#"{"type":"content_block_start","index":3,"content_block":{"type":"image"}}"#;
         let payload: ContentBlockStartPayload =
             serde_json::from_str(data).expect("parse content_block_start unknown");
         assert_eq!(payload.index, 3);
         match payload.content_block {
             ContentBlockStartInner::Other => {}
-            _ => panic!("expected ContentBlockStartInner::Other"),
+            _ => return Err("expected ContentBlockStartInner::Other".into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn parses_input_json_delta() {
+    fn parses_input_json_delta() -> Result<(), Box<dyn std::error::Error>> {
         let data = r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"hello\":\"wo"}}"#;
         let payload: ContentBlockDeltaPayload =
             serde_json::from_str(data).expect("parse input_json_delta");
@@ -981,8 +989,9 @@ mod tests {
             ContentDelta::InputJsonDelta { partial_json } => {
                 assert_eq!(partial_json, "{\"hello\":\"wo");
             }
-            _ => panic!("expected ContentDelta::InputJsonDelta"),
+            _ => return Err("expected ContentDelta::InputJsonDelta".into()),
         }
+        Ok(())
     }
 
     #[test]

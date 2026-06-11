@@ -177,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_use_round_trips_through_model_input() {
+    fn tool_use_round_trips_through_model_input() -> Result<(), Box<dyn std::error::Error>> {
         let input = ModelInput {
             turns: vec![Turn {
                 role: Role::Assistant,
@@ -196,12 +196,13 @@ mod tests {
                 assert_eq!(name, "echo");
                 assert_eq!(input, &serde_json::json!({ "hello": "world" }));
             }
-            other => panic!("expected ToolUse, got {other:?}"),
+            other => return Err(format!("expected ToolUse, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn tool_result_clone_preserves_fields() {
+    fn tool_result_clone_preserves_fields() -> Result<(), Box<dyn std::error::Error>> {
         let part = ContentPart::ToolResult {
             tool_use_id: "call-1".to_string(),
             content: serde_json::Value::Null,
@@ -218,12 +219,13 @@ mod tests {
                 assert_eq!(content, serde_json::Value::Null);
                 assert!(is_error);
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn tool_use_stream_events_round_trip_their_fields() {
+    fn tool_use_stream_events_round_trip_their_fields() -> Result<(), Box<dyn std::error::Error>> {
         let start = ModelStreamEvent::ToolUseStart {
             id: "tu-1".to_string(),
             name: "echo".to_string(),
@@ -233,7 +235,7 @@ mod tests {
                 assert_eq!(id, "tu-1");
                 assert_eq!(name, "echo");
             }
-            other => panic!("expected ToolUseStart, got {other:?}"),
+            other => return Err(format!("expected ToolUseStart, got {other:?}").into()),
         }
 
         let delta = ModelStreamEvent::ToolUseDelta {
@@ -245,7 +247,7 @@ mod tests {
                 assert_eq!(id, "tu-1");
                 assert_eq!(partial_json, "{\"k\":");
             }
-            other => panic!("expected ToolUseDelta, got {other:?}"),
+            other => return Err(format!("expected ToolUseDelta, got {other:?}").into()),
         }
 
         let complete = ModelStreamEvent::ToolUseComplete {
@@ -259,12 +261,13 @@ mod tests {
                 assert_eq!(name, "echo");
                 assert_eq!(input, serde_json::json!({ "k": "v" }));
             }
-            other => panic!("expected ToolUseComplete, got {other:?}"),
+            other => return Err(format!("expected ToolUseComplete, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn tool_use_delta_distinguishes_interleaved_ids() {
+    fn tool_use_delta_distinguishes_interleaved_ids() -> Result<(), Box<dyn std::error::Error>> {
         let a = ModelStreamEvent::ToolUseDelta {
             id: "tu-a".to_string(),
             partial_json: "{\"a\":1}".to_string(),
@@ -275,13 +278,14 @@ mod tests {
         };
         let id_a = match a {
             ModelStreamEvent::ToolUseDelta { id, .. } => id,
-            other => panic!("expected ToolUseDelta, got {other:?}"),
+            other => return Err(format!("expected ToolUseDelta, got {other:?}").into()),
         };
         let id_b = match b {
             ModelStreamEvent::ToolUseDelta { id, .. } => id,
-            other => panic!("expected ToolUseDelta, got {other:?}"),
+            other => return Err(format!("expected ToolUseDelta, got {other:?}").into()),
         };
         assert_ne!(id_a, id_b);
+        Ok(())
     }
 
     #[test]

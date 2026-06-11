@@ -191,7 +191,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_returns_multiple_matches_on_count_ge_2() {
+    async fn edit_returns_multiple_matches_on_count_ge_2() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "fixture.txt", b"foo foo foo");
         let tool = Edit::new();
@@ -205,15 +206,16 @@ mod tests {
             .await
             .expect_err("multiple matches must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "multiple_matches");
         assert_eq!(value["count"], 3);
         let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
         assert_eq!(on_disk, "foo foo foo");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn edit_returns_no_matches_on_zero() {
+    async fn edit_returns_no_matches_on_zero() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "fixture.txt", b"hello");
         let tool = Edit::new();
@@ -227,14 +229,15 @@ mod tests {
             .await
             .expect_err("zero matches must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "no_matches");
         let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
         assert_eq!(on_disk, "hello");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn edit_returns_no_matches_on_empty_old_str() {
+    async fn edit_returns_no_matches_on_empty_old_str() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "fixture.txt", b"hello");
         let tool = Edit::new();
@@ -248,14 +251,16 @@ mod tests {
             .await
             .expect_err("empty old_str is treated as no_matches");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "no_matches");
         let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
         assert_eq!(on_disk, "hello");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn edit_returns_file_not_found_on_missing_path() {
+    async fn edit_returns_file_not_found_on_missing_path() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = unique_tempdir();
         let missing = dir.join(format!("nonexistent-{}.txt", Uuid::new_v4().simple()));
         let tool = Edit::new();
@@ -269,16 +274,17 @@ mod tests {
             .await
             .expect_err("missing path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "file_not_found");
         assert_eq!(
             value["path"].as_str().expect("path is a string"),
             missing.to_string_lossy(),
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn edit_returns_not_utf8_for_binary_file() {
+    async fn edit_returns_not_utf8_for_binary_file() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "binary.bin", &[0x48, 0x69, 0xFF, 0x80]);
         let tool = Edit::new();
@@ -292,13 +298,14 @@ mod tests {
             .await
             .expect_err("invalid UTF-8 file must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "not_utf8");
         assert_eq!(value["byte_offset"], 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn edit_returns_invalid_path_on_empty_string() {
+    async fn edit_returns_invalid_path_on_empty_string() -> Result<(), Box<dyn std::error::Error>> {
         let tool = Edit::new();
 
         let err = tool
@@ -310,10 +317,11 @@ mod tests {
             .await
             .expect_err("empty path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_path");
         let reason = value["reason"].as_str().expect("reason is a string");
         assert!(!reason.is_empty(), "reason should be non-empty");
+        Ok(())
     }
 
     #[tokio::test]

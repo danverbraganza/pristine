@@ -55,15 +55,17 @@ pub(crate) fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf 
     p
 }
 
-/// Unwraps a `ToolError::Execution(value)` carrier, panicking on any other
-/// variant. Built-in tools use the `Execution` carrier as the portable shape
-/// for their dialect errors; this helper lets tests assert on the inner JSON
-/// without restating the match.
+/// Unwraps a `ToolError::Execution(value)` carrier, returning an error on any
+/// other variant. Built-in tools use the `Execution` carrier as the portable
+/// shape for their dialect errors; this helper lets tests assert on the inner
+/// JSON without restating the match.
 #[cfg(test)]
-pub(crate) fn execution_value(err: ToolError) -> serde_json::Value {
+pub(crate) fn execution_value(
+    err: ToolError,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     match err {
-        ToolError::Execution(v) => v,
-        other => panic!("expected ToolError::Execution, got {other:?}"),
+        ToolError::Execution(v) => Ok(v),
+        other => Err(format!("expected ToolError::Execution, got {other:?}").into()),
     }
 }
 

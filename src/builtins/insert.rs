@@ -290,7 +290,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insert_returns_invalid_after_line_when_past_end() {
+    async fn insert_returns_invalid_after_line_when_past_end()
+    -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "fixture.txt", b"a\nb\n");
         let tool = Insert::new();
@@ -304,12 +305,13 @@ mod tests {
             .await
             .expect_err("after_line past end must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_after_line");
         assert_eq!(value["after_line"], 99);
         assert_eq!(value["total_lines"], 2);
         let on_disk = std::fs::read_to_string(&path).expect("read back fixture");
         assert_eq!(on_disk, "a\nb\n");
+        Ok(())
     }
 
     #[tokio::test]
@@ -393,7 +395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn insert_not_utf8() {
+    async fn insert_not_utf8() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "binary.bin", &[0x48, 0x69, 0xFF, 0x80]);
         let tool = Insert::new();
@@ -407,13 +409,14 @@ mod tests {
             .await
             .expect_err("invalid UTF-8 file must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "not_utf8");
         assert_eq!(value["byte_offset"], 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn insert_file_not_found() {
+    async fn insert_file_not_found() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let missing = dir.join(format!("nonexistent-{}.txt", Uuid::new_v4().simple()));
         let tool = Insert::new();
@@ -427,16 +430,17 @@ mod tests {
             .await
             .expect_err("missing path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "file_not_found");
         assert_eq!(
             value["path"].as_str().expect("path is a string"),
             missing.to_string_lossy(),
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn insert_invalid_path_empty_string() {
+    async fn insert_invalid_path_empty_string() -> Result<(), Box<dyn std::error::Error>> {
         let tool = Insert::new();
 
         let err = tool
@@ -448,9 +452,10 @@ mod tests {
             .await
             .expect_err("empty path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_path");
         let reason = value["reason"].as_str().expect("reason is a string");
         assert!(!reason.is_empty(), "reason should be non-empty");
+        Ok(())
     }
 }

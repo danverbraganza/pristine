@@ -170,10 +170,10 @@ fn model_input_to_anthropic(
                 }
             }
             Role::User | Role::Assistant => {
-                let role: &'static str = match turn.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => unreachable!(),
+                let role: &'static str = if matches!(turn.role, Role::User) {
+                    "user"
+                } else {
+                    "assistant"
                 };
                 let mut content = Vec::with_capacity(turn.content.len());
                 for part in &turn.content {

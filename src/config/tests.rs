@@ -236,7 +236,7 @@ fn load_with_auto_writes_missing_auth_file() {
 }
 
 #[test]
-fn embedded_default_topology_has_five_builtin_tools() {
+fn embedded_default_topology_has_five_builtin_tools() -> Result<(), Box<dyn std::error::Error>> {
     let topology: TopologyConfig =
         toml::from_str(DEFAULT_TOPOLOGY).expect("embedded default.toml parses");
 
@@ -248,7 +248,7 @@ fn embedded_default_topology_has_five_builtin_tools() {
         let tool = topology
             .tools
             .get(expected)
-            .unwrap_or_else(|| panic!("embedded topology declares `{expected}` tool"));
+            .ok_or_else(|| format!("embedded topology declares `{expected}` tool"))?;
         match tool {
             ToolConfig::Builtin { builtin } => assert_eq!(
                 builtin, expected,
@@ -256,6 +256,7 @@ fn embedded_default_topology_has_five_builtin_tools() {
             ),
         }
     }
+    Ok(())
 }
 
 #[test]

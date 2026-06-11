@@ -35,6 +35,11 @@ type = \"anthropic\"
 provider = \"anthropic\"
 model_name = \"claude-opus-4-7\"
 api_key = \"{{ANTHROPIC_API_KEY}}\"
+
+[models.fable]
+provider = \"anthropic\"
+model_name = \"claude-fable-5\"
+api_key = \"{{ANTHROPIC_API_KEY}}\"
 ";
 
 /// If `path` already exists, return `Ok(false)`. Otherwise create any missing
@@ -104,11 +109,15 @@ mod tests {
         match provider {
             ProviderConfig::Anthropic { base_url } => assert!(base_url.is_none()),
         }
-        assert_eq!(cfg.models.len(), 1);
+        assert_eq!(cfg.models.len(), 2);
         let model = cfg.models.get("default").expect("default model present");
         assert_eq!(model.provider, "anthropic");
         assert_eq!(model.model_name, "claude-opus-4-7");
         assert_eq!(model.api_key, "{{ANTHROPIC_API_KEY}}");
+        let fable = cfg.models.get("fable").expect("fable model present");
+        assert_eq!(fable.provider, "anthropic");
+        assert_eq!(fable.model_name, "claude-fable-5");
+        assert_eq!(fable.api_key, "{{ANTHROPIC_API_KEY}}");
     }
 
     #[test]

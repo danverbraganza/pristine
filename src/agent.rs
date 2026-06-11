@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_run_processes_one_user_message() {
+    async fn agent_run_processes_one_user_message() -> Result<(), Box<dyn std::error::Error>> {
         let model = Arc::new(StubArModel::with_events(vec![
             Ok(ModelStreamEvent::MessageStart {
                 message_id: "m1".to_string(),
@@ -406,9 +406,9 @@ mod tests {
         match &events[0] {
             AgentEvent::BlockComplete { block } => match block.block() {
                 Block::UserMessage { content, .. } => assert_eq!(content, "greet"),
-                other => panic!("expected UserMessage, got {other:?}"),
+                other => return Err(format!("expected UserMessage, got {other:?}").into()),
             },
-            other => panic!("expected BlockComplete, got {other:?}"),
+            other => return Err(format!("expected BlockComplete, got {other:?}").into()),
         }
 
         let deltas: Vec<String> = events
@@ -430,12 +430,12 @@ mod tests {
         assert_eq!(block_completes.len(), 2);
         match block_completes[1].block() {
             Block::AgentMessage { content, .. } => assert_eq!(content, "hello world"),
-            other => panic!("expected AgentMessage, got {other:?}"),
+            other => return Err(format!("expected AgentMessage, got {other:?}").into()),
         }
 
         match events.last().expect("at least one event") {
             AgentEvent::Idle => {}
-            other => panic!("expected Idle, got {other:?}"),
+            other => return Err(format!("expected Idle, got {other:?}").into()),
         }
         let penultimate_idx = events.len().checked_sub(2).expect("at least two events");
         match &events[penultimate_idx] {
@@ -443,8 +443,9 @@ mod tests {
                 assert_eq!(usage.input_tokens, 5);
                 assert_eq!(usage.output_tokens, 7);
             }
-            other => panic!("expected RunComplete, got {other:?}"),
+            other => return Err(format!("expected RunComplete, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
@@ -462,7 +463,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_run_propagates_model_error() {
+    async fn agent_run_propagates_model_error() -> Result<(), Box<dyn std::error::Error>> {
         let model = Arc::new(StubArModel::with_events(vec![Err(model::Error::Api {
             status: 500,
             message: "boom".to_string(),
@@ -482,8 +483,9 @@ mod tests {
                 assert_eq!(status, 500);
                 assert_eq!(message, "boom");
             }
-            other => panic!("expected Error::Model(Api), got {other:?}"),
+            other => return Err(format!("expected Error::Model(Api), got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
@@ -536,7 +538,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_run_compiles_history_into_model_input_with_system_turn() {
+    async fn agent_run_compiles_history_into_model_input_with_system_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
         let model = Arc::new(StubArModel::with_events(vec![
             Ok(ModelStreamEvent::ContentComplete {
                 text: "ok".to_string(),
@@ -576,13 +579,14 @@ mod tests {
         assert_eq!(input.turns[0].role, Role::System);
         match &input.turns[0].content[0] {
             ContentPart::Text(t) => assert_eq!(t, "test prompt"),
-            other => panic!("expected Text, got {other:?}"),
+            other => return Err(format!("expected Text, got {other:?}").into()),
         }
         assert_eq!(input.turns[1].role, Role::User);
         match &input.turns[1].content[0] {
             ContentPart::Text(t) => assert_eq!(t, "hello there"),
-            other => panic!("expected Text, got {other:?}"),
+            other => return Err(format!("expected Text, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -675,7 +679,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_run_compiles_block_tool_call_into_content_part_tool_use() {
+    async fn agent_run_compiles_block_tool_call_into_content_part_tool_use()
+    -> Result<(), Box<dyn std::error::Error>> {
         let model = Arc::new(StubArModel::with_events(vec![
             Ok(ModelStreamEvent::ContentComplete {
                 text: "ok".to_string(),
@@ -735,12 +740,14 @@ mod tests {
                 assert_eq!(name, "echo");
                 assert_eq!(input, &serde_json::json!({ "a": 1 }));
             }
-            other => panic!("expected ToolUse, got {other:?}"),
+            other => return Err(format!("expected ToolUse, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn agent_run_compiles_block_tool_result_into_content_part_tool_result() {
+    async fn agent_run_compiles_block_tool_result_into_content_part_tool_result()
+    -> Result<(), Box<dyn std::error::Error>> {
         let model = Arc::new(StubArModel::with_events(vec![
             Ok(ModelStreamEvent::ContentComplete {
                 text: "ok".to_string(),
@@ -805,8 +812,9 @@ mod tests {
                 assert_eq!(content, &serde_json::json!("ok"));
                 assert!(!*is_error);
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// Drain `outbound` into `sink` until `n` Idle events have been observed.
@@ -829,7 +837,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_run_dispatches_tool_call_and_re_enters_model() {
+    async fn agent_run_dispatches_tool_call_and_re_enters_model()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut registry = ToolRegistry::new();
         registry
             .register(Arc::new(EchoTool::new("echo")))
@@ -925,7 +934,7 @@ mod tests {
                 assert_eq!(name, "echo");
                 assert_eq!(input, &serde_json::json!({ "text": "hi" }));
             }
-            other => panic!("expected ToolUse, got {other:?}"),
+            other => return Err(format!("expected ToolUse, got {other:?}").into()),
         }
 
         let tool_result_turn = input
@@ -946,7 +955,7 @@ mod tests {
                 assert_eq!(content, &serde_json::json!({ "echo": { "text": "hi" } }));
                 assert!(!*is_error);
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
 
         let block_complete_count = events
@@ -972,10 +981,12 @@ mod tests {
             })
             .collect();
         assert_eq!(agent_messages, vec!["done".to_string()]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn agent_run_dispatches_unknown_tool_yields_error_result() {
+    async fn agent_run_dispatches_unknown_tool_yields_error_result()
+    -> Result<(), Box<dyn std::error::Error>> {
         let model = Arc::new(StubArModel::with_call_scripts(vec![
             vec![
                 Ok(ModelStreamEvent::ToolUseComplete {
@@ -1048,8 +1059,9 @@ mod tests {
                     "expected error to mention tool name, got {serialized}"
                 );
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]

@@ -36,7 +36,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[tokio::test]
 #[ignore = "live API, requires ANTHROPIC_API_KEY"]
-async fn builtin_tools_live_read_edit_exec() {
+async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::Error>> {
     // Guard: skip cleanly if the live credential is not present. The
     // `#[ignore]` attribute already excludes this test from the default
     // run; this belt-and-suspenders check protects ad-hoc invocations
@@ -45,7 +45,7 @@ async fn builtin_tools_live_read_edit_exec() {
         Ok(k) if !k.is_empty() => k,
         _ => {
             eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return;
+            return Ok(());
         }
     };
 
@@ -135,7 +135,7 @@ async fn builtin_tools_live_read_edit_exec() {
                 }
                 AgentEvent::RunComplete { .. } => events_seen.push("RunComplete"),
                 AgentEvent::Error { message } => {
-                    panic!("agent emitted Error event: {message}");
+                    return Err(format!("agent emitted Error event: {message}").into());
                 }
                 AgentEvent::Idle => {
                     events_seen.push("Idle");
@@ -143,14 +143,17 @@ async fn builtin_tools_live_read_edit_exec() {
                 }
             }
         }
+        Ok::<(), Box<dyn std::error::Error>>(())
     };
 
     match timeout(DRAIN_TIMEOUT, drain).await {
-        Ok(()) => {}
-        Err(_) => panic!(
-            "drain timed out after {:?}; events observed before timeout: {:?}",
-            DRAIN_TIMEOUT, events_seen
-        ),
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(format!(
+                "drain timed out after {DRAIN_TIMEOUT:?}; events observed before timeout: {events_seen:?}"
+            )
+            .into());
+        }
     }
 
     harness.shutdown();
@@ -181,4 +184,6 @@ async fn builtin_tools_live_read_edit_exec() {
         final_text.contains('4'),
         "expected final agent message to contain '4', got: {final_text:?}",
     );
+
+    Ok(())
 }

@@ -7,12 +7,12 @@ use std::time::Duration;
 
 #[tokio::test]
 #[ignore = "live API; run with `cargo nextest run --run-ignored only` and ANTHROPIC_API_KEY set"]
-async fn live_anthropic_smoke() {
+async fn live_anthropic_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() => k,
         _ => {
             eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return;
+            return Ok(());
         }
     };
 
@@ -47,29 +47,31 @@ async fn live_anthropic_smoke() {
 
     loop {
         tokio::select! {
-            _ = &mut test_timeout => panic!("timed out waiting for content"),
+            _ = &mut test_timeout => return Err("timed out waiting for content".into()),
             evt = stream.next() => match evt {
                 Some(Ok(ModelStreamEvent::ContentDelta { .. })) => {
                     got_delta = true;
                 }
                 Some(Ok(ModelStreamEvent::MessageComplete { .. })) => break,
                 Some(Ok(_)) => {}
-                Some(Err(e)) => panic!("model error: {e:?}"),
+                Some(Err(e)) => return Err(format!("model error: {e:?}").into()),
                 None => break,
             }
         }
     }
     assert!(got_delta, "expected at least one ContentDelta");
+
+    Ok(())
 }
 
 #[tokio::test]
 #[ignore = "live API; run with `cargo nextest run --run-ignored only` and ANTHROPIC_API_KEY set"]
-async fn live_anthropic_tool_use_smoke() {
+async fn live_anthropic_tool_use_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let api_key = match env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() => k,
         _ => {
             eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return;
+            return Ok(());
         }
     };
 
@@ -121,7 +123,7 @@ async fn live_anthropic_tool_use_smoke() {
 
     loop {
         tokio::select! {
-            _ = &mut test_timeout => panic!("timed out waiting for tool_use events"),
+            _ = &mut test_timeout => return Err("timed out waiting for tool_use events".into()),
             evt = stream.next() => match evt {
                 Some(Ok(ModelStreamEvent::ToolUseStart { name, .. })) => {
                     assert_eq!(name, "add", "expected tool_use_start with name 'add'");
@@ -133,7 +135,7 @@ async fn live_anthropic_tool_use_smoke() {
                 }
                 Some(Ok(ModelStreamEvent::MessageComplete { .. })) => break,
                 Some(Ok(_)) => {}
-                Some(Err(e)) => panic!("model error: {e:?}"),
+                Some(Err(e)) => return Err(format!("model error: {e:?}").into()),
                 None => break,
             }
         }
@@ -148,4 +150,6 @@ async fn live_anthropic_tool_use_smoke() {
         parsed.get("a").is_some() && parsed.get("b").is_some(),
         "expected ToolUseComplete.input to have fields 'a' and 'b', got {parsed:?}"
     );
+
+    Ok(())
 }

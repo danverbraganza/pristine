@@ -7,8 +7,13 @@ default:
 install-dev-deps:
     cargo install ratchets@0.2.6
 
+# Build the debug binary
+[group('development')]
+build:
+    cargo build
+
 # Build and install the local version of pristine
-[group('development')] 
+[group('development')]
 install:
     cargo install --path="."
 
@@ -19,8 +24,8 @@ test:
 
 # Launch the Python JSON-RPC client
 [group('development')]
-chat:
-    rlwrap uv run client.py
+chat: build
+    rlwrap uv run client.py {{invocation_directory()}}
 
 specs-bookmark := "specs"
 specs-manifest := "spec-files"

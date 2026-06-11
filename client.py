@@ -16,6 +16,7 @@ exits cleanly on EOF.  Runnable as `uv run client.py`.
 """
 
 import json
+import pathlib
 import subprocess
 import sys
 
@@ -339,8 +340,14 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
 
 
 def main() -> None:
+    project_dir = pathlib.Path(__file__).parent
+    invocation_dir = sys.argv[1] if len(sys.argv) > 1 else None
+
+    binary = project_dir / "target" / "debug" / "pristine"
+
     proc = subprocess.Popen(
-        ["cargo", "run", "--", "run"],
+        [str(binary), "run"],
+        cwd=invocation_dir,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=None,  # inherit, goes to terminal

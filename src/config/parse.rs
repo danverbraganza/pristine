@@ -121,7 +121,7 @@ mod tests {
     const AUTH_PATH: &str = "/virtual/auth.toml";
 
     #[test]
-    fn parse_topology_round_trips_valid_input() {
+    fn parse_topology_round_trips_valid_input() -> Result<(), Box<dyn std::error::Error>> {
         let input = r#"
 [[agents]]
 name = "default"
@@ -151,12 +151,13 @@ builtin = "exec_bash"
         assert_eq!(cfg.tools.len(), 3);
         match cfg.tools.get("read") {
             Some(ToolConfig::Builtin { builtin }) => assert_eq!(builtin, "read"),
-            other => panic!("expected builtin read tool, got {other:?}"),
+            other => return Err(format!("expected builtin read tool, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn parse_topology_rejects_unknown_field_on_agent() {
+    fn parse_topology_rejects_unknown_field_on_agent() -> Result<(), Box<dyn std::error::Error>> {
         let input = r#"
 [[agents]]
 name = "default"
@@ -175,12 +176,13 @@ rogue = "nope"
                     "underlying error mentions unknown field: {source}"
                 );
             }
-            other => panic!("expected TomlParse, got {other:?}"),
+            other => return Err(format!("expected TomlParse, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn parse_topology_garbled_syntax_carries_span() {
+    fn parse_topology_garbled_syntax_carries_span() -> Result<(), Box<dyn std::error::Error>> {
         let input = "this is not = = valid toml [[";
         let err =
             parse_topology(input, Path::new(TOPOLOGY_PATH)).expect_err("garbled toml rejected");
@@ -192,12 +194,13 @@ rogue = "nope"
                     "garbled toml should expose a span: {source}"
                 );
             }
-            other => panic!("expected TomlParse, got {other:?}"),
+            other => return Err(format!("expected TomlParse, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn parse_auth_round_trips_valid_input() {
+    fn parse_auth_round_trips_valid_input() -> Result<(), Box<dyn std::error::Error>> {
         let input = r#"
 [providers.anthropic]
 type = "anthropic"
@@ -211,26 +214,29 @@ api_key = "{{ANTHROPIC_API_KEY}}"
         assert_eq!(cfg.providers.len(), 1);
         match cfg.providers.get("anthropic") {
             Some(ProviderConfig::Anthropic { base_url }) => assert!(base_url.is_none()),
-            None => panic!("expected anthropic provider"),
+            None => return Err("expected anthropic provider".into()),
         }
         let alias = cfg.models.get("default").expect("default alias present");
         assert_eq!(alias.provider, "anthropic");
         assert_eq!(alias.model_name, "claude-sonnet-4-6");
         assert_eq!(alias.api_key, "{{ANTHROPIC_API_KEY}}");
+        Ok(())
     }
 
     #[test]
-    fn parse_auth_garbled_syntax_rejected() {
+    fn parse_auth_garbled_syntax_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let input = "[providers.anthropic\ntype = \"anthropic\"";
         let err = parse_auth(input, Path::new(AUTH_PATH)).expect_err("garbled auth rejected");
         match err {
             ConfigError::TomlParse { path, .. } => assert_eq!(path, Path::new(AUTH_PATH)),
-            other => panic!("expected TomlParse, got {other:?}"),
+            other => return Err(format!("expected TomlParse, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn read_topology_file_missing_path_returns_io_error() {
+    fn read_topology_file_missing_path_returns_io_error() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir().expect("tempdir creation succeeds");
         let missing = dir.path().join("does-not-exist.toml");
         let err = read_topology_file(&missing).expect_err("missing file returns IoError");
@@ -239,8 +245,9 @@ api_key = "{{ANTHROPIC_API_KEY}}"
                 assert_eq!(path, missing);
                 assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
             }
-            other => panic!("expected IoError, got {other:?}"),
+            other => return Err(format!("expected IoError, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -281,7 +288,7 @@ api_key = "{{ANTHROPIC_API_KEY}}"
     }
 
     #[test]
-    fn parse_auth_with_env_missing_var_collects_error() {
+    fn parse_auth_with_env_missing_var_collects_error() -> Result<(), Box<dyn std::error::Error>> {
         let input = r#"
 [providers.anthropic]
 type = "anthropic"
@@ -305,8 +312,9 @@ api_key = "{{ANTHROPIC_API_KEY}}"
                     "location {location:?} should reference the api_key path"
                 );
             }
-            other => panic!("expected UnknownEnvVar, got {other:?}"),
+            other => return Err(format!("expected UnknownEnvVar, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -325,7 +333,8 @@ tools = []
     }
 
     #[test]
-    fn parse_topology_with_env_initial_parse_error_short_circuits() {
+    fn parse_topology_with_env_initial_parse_error_short_circuits()
+    -> Result<(), Box<dyn std::error::Error>> {
         let input = "this is not = = valid toml [[";
         let env = MapEnv::default();
         let errors = parse_topology_with_env(input, Path::new(TOPOLOGY_PATH), &env)
@@ -335,7 +344,8 @@ tools = []
             ConfigError::TomlParse { path, .. } => {
                 assert_eq!(path, Path::new(TOPOLOGY_PATH));
             }
-            other => panic!("expected TomlParse, got {other:?}"),
+            other => return Err(format!("expected TomlParse, got {other:?}").into()),
         }
+        Ok(())
     }
 }

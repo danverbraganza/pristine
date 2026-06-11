@@ -160,104 +160,118 @@ mod tests {
     use super::*;
     use crate::test_support::MapEnv;
 
-    fn render(input: &str, env: &impl EnvSource) -> (String, ConfigErrors) {
+    fn render(
+        input: &str,
+        env: &impl EnvSource,
+    ) -> Result<(String, ConfigErrors), Box<dyn std::error::Error>> {
         let mut value = toml::Value::String(input.to_string());
         let mut errors = ConfigErrors::new();
         template_value(&mut value, env, &mut errors);
         match value {
-            toml::Value::String(s) => (s, errors),
-            other => panic!("expected String, got {other:?}"),
+            toml::Value::String(s) => Ok((s, errors)),
+            other => Err(format!("expected String, got {other:?}").into()),
         }
     }
 
     #[test]
-    fn substitutes_single_placeholder() {
+    fn substitutes_single_placeholder() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("NAME", "world")]);
-        let (out, errors) = render("hello {{NAME}}!", &env);
+        let (out, errors) = render("hello {{NAME}}!", &env)?;
         assert_eq!(out, "hello world!");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn missing_env_var_records_error_and_empties_placeholder() {
+    fn missing_env_var_records_error_and_empties_placeholder()
+    -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::default();
-        let (out, errors) = render("{{NAME}}", &env);
+        let (out, errors) = render("{{NAME}}", &env)?;
         assert_eq!(out, "");
         assert_eq!(errors.len(), 1);
         match &errors.as_slice()[0] {
             ConfigError::UnknownEnvVar { name, location: _ } => {
                 assert_eq!(name, "NAME");
             }
-            other => panic!("expected UnknownEnvVar, got {other:?}"),
+            other => return Err(format!("expected UnknownEnvVar, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn multi_occurrence_substitutes_all() {
+    fn multi_occurrence_substitutes_all() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("A", "1"), ("B", "2")]);
-        let (out, errors) = render("{{A}} {{B}} {{A}}", &env);
+        let (out, errors) = render("{{A}} {{B}} {{A}}", &env)?;
         assert_eq!(out, "1 2 1");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn mid_string_substitution_preserves_surroundings() {
+    fn mid_string_substitution_preserves_surroundings() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("X", "value")]);
-        let (out, errors) = render("prefix {{X}} suffix", &env);
+        let (out, errors) = render("prefix {{X}} suffix", &env)?;
         assert_eq!(out, "prefix value suffix");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn partial_marker_is_literal() {
+    fn partial_marker_is_literal() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("NOT_CLOSED", "x")]);
-        let (out, errors) = render("{{NOT_CLOSED", &env);
+        let (out, errors) = render("{{NOT_CLOSED", &env)?;
         assert_eq!(out, "{{NOT_CLOSED");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn trailing_marker_is_literal() {
+    fn trailing_marker_is_literal() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("X", "v")]);
-        let (out, errors) = render("ABC}}", &env);
+        let (out, errors) = render("ABC}}", &env)?;
         assert_eq!(out, "ABC}}");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn single_brace_marker_is_literal() {
+    fn single_brace_marker_is_literal() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("X", "v")]);
-        let (out, errors) = render("{X}", &env);
+        let (out, errors) = render("{X}", &env)?;
         assert_eq!(out, "{X}");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn invalid_identifier_inside_marker_is_literal() {
+    fn invalid_identifier_inside_marker_is_literal() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("X", "v")]);
-        let (out, errors) = render("{{1NAME}}", &env);
+        let (out, errors) = render("{{1NAME}}", &env)?;
         assert_eq!(out, "{{1NAME}}");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn empty_marker_is_literal() {
+    fn empty_marker_is_literal() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::default();
-        let (out, errors) = render("{{}}", &env);
+        let (out, errors) = render("{{}}", &env)?;
         assert_eq!(out, "{{}}");
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn special_chars_in_env_value_are_copied_verbatim() {
+    fn special_chars_in_env_value_are_copied_verbatim() -> Result<(), Box<dyn std::error::Error>> {
         let env = MapEnv::new([("K", r#"has "quotes" and \backslashes"#)]);
-        let (out, errors) = render("{{K}}", &env);
+        let (out, errors) = render("{{K}}", &env)?;
         assert_eq!(out, r#"has "quotes" and \backslashes"#);
         assert!(errors.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn nested_location_reflects_table_path() {
+    fn nested_location_reflects_table_path() -> Result<(), Box<dyn std::error::Error>> {
         let toml_input = r#"
 [models.default]
 api_key = "{{MISSING}}"
@@ -277,12 +291,13 @@ api_key = "{{MISSING}}"
                     "location {location:?} should reference the nested key path"
                 );
             }
-            other => panic!("expected UnknownEnvVar, got {other:?}"),
+            other => return Err(format!("expected UnknownEnvVar, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn array_location_includes_index() {
+    fn array_location_includes_index() -> Result<(), Box<dyn std::error::Error>> {
         let toml_input = r#"
 values = ["{{MISSING}}"]
 "#;
@@ -298,8 +313,9 @@ values = ["{{MISSING}}"]
                     "location {location:?} should reference the array index"
                 );
             }
-            other => panic!("expected UnknownEnvVar, got {other:?}"),
+            other => return Err(format!("expected UnknownEnvVar, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]

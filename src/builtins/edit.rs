@@ -357,7 +357,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_returns_invalid_input_on_malformed_json() {
+    async fn edit_returns_invalid_input_on_malformed_json() -> Result<(), Box<dyn std::error::Error>>
+    {
         let tool = Edit::new();
 
         let err = tool
@@ -367,7 +368,8 @@ mod tests {
 
         match err {
             ToolError::InvalidInput(_) => {}
-            other => panic!("expected InvalidInput, got {other:?}"),
+            other => return Err(format!("expected InvalidInput, got {other:?}").into()),
         }
+        Ok(())
     }
 }

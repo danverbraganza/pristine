@@ -185,7 +185,9 @@ impl Shell for StubShell {
         let mut script = self.script.lock().expect("test lock");
         match script.pop_front() {
             Some(entry) => entry,
-            None => panic!("StubShell script exhausted at unexpected exec call: {command}"),
+            None => Err(ShellError::Io(format!(
+                "StubShell script exhausted at unexpected exec call: {command}"
+            ))),
         }
     }
 }

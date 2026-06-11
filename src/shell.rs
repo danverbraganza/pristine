@@ -175,7 +175,7 @@ mod tests {
     use crate::test_support::StubShell;
 
     #[tokio::test]
-    async fn stub_shell_returns_scripted_exit() {
+    async fn stub_shell_returns_scripted_exit() -> Result<(), Box<dyn std::error::Error>> {
         let stub = StubShell::new(vec![Ok(ShellOutput {
             stdout: b"hello\n".to_vec(),
             stderr: Vec::new(),
@@ -190,8 +190,9 @@ mod tests {
         assert!(output.stderr.is_empty());
         match output.status {
             ExecStatus::Exit { code } => assert_eq!(code, 0),
-            other => panic!("expected Exit, got {other:?}"),
+            other => return Err(format!("expected Exit, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
@@ -212,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_shell_propagates_scripted_error() {
+    async fn stub_shell_propagates_scripted_error() -> Result<(), Box<dyn std::error::Error>> {
         let stub = StubShell::new(vec![Err(ShellError::Spawn("no /bin/bash".to_string()))]);
 
         let err = stub
@@ -221,8 +222,9 @@ mod tests {
             .expect_err("scripted error surfaces");
         match err {
             ShellError::Spawn(reason) => assert_eq!(reason, "no /bin/bash"),
-            other => panic!("expected Spawn, got {other:?}"),
+            other => return Err(format!("expected Spawn, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// Smoke test that actually spawns `/bin/bash`. Gated `#[ignore]` so the
@@ -230,7 +232,7 @@ mod tests {
     /// `cargo nextest run -- --ignored bash_shell_smoke`.
     #[tokio::test]
     #[ignore = "spawns real /bin/bash; opt-in"]
-    async fn bash_shell_smoke_echoes_string() {
+    async fn bash_shell_smoke_echoes_string() -> Result<(), Box<dyn std::error::Error>> {
         let shell = BashShell::new();
         let output = shell
             .exec("echo hello-from-bash", Duration::from_secs(5))
@@ -238,12 +240,13 @@ mod tests {
             .expect("bash exec succeeds");
         match output.status {
             ExecStatus::Exit { code } => assert_eq!(code, 0),
-            other => panic!("expected Exit {{code:0}}, got {other:?}"),
+            other => return Err(format!("expected Exit {{code:0}}, got {other:?}").into()),
         }
         assert!(
             output.stdout.starts_with(b"hello-from-bash"),
             "stdout was {:?}",
             output.stdout
         );
+        Ok(())
     }
 }

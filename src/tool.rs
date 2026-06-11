@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_registration_is_rejected() {
+    fn duplicate_registration_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let mut registry = ToolRegistry::new();
         registry
             .register(Arc::new(EchoTool::new("echo")))
@@ -128,12 +128,13 @@ mod tests {
             .expect_err("second registration fails");
         match err {
             ToolError::AlreadyRegistered(name) => assert_eq!(name, "echo"),
-            other => panic!("expected AlreadyRegistered, got {other:?}"),
+            other => return Err(format!("expected AlreadyRegistered, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn dispatch_unknown_tool_returns_not_found() {
+    async fn dispatch_unknown_tool_returns_not_found() -> Result<(), Box<dyn std::error::Error>> {
         let registry = ToolRegistry::new();
         let err = registry
             .dispatch("missing", serde_json::Value::Null)
@@ -141,8 +142,9 @@ mod tests {
             .expect_err("dispatch on unknown name fails");
         match err {
             ToolError::NotFound(name) => assert_eq!(name, "missing"),
-            other => panic!("expected NotFound, got {other:?}"),
+            other => return Err(format!("expected NotFound, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]

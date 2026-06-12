@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn builder_rejects_agent_with_unknown_model() {
+    fn builder_rejects_agent_with_unknown_model() -> Result<(), Box<dyn std::error::Error>> {
         let missing = ModelId::new("missing");
         let agent_id = AgentId::new();
         let result = HarnessBuilder::new()
@@ -342,9 +342,10 @@ mod tests {
             .build();
         match result {
             Err(Error::UnknownModel(id)) => assert_eq!(id, missing),
-            Err(other) => panic!("expected UnknownModel, got {other:?}"),
-            Ok(_) => panic!("builder should reject unknown model"),
+            Err(other) => return Err(format!("expected UnknownModel, got {other:?}").into()),
+            Ok(_) => return Err("builder should reject unknown model".into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
@@ -378,7 +379,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_returns_receiver_seeing_published_event() {
+    async fn subscribe_returns_receiver_seeing_published_event()
+    -> Result<(), Box<dyn std::error::Error>> {
         let (mut harness, agent_id, _model_id) = build_harness_with_one_agent();
         harness.start().expect("start");
 
@@ -399,7 +401,7 @@ mod tests {
             .expect("stream closed");
         match event {
             AgentEvent::TokenDelta { text } => assert_eq!(text, "hi"),
-            other => panic!("expected TokenDelta, got {other:?}"),
+            other => return Err(format!("expected TokenDelta, got {other:?}").into()),
         }
 
         harness.shutdown();
@@ -407,6 +409,7 @@ mod tests {
             .await
             .expect("join timed out")
             .expect("clean shutdown");
+        Ok(())
     }
 
     #[tokio::test]
@@ -597,16 +600,17 @@ mod tests {
     }
 
     #[test]
-    fn harness_builder_duplicate_tool_returns_error() {
+    fn harness_builder_duplicate_tool_returns_error() -> Result<(), Box<dyn std::error::Error>> {
         let builder = HarnessBuilder::new()
             .add_tool(Arc::new(EchoTool::new("echo")))
             .expect("first add_tool succeeds");
         let result = builder.add_tool(Arc::new(EchoTool::new("echo")));
         match result {
             Err(Error::DuplicateTool(name)) => assert_eq!(name, "echo"),
-            Err(other) => panic!("expected DuplicateTool, got {other:?}"),
-            Ok(_) => panic!("second add_tool should fail"),
+            Err(other) => return Err(format!("expected DuplicateTool, got {other:?}").into()),
+            Ok(_) => return Err("second add_tool should fail".into()),
         }
+        Ok(())
     }
 
     struct StubProvider;
@@ -631,15 +635,17 @@ mod tests {
     }
 
     #[test]
-    fn harness_builder_duplicate_provider_returns_error() {
+    fn harness_builder_duplicate_provider_returns_error() -> Result<(), Box<dyn std::error::Error>>
+    {
         let builder = HarnessBuilder::new()
             .add_provider("stub", Arc::new(StubProvider))
             .expect("first add_provider succeeds");
         let result = builder.add_provider("stub", Arc::new(StubProvider));
         match result {
             Err(Error::DuplicateProvider(name)) => assert_eq!(name, "stub"),
-            Err(other) => panic!("expected DuplicateProvider, got {other:?}"),
-            Ok(_) => panic!("second add_provider should fail"),
+            Err(other) => return Err(format!("expected DuplicateProvider, got {other:?}").into()),
+            Ok(_) => return Err("second add_provider should fail".into()),
         }
+        Ok(())
     }
 }

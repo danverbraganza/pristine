@@ -341,15 +341,18 @@ mod tests {
     }
 
     #[test]
-    fn build_harness_from_config_happy_path_registers_one_agent_and_five_tools() {
+    fn build_harness_from_config_happy_path_registers_one_agent_and_five_tools()
+    -> Result<(), Box<dyn std::error::Error>> {
         let config = one_agent_config();
         let result = build_harness_from_config(config);
         let (harness, agent_ids) = match result {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
-                panic!("expected Ok build, got Config errors: {errors}")
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
             }
-            Err(HarnessAssemblyError::Other(err)) => panic!("expected Ok build, got Other: {err}"),
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
         };
 
         assert_eq!(agent_ids.len(), 1);
@@ -373,10 +376,12 @@ mod tests {
             ],
             "expected the five built-in tools registered",
         );
+        Ok(())
     }
 
     #[test]
-    fn build_harness_from_config_zero_agents_yields_empty_agent_id_list() {
+    fn build_harness_from_config_zero_agents_yields_empty_agent_id_list()
+    -> Result<(), Box<dyn std::error::Error>> {
         let config = Config {
             agents: Vec::new(),
             tools: HashMap::new(),
@@ -385,19 +390,23 @@ mod tests {
         let (_harness, agent_ids) = match build_harness_from_config(config) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
-                panic!("expected Ok build, got Config errors: {errors}")
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
             }
-            Err(HarnessAssemblyError::Other(err)) => panic!("expected Ok build, got Other: {err}"),
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
         };
         assert!(agent_ids.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn build_harness_from_config_unknown_provider_yields_config_error() {
+    fn build_harness_from_config_unknown_provider_yields_config_error()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut config = one_agent_config();
         config.agents[0].model.provider_name = "nonesuch".to_string();
         match build_harness_from_config(config) {
-            Ok(_) => panic!("unknown provider must fail"),
+            Ok(_) => return Err("unknown provider must fail".into()),
             Err(HarnessAssemblyError::Config(errors)) => {
                 let mut saw_unknown = false;
                 for entry in errors.as_slice() {
@@ -412,13 +421,15 @@ mod tests {
                 );
             }
             Err(HarnessAssemblyError::Other(e)) => {
-                panic!("expected Config variant, got Other: {e}");
+                return Err(format!("expected Config variant, got Other: {e}").into());
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn build_harness_from_config_multiple_agents_get_distinct_model_ids() {
+    fn build_harness_from_config_multiple_agents_get_distinct_model_ids()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut config = one_agent_config();
         let second = ResolvedAgent {
             name: "second".to_string(),
@@ -436,11 +447,14 @@ mod tests {
         let (_harness, agent_ids) = match build_harness_from_config(config) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
-                panic!("expected Ok build, got Config errors: {errors}")
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
             }
-            Err(HarnessAssemblyError::Other(err)) => panic!("expected Ok build, got Other: {err}"),
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
         };
         assert_eq!(agent_ids.len(), 2);
         assert_ne!(agent_ids[0], agent_ids[1]);
+        Ok(())
     }
 }

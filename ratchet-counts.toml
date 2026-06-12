@@ -1,0 +1,15 @@
+# Ratchet violation budgets
+# These counts represent the maximum tolerated violations.
+# Counts can only be reduced (tightened) or explicitly bumped with justification.
+
+[no-fixme-comments]
+"." = 0
+
+[no-panic]
+"." = 0
+
+[no-todo-comments]
+"." = 0
+
+[no-unwrap]
+"." = 0

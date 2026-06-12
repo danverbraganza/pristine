@@ -55,7 +55,8 @@ async fn initialize_via_raw_json_rpc() {
 }
 
 #[tokio::test]
-async fn send_message_via_raw_json_rpc_routes_to_inbound() {
+async fn send_message_via_raw_json_rpc_routes_to_inbound() -> Result<(), Box<dyn std::error::Error>>
+{
     let (module, agent_id, _owner_id, _token, _bus, mut inbound) = build_rpc_module();
 
     let request = serde_json::json!({
@@ -90,8 +91,10 @@ async fn send_message_via_raw_json_rpc_routes_to_inbound() {
         pristine::history::Block::UserMessage { content, .. } => {
             assert_eq!(content, "hello from test");
         }
-        other => panic!("expected UserMessage, got {other:?}"),
+        other => return Err(format!("expected UserMessage, got {other:?}").into()),
     }
+
+    Ok(())
 }
 
 #[tokio::test]

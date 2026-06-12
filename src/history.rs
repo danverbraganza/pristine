@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn linearize_returns_root_first() {
+    fn linearize_returns_root_first() -> Result<(), Box<dyn std::error::Error>> {
         let mut history = History::new();
         history.append(user_message("one"));
         history.append(user_message("two"));
@@ -197,15 +197,16 @@ mod tests {
         let contents: Vec<&str> = blocks
             .iter()
             .map(|block| match block {
-                Block::UserMessage { content, .. } => content.as_str(),
-                _ => panic!("expected UserMessage variant"),
+                Block::UserMessage { content, .. } => Ok(content.as_str()),
+                _ => Err("expected UserMessage variant"),
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         assert_eq!(contents, vec!["one", "two", "three"]);
+        Ok(())
     }
 
     #[test]
-    fn fork_shares_prefix_via_arc() {
+    fn fork_shares_prefix_via_arc() -> Result<(), Box<dyn std::error::Error>> {
         let mut h1 = History::new();
         h1.append(user_message("shared-one"));
         let shared_head = h1.append(user_message("shared-two")).clone();
@@ -220,28 +221,31 @@ mod tests {
         let h1_blocks = h1.linearize();
         let h2_blocks = h2.linearize();
 
-        let extract = |block: &Block| match block {
-            Block::UserMessage { content, .. } => content.clone(),
-            _ => panic!("expected UserMessage variant"),
+        let extract = |block: &Block| -> Result<String, Box<dyn std::error::Error>> {
+            match block {
+                Block::UserMessage { content, .. } => Ok(content.clone()),
+                _ => Err("expected UserMessage variant".into()),
+            }
         };
 
-        assert_eq!(extract(&h1_blocks[0]), "shared-one");
-        assert_eq!(extract(&h2_blocks[0]), "shared-one");
-        assert_eq!(extract(&h1_blocks[1]), "shared-two");
-        assert_eq!(extract(&h2_blocks[1]), "shared-two");
-        assert_ne!(extract(&h1_blocks[2]), extract(&h2_blocks[2]));
-        assert_eq!(extract(&h1_blocks[2]), "h1-tail");
-        assert_eq!(extract(&h2_blocks[2]), "h2-tail");
+        assert_eq!(extract(&h1_blocks[0])?, "shared-one");
+        assert_eq!(extract(&h2_blocks[0])?, "shared-one");
+        assert_eq!(extract(&h1_blocks[1])?, "shared-two");
+        assert_eq!(extract(&h2_blocks[1])?, "shared-two");
+        assert_ne!(extract(&h1_blocks[2])?, extract(&h2_blocks[2])?);
+        assert_eq!(extract(&h1_blocks[2])?, "h1-tail");
+        assert_eq!(extract(&h2_blocks[2])?, "h2-tail");
 
         assert!(Arc::strong_count(&shared_head) >= 2);
 
         // Silence unused-binding warnings while keeping the tails pinned so the
         // strong_count assertion above reflects the intended sharing.
         let _ = (&h1_tail, &h2_tail);
+        Ok(())
     }
 
     #[test]
-    fn tool_call_round_trips_through_history() {
+    fn tool_call_round_trips_through_history() -> Result<(), Box<dyn std::error::Error>> {
         let mut history = History::new();
         history.append(Block::ToolCall {
             id: "use_001".to_string(),
@@ -264,12 +268,13 @@ mod tests {
                 assert_eq!(arguments, &serde_json::json!({"text": "hi"}));
                 assert!(matches!(timestamp, SystemTime { .. }));
             }
-            other => panic!("expected ToolCall, got {other:?}"),
+            other => return Err(format!("expected ToolCall, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn tool_result_round_trips_through_history() {
+    fn tool_result_round_trips_through_history() -> Result<(), Box<dyn std::error::Error>> {
         let mut history = History::new();
         history.append(Block::ToolResult {
             tool_use_id: "use_002".to_string(),
@@ -295,12 +300,13 @@ mod tests {
                 assert!(*is_error);
                 assert!(matches!(timestamp, SystemTime { .. }));
             }
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn tool_call_and_result_share_correlation_id() {
+    fn tool_call_and_result_share_correlation_id() -> Result<(), Box<dyn std::error::Error>> {
         let mut history = History::new();
         history.append(Block::ToolCall {
             id: "use_003".to_string(),
@@ -320,12 +326,13 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         let call_id = match &blocks[0] {
             Block::ToolCall { id, .. } => id.clone(),
-            other => panic!("expected ToolCall, got {other:?}"),
+            other => return Err(format!("expected ToolCall, got {other:?}").into()),
         };
         let result_id = match &blocks[1] {
             Block::ToolResult { tool_use_id, .. } => tool_use_id.clone(),
-            other => panic!("expected ToolResult, got {other:?}"),
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
         };
         assert_eq!(call_id, result_id);
+        Ok(())
     }
 }

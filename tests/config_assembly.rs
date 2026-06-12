@@ -25,7 +25,8 @@ api_key = "{{ANTHROPIC_API_KEY}}"
 "#;
 
 #[test]
-fn default_topology_and_fixture_auth_produce_expected_harness() {
+fn default_topology_and_fixture_auth_produce_expected_harness()
+-> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir().expect("tempdir");
     let auth_path = dir.path().join("pristine-auth.toml");
     std::fs::write(&auth_path, FIXTURE_AUTH).expect("write fixture auth");
@@ -46,10 +47,10 @@ fn default_topology_and_fixture_auth_produce_expected_harness() {
     let (harness, agent_ids) = match build_harness_from_config(config) {
         Ok(value) => value,
         Err(HarnessAssemblyError::Config(errors)) => {
-            panic!("expected Ok harness, got Config errors: {errors}")
+            return Err(format!("expected Ok harness, got Config errors: {errors}").into());
         }
         Err(HarnessAssemblyError::Other(err)) => {
-            panic!("expected Ok harness, got Other: {err}")
+            return Err(format!("expected Ok harness, got Other: {err}").into());
         }
     };
 
@@ -78,6 +79,8 @@ fn default_topology_and_fixture_auth_produce_expected_harness() {
         harness.provider_registry().get("anthropic").is_some(),
         "harness provider registry contains `anthropic`",
     );
+
+    Ok(())
 }
 
 #[test]

@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_then_send_inbound_delivers_block() {
+    async fn register_then_send_inbound_delivers_block() -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
         let mut inbound = bus.register(agent_id).expect("register");
@@ -221,12 +221,13 @@ mod tests {
 
         match block {
             Block::UserMessage { content, .. } => assert_eq!(content, "hello"),
-            _ => panic!("expected UserMessage"),
+            _ => return Err("expected UserMessage".into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn subscribe_sees_published_events() {
+    async fn subscribe_sees_published_events() -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
         let _inbound = bus.register(agent_id).expect("register");
@@ -248,12 +249,14 @@ mod tests {
 
         match event {
             AgentEvent::TokenDelta { text } => assert_eq!(text, "hi"),
-            _ => panic!("expected TokenDelta"),
+            _ => return Err("expected TokenDelta".into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn route_forwards_block_complete_with_agent_message() {
+    async fn route_forwards_block_complete_with_agent_message()
+    -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let a_id = AgentId::new();
         let b_id = AgentId::new();
@@ -283,8 +286,9 @@ mod tests {
                 assert_eq!(from, a_id);
                 assert_eq!(content, "from-a");
             }
-            _ => panic!("expected AgentMessage"),
+            _ => return Err("expected AgentMessage".into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
@@ -313,7 +317,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_agent_returns_unknown_agent_error() {
+    async fn unknown_agent_returns_unknown_agent_error() -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let unknown = AgentId::new();
         let err = bus
@@ -321,23 +325,25 @@ mod tests {
             .expect_err("expected error");
         match err {
             Error::UnknownAgent(id) => assert_eq!(id, unknown),
-            other => panic!("expected UnknownAgent, got {other:?}"),
+            other => return Err(format!("expected UnknownAgent, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn subscribe_on_unknown_agent_errors() {
+    async fn subscribe_on_unknown_agent_errors() -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let unknown = AgentId::new();
         match bus.subscribe(unknown) {
             Err(Error::UnknownAgent(_)) => {}
-            Err(other) => panic!("expected UnknownAgent, got {other:?}"),
-            Ok(_) => panic!("expected error, got Ok"),
+            Err(other) => return Err(format!("expected UnknownAgent, got {other:?}").into()),
+            Ok(_) => return Err("expected error, got Ok".into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn subscribe_sees_published_error_events() {
+    async fn subscribe_sees_published_error_events() -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
         let _inbound = bus.register(agent_id).expect("register");
@@ -359,20 +365,22 @@ mod tests {
 
         match event {
             AgentEvent::Error { message } => assert_eq!(message, "boom"),
-            other => panic!("expected Error, got {other:?}"),
+            other => return Err(format!("expected Error, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn register_twice_errors() {
+    async fn register_twice_errors() -> Result<(), Box<dyn std::error::Error>> {
         let bus = InMemoryMessageBus::new();
         let agent_id = AgentId::new();
         let _first = bus.register(agent_id).expect("first register");
         match bus.register(agent_id) {
             Err(Error::AlreadyRegistered(id)) => assert_eq!(id, agent_id),
-            Err(other) => panic!("expected AlreadyRegistered, got {other:?}"),
-            Ok(_) => panic!("expected second register to fail"),
+            Err(other) => return Err(format!("expected AlreadyRegistered, got {other:?}").into()),
+            Ok(_) => return Err("expected second register to fail".into()),
         }
+        Ok(())
     }
 
     #[test]

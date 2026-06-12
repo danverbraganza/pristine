@@ -139,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn dangling_alias_collects_error_and_skips_agent() {
+    fn dangling_alias_collects_error_and_skips_agent() -> Result<(), Box<dyn std::error::Error>> {
         let topology = topology_with(vec![agent("default", "missing", &[])]);
         let auth = auth_with(HashMap::new());
 
@@ -150,8 +150,9 @@ mod tests {
         assert_eq!(errors.len(), 1);
         match &errors.as_slice()[0] {
             ConfigError::DanglingAlias { alias } => assert_eq!(alias, "missing"),
-            other => panic!("expected DanglingAlias, got {other:?}"),
+            other => return Err(format!("expected DanglingAlias, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -228,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_one_resolves_one_dangles() {
+    fn mixed_one_resolves_one_dangles() -> Result<(), Box<dyn std::error::Error>> {
         let topology = topology_with(vec![
             agent("good", "default", &[]),
             agent("bad", "missing", &[]),
@@ -248,7 +249,8 @@ mod tests {
         assert_eq!(errors.len(), 1);
         match &errors.as_slice()[0] {
             ConfigError::DanglingAlias { alias } => assert_eq!(alias, "missing"),
-            other => panic!("expected DanglingAlias, got {other:?}"),
+            other => return Err(format!("expected DanglingAlias, got {other:?}").into()),
         }
+        Ok(())
     }
 }

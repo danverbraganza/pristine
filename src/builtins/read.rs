@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_not_found_returns_typed_error() {
+    async fn read_file_not_found_returns_typed_error() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let missing = dir.join(format!("nonexistent-{}.txt", Uuid::new_v4().simple()));
         let tool = Read::new();
@@ -253,16 +253,17 @@ mod tests {
             .await
             .expect_err("missing path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "file_not_found");
         assert_eq!(
             value["path"].as_str().expect("path is a string"),
             missing.to_string_lossy(),
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn read_file_too_large_when_no_range_given() {
+    async fn read_file_too_large_when_no_range_given() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let big = vec![b'a'; 65 * 1024];
         let path = write_fixture(&dir, "big.txt", &big);
@@ -273,10 +274,11 @@ mod tests {
             .await
             .expect_err("file exceeding cap must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "file_too_large");
         assert_eq!(value["size_bytes"], 66560);
         assert_eq!(value["max_bytes"], 65536);
+        Ok(())
     }
 
     #[tokio::test]
@@ -301,7 +303,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_not_utf8_returns_byte_offset() {
+    async fn read_not_utf8_returns_byte_offset() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "binary.bin", &[0x48, 0x69, 0xFF, 0x80]);
         let tool = Read::new();
@@ -311,13 +313,14 @@ mod tests {
             .await
             .expect_err("invalid UTF-8 must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "not_utf8");
         assert_eq!(value["byte_offset"], 2);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn read_invalid_range_start_zero() {
+    async fn read_invalid_range_start_zero() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "fixture.txt", b"a\nb");
         let tool = Read::new();
@@ -331,12 +334,13 @@ mod tests {
             .await
             .expect_err("start_line == 0 must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_range");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn read_invalid_range_start_gt_end() {
+    async fn read_invalid_range_start_gt_end() -> Result<(), Box<dyn std::error::Error>> {
         let dir = unique_tempdir();
         let path = write_fixture(&dir, "fixture.txt", b"a\nb\nc");
         let tool = Read::new();
@@ -350,10 +354,11 @@ mod tests {
             .await
             .expect_err("start > end must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_range");
         assert_eq!(value["start_line"], 2);
         assert_eq!(value["end_line"], 1);
+        Ok(())
     }
 
     #[tokio::test]
@@ -393,7 +398,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_invalid_path_empty_string() {
+    async fn read_invalid_path_empty_string() -> Result<(), Box<dyn std::error::Error>> {
         let tool = Read::new();
 
         let err = tool
@@ -401,9 +406,10 @@ mod tests {
             .await
             .expect_err("empty path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_path");
         let reason = value["reason"].as_str().expect("reason is a string");
         assert!(!reason.is_empty(), "reason should be non-empty");
+        Ok(())
     }
 }

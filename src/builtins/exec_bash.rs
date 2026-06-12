@@ -363,7 +363,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exec_bash_spawn_error_maps_to_execution_dialect() {
+    async fn exec_bash_spawn_error_maps_to_execution_dialect()
+    -> Result<(), Box<dyn std::error::Error>> {
         let stub = stub_err(ShellError::Spawn("no such command".to_string()));
         let tool = ExecBash::with_shell(stub);
 
@@ -374,7 +375,7 @@ mod tests {
 
         let value = match err {
             ToolError::Execution(v) => v,
-            other => panic!("expected Execution, got {other:?}"),
+            other => return Err(format!("expected Execution, got {other:?}").into()),
         };
         assert_eq!(value["kind"], "spawn");
         let reason = value["reason"].as_str().expect("reason is a string");
@@ -382,10 +383,12 @@ mod tests {
             reason.contains("no such command"),
             "unexpected reason: {reason}",
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn exec_bash_io_error_maps_to_execution_dialect() {
+    async fn exec_bash_io_error_maps_to_execution_dialect() -> Result<(), Box<dyn std::error::Error>>
+    {
         let stub = stub_err(ShellError::Io("read failure".to_string()));
         let tool = ExecBash::with_shell(stub);
 
@@ -396,7 +399,7 @@ mod tests {
 
         let value = match err {
             ToolError::Execution(v) => v,
-            other => panic!("expected Execution, got {other:?}"),
+            other => return Err(format!("expected Execution, got {other:?}").into()),
         };
         assert_eq!(value["kind"], "io");
         let reason = value["reason"].as_str().expect("reason is a string");
@@ -404,10 +407,12 @@ mod tests {
             reason.contains("read failure"),
             "unexpected reason: {reason}",
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn exec_bash_missing_command_field_is_invalid_input() {
+    async fn exec_bash_missing_command_field_is_invalid_input()
+    -> Result<(), Box<dyn std::error::Error>> {
         // No `command` field. This is an engine-level deserialization failure;
         // ExecBash surfaces it as ToolError::InvalidInput, NOT as the per-tool
         // Execution dialect.
@@ -421,8 +426,9 @@ mod tests {
 
         match err {
             ToolError::InvalidInput(_) => {}
-            other => panic!("expected InvalidInput, got {other:?}"),
+            other => return Err(format!("expected InvalidInput, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[tokio::test]

@@ -99,12 +99,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_tool_rejects_missing_fields() {
+    async fn add_tool_rejects_missing_fields() -> Result<(), Box<dyn std::error::Error>> {
         let tool = AddTool::new();
         let result = tool.call(json!({"a": 1})).await;
         let value = match result {
             Err(ToolError::Execution(v)) => v,
-            other => panic!("expected Execution(value), got {other:?}"),
+            other => return Err(format!("expected Execution(value), got {other:?}").into()),
         };
         assert_eq!(value["kind"], "invalid_input");
         let reason = value["reason"].as_str().expect("reason is a string");
@@ -112,15 +112,16 @@ mod tests {
             reason.contains("AddTool requires numeric fields"),
             "unexpected reason: {reason}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn add_tool_rejects_non_numeric_fields() {
+    async fn add_tool_rejects_non_numeric_fields() -> Result<(), Box<dyn std::error::Error>> {
         let tool = AddTool::new();
         let result = tool.call(json!({"a": "hello", "b": 1})).await;
         let value = match result {
             Err(ToolError::Execution(v)) => v,
-            other => panic!("expected Execution(value), got {other:?}"),
+            other => return Err(format!("expected Execution(value), got {other:?}").into()),
         };
         assert_eq!(value["kind"], "invalid_input");
         let reason = value["reason"].as_str().expect("reason is a string");
@@ -128,6 +129,7 @@ mod tests {
             reason.contains("AddTool requires numeric fields"),
             "unexpected reason: {reason}"
         );
+        Ok(())
     }
 
     #[test]

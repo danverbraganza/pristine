@@ -234,7 +234,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_invalid_path_empty_string() {
+    async fn write_invalid_path_empty_string() -> Result<(), Box<dyn std::error::Error>> {
         let tool = Write::new();
 
         let err = tool
@@ -245,14 +245,16 @@ mod tests {
             .await
             .expect_err("empty path must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_path");
         let reason = value["reason"].as_str().expect("reason is a string");
         assert!(!reason.is_empty(), "reason should be non-empty");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn write_handles_existing_directory_as_target() {
+    async fn write_handles_existing_directory_as_target() -> Result<(), Box<dyn std::error::Error>>
+    {
         // Pre-create a directory at the target path; the atomic-rename step
         // should fail because rename refuses to replace a non-empty directory
         // (and rename of a regular tmp file onto an existing directory is
@@ -273,11 +275,12 @@ mod tests {
             .await
             .expect_err("directory-as-target must error");
 
-        let value = execution_value(err);
+        let value = execution_value(err)?;
         let kind = value["kind"].as_str().expect("kind is a string");
         assert!(
             kind == "io_error" || kind == "permission_denied",
             "expected io_error or permission_denied, got {kind}"
         );
+        Ok(())
     }
 }

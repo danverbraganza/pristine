@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_add_returns_duplicate_provider_error() {
+    fn duplicate_add_returns_duplicate_provider_error() -> Result<(), Box<dyn std::error::Error>> {
         let mut registry = ProviderRegistry::new();
         registry
             .add("stub", Arc::new(StubProvider))
@@ -150,8 +150,9 @@ mod tests {
             .expect_err("second registration fails");
         match err {
             ProviderError::DuplicateProvider(name) => assert_eq!(name, "stub"),
-            other => panic!("expected DuplicateProvider, got {other:?}"),
+            other => return Err(format!("expected DuplicateProvider, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]

@@ -87,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn undeclared_tool_collects_error() {
+    fn undeclared_tool_collects_error() -> Result<(), Box<dyn std::error::Error>> {
         let topo = topology(vec![agent("default", &["mystery"])], &[]);
         let mut errors = ConfigErrors::new();
         validate_tool_refs(&topo, &mut errors);
@@ -97,8 +97,9 @@ mod tests {
                 assert_eq!(agent, "default");
                 assert_eq!(tool, "mystery");
             }
-            other => panic!("expected UndeclaredTool, got {other:?}"),
+            other => return Err(format!("expected UndeclaredTool, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
@@ -110,7 +111,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_within_one_agent_collects_error() {
+    fn duplicate_within_one_agent_collects_error() -> Result<(), Box<dyn std::error::Error>> {
         let topo = topology(vec![agent("default", &["read", "read"])], &["read"]);
         let mut errors = ConfigErrors::new();
         validate_tool_refs(&topo, &mut errors);
@@ -120,13 +121,17 @@ mod tests {
                 assert_eq!(agent, "default");
                 assert_eq!(tool, "read");
             }
-            other => panic!("expected DuplicateToolRef, got {other:?}"),
+            other => return Err(format!("expected DuplicateToolRef, got {other:?}").into()),
         }
         for err in errors.as_slice() {
             if let ConfigError::UndeclaredTool { tool, .. } = err {
-                panic!("declared duplicate 'read' should not be flagged as undeclared: {tool}");
+                return Err(format!(
+                    "declared duplicate 'read' should not be flagged as undeclared: {tool}"
+                )
+                .into());
             }
         }
+        Ok(())
     }
 
     #[test]
@@ -144,7 +149,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_agents_independent() {
+    fn multiple_agents_independent() -> Result<(), Box<dyn std::error::Error>> {
         let topo = topology(
             vec![
                 agent("dup_agent", &["read", "read"]),
@@ -170,11 +175,12 @@ mod tests {
                     assert_eq!(tool, "mystery");
                     found_undecl = true;
                 }
-                other => panic!("unexpected error variant: {other:?}"),
+                other => return Err(format!("unexpected error variant: {other:?}").into()),
             }
         }
         assert!(found_dup, "expected a DuplicateToolRef on dup_agent");
         assert!(found_undecl, "expected an UndeclaredTool on undecl_agent");
+        Ok(())
     }
 
     #[test]

@@ -184,7 +184,7 @@ mod tests {
     /// (or `AlreadyExists` on some kernels) from `create_dir_all`.
     #[cfg(unix)]
     #[test]
-    fn io_error_path_is_propagated() {
+    fn io_error_path_is_propagated() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir().expect("tempdir");
         let blocking_file = dir.path().join("blocker");
         fs::write(&blocking_file, b"i am a file, not a directory").expect("write blocker");
@@ -198,7 +198,8 @@ mod tests {
                     "IoError should carry the path that failed (the blocking parent)"
                 );
             }
-            other => panic!("expected ConfigError::IoError, got {other:?}"),
+            other => return Err(format!("expected ConfigError::IoError, got {other:?}").into()),
         }
+        Ok(())
     }
 }

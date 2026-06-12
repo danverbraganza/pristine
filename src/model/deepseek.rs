@@ -91,6 +91,27 @@ struct DeepSeekRequest<'a> {
     // `reasoning_content` without an explicit toggle, so no thinking parameter
     // is sent; we rely on the documented default.
     stream_options: StreamOptions,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<DeepSeekTool>,
+}
+
+/// One entry in the OpenAI-dialect `tools` array. The portable `ToolSpec` maps
+/// onto this nested `{type: function, function: {...}}` shape, in contrast to
+/// Anthropic's flat top-level tool object.
+#[derive(serde::Serialize)]
+struct DeepSeekTool {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: DeepSeekFunction,
+}
+
+#[derive(serde::Serialize)]
+struct DeepSeekFunction {
+    name: String,
+    description: String,
+    // OpenAI nests the JSON schema under `function.parameters`, where Anthropic
+    // uses a top-level `input_schema`.
+    parameters: serde_json::Value,
 }
 
 #[derive(serde::Serialize)]
@@ -138,7 +159,7 @@ fn tool_result_content_string(v: &serde_json::Value) -> String {
     }
 }
 
-fn model_input_to_deepseek(input: &ModelInput) -> Vec<DeepSeekMessage> {
+fn model_input_to_deepseek(input: &ModelInput) -> (Vec<DeepSeekMessage>, Vec<DeepSeekTool>) {
     let mut messages: Vec<DeepSeekMessage> = Vec::with_capacity(input.turns.len());
     for turn in &input.turns {
         match turn.role {
@@ -231,7 +252,19 @@ fn model_input_to_deepseek(input: &ModelInput) -> Vec<DeepSeekMessage> {
             }
         }
     }
-    messages
+    let tools = input
+        .tools
+        .iter()
+        .map(|spec| DeepSeekTool {
+            kind: "function",
+            function: DeepSeekFunction {
+                name: spec.name.clone(),
+                description: spec.description.clone(),
+                parameters: spec.input_schema.clone(),
+            },
+        })
+        .collect();
+    (messages, tools)
 }
 
 #[derive(serde::Deserialize)]
@@ -305,7 +338,7 @@ impl ARModel for DeepSeekModel {
         let api_key = self.api_key.clone();
         let model_name = self.model_name.clone();
         let base_url = self.base_url.clone();
-        let messages = model_input_to_deepseek(input);
+        let (messages, tools) = model_input_to_deepseek(input);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<ModelStreamEvent, Error>>(64);
 
@@ -318,6 +351,7 @@ impl ARModel for DeepSeekModel {
                 stream_options: StreamOptions {
                     include_usage: true,
                 },
+                tools,
             };
             let url = format!("{base_url}/v1/chat/completions");
             let response = match client
@@ -600,7 +634,7 @@ async fn flush_completions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Turn;
+    use crate::model::{ToolSpec, Turn};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -718,7 +752,7 @@ mod tests {
             ],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         assert_eq!(value[0]["role"], "system");
         assert_eq!(value[0]["content"], "first");
@@ -739,7 +773,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, tools) = model_input_to_deepseek(&input);
         let request = DeepSeekRequest {
             model: "deepseek-v4-pro",
             messages,
@@ -748,6 +782,7 @@ mod tests {
             stream_options: StreamOptions {
                 include_usage: true,
             },
+            tools,
         };
         let value = serde_json::to_value(&request).expect("serialize request");
         assert_eq!(value["model"], "deepseek-v4-pro");
@@ -759,6 +794,65 @@ mod tests {
     }
 
     #[test]
+    fn serializes_tools_field_when_present() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("hi".into())],
+            }],
+            tools: vec![ToolSpec {
+                name: "echo".into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            }],
+        };
+        let (messages, tools) = model_input_to_deepseek(&input);
+        let request = DeepSeekRequest {
+            model: "deepseek-v4-pro",
+            messages,
+            stream: true,
+            max_tokens: MAX_TOKENS,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        // OpenAI nests the spec under function.{name,description,parameters}.
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["function"]["name"], "echo");
+        assert_eq!(value["tools"][0]["function"]["description"], "d");
+        assert_eq!(
+            value["tools"][0]["function"]["parameters"]["type"],
+            "object"
+        );
+    }
+
+    #[test]
+    fn omits_tools_field_when_empty() {
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("hi".into())],
+            }],
+            tools: Vec::new(),
+        };
+        let (messages, tools) = model_input_to_deepseek(&input);
+        let request = DeepSeekRequest {
+            model: "deepseek-v4-pro",
+            messages,
+            stream: true,
+            max_tokens: MAX_TOKENS,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
+            tools,
+        };
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert!(value.get("tools").is_none());
+    }
+
+    #[test]
     fn user_text_becomes_user_message() {
         let input = ModelInput {
             turns: vec![Turn {
@@ -767,7 +861,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         assert_eq!(value[0]["role"], "user");
         assert_eq!(value[0]["content"], "hello");
@@ -786,7 +880,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         assert_eq!(value[0]["role"], "assistant");
         assert_eq!(value[0]["tool_calls"][0]["id"], "call_1");
@@ -813,7 +907,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         assert_eq!(value[0]["role"], "tool");
         assert_eq!(value[0]["tool_call_id"], "call_1");
@@ -834,7 +928,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         assert_eq!(value[0]["role"], "tool");
         let content = value[0]["content"].as_str().expect("content string");
@@ -858,7 +952,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         let content = &value[0]["content"];
         assert!(
@@ -891,7 +985,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         let arr = value.as_array().expect("messages array");
         assert_eq!(
@@ -928,7 +1022,7 @@ mod tests {
             }],
             tools: Vec::new(),
         };
-        let messages = model_input_to_deepseek(&input);
+        let (messages, _tools) = model_input_to_deepseek(&input);
         let value = serde_json::to_value(&messages).expect("serialize messages");
         let arr = value.as_array().expect("messages array");
         assert_eq!(arr.len(), 2);

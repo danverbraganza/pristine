@@ -22,8 +22,8 @@ pub struct AuthConfig {
 
 /// One entry of `[providers.X]` in the auth file. The `type` discriminator
 /// selects the variant; provider-specific dialect (e.g. Anthropic's
-/// `base_url`) is decoded inline. v1 ships only `Anthropic`; future providers
-/// plug in here.
+/// `base_url`) is decoded inline. `rename_all = "snake_case"` means the TOML
+/// discriminators are `type = "anthropic"` and `type = "deep_seek"`.
 ///
 /// `ProviderConfig` is a directly-tagged enum because serde's `flatten` is
 /// incompatible with `deny_unknown_fields`.
@@ -31,6 +31,10 @@ pub struct AuthConfig {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProviderConfig {
     Anthropic {
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    DeepSeek {
         #[serde(default)]
         base_url: Option<String>,
     },
@@ -81,13 +85,29 @@ extra = "no"
     }
 
     #[test]
-    fn provider_kind_anthropic_with_default_base_url() {
+    fn provider_kind_anthropic_with_default_base_url() -> Result<(), Box<dyn std::error::Error>> {
         let toml = r#"
 type = "anthropic"
 "#;
-        let cfg: ProviderConfig = toml::from_str(toml).expect("anthropic provider deserializes");
+        let cfg: ProviderConfig = toml::from_str(toml)?;
         match cfg {
             ProviderConfig::Anthropic { base_url } => assert!(base_url.is_none()),
+            other => return Err(format!("expected Anthropic variant, got {other:?}").into()),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn provider_kind_deepseek_with_default_base_url() -> Result<(), Box<dyn std::error::Error>> {
+        // The `deep_seek` discriminator is the snake_case rename of `DeepSeek`.
+        let toml = r#"
+type = "deep_seek"
+"#;
+        let cfg: ProviderConfig = toml::from_str(toml)?;
+        match cfg {
+            ProviderConfig::DeepSeek { base_url } => assert!(base_url.is_none()),
+            other => return Err(format!("expected DeepSeek variant, got {other:?}").into()),
+        }
+        Ok(())
     }
 }

@@ -40,6 +40,19 @@ api_key = \"{{ANTHROPIC_API_KEY}}\"
 provider = \"anthropic\"
 model_name = \"claude-fable-5\"
 api_key = \"{{ANTHROPIC_API_KEY}}\"
+
+# Example DeepSeek provider. Uncomment and set DEEPSEEK_API_KEY to use it.
+# The `deep_seek` discriminator is the snake_case rename of the DeepSeek variant.
+#
+# [providers.deepseek]
+# type = \"deep_seek\"
+# # Uncomment to override the default API endpoint:
+# # base_url = \"https://api.deepseek.com\"
+#
+# [models.deepseek]
+# provider = \"deepseek\"
+# model_name = \"deepseek-v4-flash\"
+# api_key = \"{{DEEPSEEK_API_KEY}}\"
 ";
 
 /// If `path` already exists, return `Ok(false)`. Otherwise create any missing
@@ -98,9 +111,8 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn template_parses_as_auth_config() {
-        let cfg: AuthConfig =
-            toml::from_str(TEMPLATE).expect("hardcoded template must parse as AuthConfig");
+    fn template_parses_as_auth_config() -> Result<(), Box<dyn std::error::Error>> {
+        let cfg: AuthConfig = toml::from_str(TEMPLATE)?;
         assert_eq!(cfg.providers.len(), 1);
         let provider = cfg
             .providers
@@ -108,6 +120,7 @@ mod tests {
             .expect("anthropic provider present");
         match provider {
             ProviderConfig::Anthropic { base_url } => assert!(base_url.is_none()),
+            other => return Err(format!("expected anthropic provider, got {other:?}").into()),
         }
         assert_eq!(cfg.models.len(), 2);
         let model = cfg.models.get("default").expect("default model present");
@@ -118,6 +131,7 @@ mod tests {
         assert_eq!(fable.provider, "anthropic");
         assert_eq!(fable.model_name, "claude-fable-5");
         assert_eq!(fable.api_key, "{{ANTHROPIC_API_KEY}}");
+        Ok(())
     }
 
     #[test]

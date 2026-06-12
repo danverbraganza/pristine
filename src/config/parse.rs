@@ -214,7 +214,7 @@ api_key = "{{ANTHROPIC_API_KEY}}"
         assert_eq!(cfg.providers.len(), 1);
         match cfg.providers.get("anthropic") {
             Some(ProviderConfig::Anthropic { base_url }) => assert!(base_url.is_none()),
-            None => return Err("expected anthropic provider".into()),
+            other => return Err(format!("expected anthropic provider, got {other:?}").into()),
         }
         let alias = cfg.models.get("default").expect("default alias present");
         assert_eq!(alias.provider, "anthropic");

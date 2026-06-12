@@ -227,6 +227,8 @@ impl Agent {
                 let mut stream = model.complete(&input);
                 let mut delta_buffer = String::new();
                 let mut completed_text: Option<String> = None;
+                let mut reasoning_delta_buffer = String::new();
+                let mut reasoning_completed: Option<String> = None;
                 let mut final_usage = Usage::default();
                 let mut pending_tool_calls: Vec<(String, String, serde_json::Value)> = Vec::new();
 
@@ -238,6 +240,15 @@ impl Agent {
                         }
                         ModelStreamEvent::ContentComplete { text } => {
                             completed_text = Some(text);
+                        }
+                        ModelStreamEvent::ReasoningDelta { text } => {
+                            reasoning_delta_buffer.push_str(&text);
+                            let _ = self
+                                .bus
+                                .publish(self.id, AgentEvent::ReasoningDelta { text });
+                        }
+                        ModelStreamEvent::ReasoningComplete { text } => {
+                            reasoning_completed = Some(text);
                         }
                         ModelStreamEvent::Usage(u) => {
                             final_usage = u;
@@ -255,6 +266,20 @@ impl Agent {
                     }
                 }
                 drop(stream);
+
+                let reasoning_content = reasoning_completed.unwrap_or(reasoning_delta_buffer);
+                if !reasoning_content.is_empty() {
+                    let reasoning_node = self.history.append(Block::ReasoningTrace {
+                        content: reasoning_content,
+                        timestamp: SystemTime::now(),
+                    });
+                    let _ = self.bus.publish(
+                        self.id,
+                        AgentEvent::BlockComplete {
+                            block: reasoning_node,
+                        },
+                    );
+                }
 
                 let text_content = completed_text.unwrap_or(delta_buffer);
                 if !text_content.is_empty() {
@@ -1061,6 +1086,147 @@ mod tests {
             }
             other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_run_publishes_reasoning_and_appends_trace_before_agent_message()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ReasoningDelta {
+                text: "let me ".to_string(),
+            }),
+            Ok(ModelStreamEvent::ReasoningDelta {
+                text: "think".to_string(),
+            }),
+            Ok(ModelStreamEvent::ReasoningComplete {
+                text: "let me think".to_string(),
+            }),
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "the answer".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(agent_id, user_block("question"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 1),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let reasoning_deltas: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ReasoningDelta { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reasoning_deltas, vec!["let me ", "think"]);
+
+        let block_completes: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::BlockComplete { block } => Some(block.clone()),
+                _ => None,
+            })
+            .collect();
+        // user_message, reasoning_trace, agent_message
+        assert_eq!(block_completes.len(), 3);
+        match block_completes[1].block() {
+            Block::ReasoningTrace { content, .. } => assert_eq!(content, "let me think"),
+            other => return Err(format!("expected ReasoningTrace, got {other:?}").into()),
+        }
+        match block_completes[2].block() {
+            Block::AgentMessage { content, .. } => assert_eq!(content, "the answer"),
+            other => return Err(format!("expected AgentMessage, got {other:?}").into()),
+        }
+
+        let input = captured.last_input().expect("model called");
+        let has_reasoning = input.turns.iter().any(|t| {
+            t.content
+                .iter()
+                .any(|c| matches!(c, ContentPart::Text(s) if s == "let me think"))
+        });
+        assert!(
+            !has_reasoning,
+            "reasoning trace must not be compiled into ModelInput; turns: {:?}",
+            input.turns
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_run_uses_reasoning_delta_buffer_when_no_reasoning_complete()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ReasoningDelta {
+                text: "partial reasoning".to_string(),
+            }),
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "answer".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(agent_id, user_block("question"))
+            .expect("send inbound");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 1),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let reasoning_trace = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::BlockComplete { block } => match block.block() {
+                    Block::ReasoningTrace { content, .. } => Some(content.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .next()
+            .expect("at least one ReasoningTrace block");
+        assert_eq!(reasoning_trace, "partial reasoning");
         Ok(())
     }
 

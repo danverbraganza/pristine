@@ -42,6 +42,11 @@ impl AgentEventNotification {
                 event_type: "token_delta".to_string(),
                 data: serde_json::json!({ "text": text }),
             },
+            AgentEvent::ReasoningDelta { text } => Self {
+                agent_id,
+                event_type: "reasoning_delta".to_string(),
+                data: serde_json::json!({ "text": text }),
+            },
             AgentEvent::BlockComplete { block } => Self {
                 agent_id,
                 event_type: "block_complete".to_string(),
@@ -290,6 +295,17 @@ mod tests {
         let notification = AgentEventNotification::from_event(agent_id, &event);
         assert_eq!(notification.event_type, "token_delta");
         assert_eq!(notification.data["text"], "hello");
+    }
+
+    #[test]
+    fn agent_event_notification_reasoning_delta() {
+        let agent_id = AgentId::new();
+        let event = AgentEvent::ReasoningDelta {
+            text: "thinking".to_string(),
+        };
+        let notification = AgentEventNotification::from_event(agent_id, &event);
+        assert_eq!(notification.event_type, "reasoning_delta");
+        assert_eq!(notification.data["text"], "thinking");
     }
 
     #[test]

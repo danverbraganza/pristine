@@ -25,6 +25,16 @@ pub enum ModelStreamEvent {
     ContentComplete {
         text: String,
     },
+    /// Incremental chunk of the model's reasoning/thinking output. Consumers
+    /// accumulate deltas until the matching `ReasoningComplete`.
+    ReasoningDelta {
+        text: String,
+    },
+    /// The model's reasoning/thinking output is complete. `text` is the full
+    /// accumulated reasoning trace.
+    ReasoningComplete {
+        text: String,
+    },
     Usage(Usage),
     MessageComplete {
         usage: Usage,
@@ -262,6 +272,28 @@ mod tests {
                 assert_eq!(input, serde_json::json!({ "k": "v" }));
             }
             other => return Err(format!("expected ToolUseComplete, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reasoning_stream_events_round_trip_their_fields() -> Result<(), Box<dyn std::error::Error>> {
+        let delta = ModelStreamEvent::ReasoningDelta {
+            text: "let me think".to_string(),
+        };
+        match delta {
+            ModelStreamEvent::ReasoningDelta { text } => assert_eq!(text, "let me think"),
+            other => return Err(format!("expected ReasoningDelta, got {other:?}").into()),
+        }
+
+        let complete = ModelStreamEvent::ReasoningComplete {
+            text: "let me think about it".to_string(),
+        };
+        match complete {
+            ModelStreamEvent::ReasoningComplete { text } => {
+                assert_eq!(text, "let me think about it")
+            }
+            other => return Err(format!("expected ReasoningComplete, got {other:?}").into()),
         }
         Ok(())
     }

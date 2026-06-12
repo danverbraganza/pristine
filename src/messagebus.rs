@@ -16,6 +16,11 @@ pub enum AgentEvent {
     TokenDelta {
         text: String,
     },
+    /// A partial chunk of the active Model call's streaming reasoning output.
+    /// Best-effort delivery; slow consumers may miss intermediate deltas.
+    ReasoningDelta {
+        text: String,
+    },
     BlockComplete {
         block: std::sync::Arc<HistoryNode>,
     },

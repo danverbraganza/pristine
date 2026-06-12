@@ -111,6 +111,11 @@ summarization, vector-store lookups, and sequence-to-sequence "context compilati
 can be plugged in without changing the Agent or the Model trait. The `ModelInput`
 shape is the stable contract between compiler and model.
 
+`ModelStreamEvent` carries a reasoning stream surface
+(`ReasoningDelta`/`ReasoningComplete`) alongside content; the Agent publishes
+`AgentEvent::ReasoningDelta` and appends each completed trace as a
+`Block::ReasoningTrace` retained in History but never sent back to the model.
+
 
 ### History
 

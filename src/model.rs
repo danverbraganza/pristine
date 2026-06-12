@@ -1,6 +1,7 @@
 //! Model traits and provider submodules.
 
 pub mod anthropic;
+pub mod deepseek;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModelRole {

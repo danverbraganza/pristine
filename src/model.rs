@@ -89,6 +89,18 @@ impl std::error::Error for Error {
     }
 }
 
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Error::Http(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Deserialization(e.to_string())
+    }
+}
+
 /// Provider-agnostic descriptor for a tool the model may invoke. Carries no
 /// behavior; provider adapters translate this into their own payload types.
 #[derive(Clone, Debug)]

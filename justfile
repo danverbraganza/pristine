@@ -24,8 +24,8 @@ test:
 
 # Launch the Python JSON-RPC client
 [group('development')]
-chat: build
-    rlwrap uv run client.py {{invocation_directory()}}
+chat *args: build
+    rlwrap uv run client.py {{invocation_directory()}} {{args}}
 
 specs-bookmark := "specs"
 specs-manifest := "spec-files"

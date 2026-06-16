@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod deepseek;
+mod openai_dialect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModelRole {

@@ -111,6 +111,11 @@ summarization, vector-store lookups, and sequence-to-sequence "context compilati
 can be plugged in without changing the Agent or the Model trait. The `ModelInput`
 shape is the stable contract between compiler and model.
 
+`ModelStreamEvent` carries a reasoning stream surface
+(`ReasoningDelta`/`ReasoningComplete`) alongside content; the Agent publishes
+`AgentEvent::ReasoningDelta` and appends each completed trace as a
+`Block::ReasoningTrace` retained in History but never sent back to the model.
+
 
 ### History
 
@@ -368,6 +373,58 @@ recognises `content_block_start` with `type: tool_use` and
 JSON per content-block index and emitting
 `ModelStreamEvent::ToolUseStart` / `Delta` / `Complete` events.
 
+### DeepSeek adapter
+
+The DeepSeek adapter (`src/model/deepseek.rs`) speaks the OpenAI-compatible
+ChatCompletions dialect against `https://api.deepseek.com` (base URL
+overridable via `ModelInstanceConfig::extras`), posting to
+`/v1/chat/completions` with `Authorization: Bearer` auth. The configured model
+is one of `deepseek-v4-pro` / `deepseek-v4-flash`. DeepSeek V4 thinks by
+default and surfaces a `reasoning_content` field in each streamed delta; no
+thinking toggle is sent. `stream_options.include_usage` is set so the stream
+ends with a usage-bearing chunk.
+
+Unlike Anthropic, the system prompt is not a top-level field. Each
+`Role::System` turn is emitted as a `system`-role **message** at the head of
+the flat `messages` array; consecutive system turns concatenate.
+
+Tool exchanges use the OpenAI shape. An assistant `ToolUse` becomes a
+`tool_calls` entry whose `function.arguments` is the **stringified** JSON of
+the call input (not a nested object). Tools are advertised as a top-level
+`tools` array (omitted when empty), each entry `{type: "function", function:
+{name, description, parameters}}` — the portable `ToolSpec.input_schema` nests
+under `function.parameters`, where Anthropic uses a flat top-level
+`input_schema`. A tool result becomes its own `role: "tool"` message keyed by
+`tool_call_id`, separate from the assistant message that issued the call.
+
+The streaming parser accumulates `reasoning_content`, `content`, and
+indexed `tool_calls` deltas, emitting the shared `ModelStreamEvent` surface:
+`ReasoningDelta`/`ReasoningComplete` for thinking, `ContentDelta`/`Complete`
+for text, and `ToolUseStart`/`Delta`/`Complete` for calls. The reasoning
+stream flows `ModelStreamEvent::ReasoningDelta`/`ReasoningComplete` →
+`AgentEvent::ReasoningDelta` → `Block::ReasoningTrace`, retained in History but
+never sent back to the model on a subsequent turn.
+
+### Findings: the provider seam held
+
+Adding DeepSeek as the second provider required **zero core changes**. The
+provider seam (`ModelProvider` / `ProviderRegistry` / `ModelInstanceConfig`)
+absorbed an entirely different wire dialect at the periphery; the engine,
+`ModelInput`, and the `ModelStreamEvent` surface were sufficient as-is. Two
+observations about the portable layer surfaced, neither of which justified a
+change at one cross-provider example:
+
+- `ContentPart::ToolResult.is_error` is an Anthropic-ism. OpenAI `tool`
+  messages have no error field, so the DeepSeek adapter folds the flag into the
+  result content text (`[tool error] …`). This is a candidate for
+  promotion/demotion in the portable layer; revisit at a third provider per the
+  two-example promotion rule.
+- The one-Turn-per-role grouping does not match OpenAI, which needs tool
+  results as separate `role: "tool"` messages. The adapter explodes a single
+  `Turn` into N wire messages (assistant text + tool_calls, then one `tool`
+  message per result). This is a mapping cost paid inside the adapter, not a
+  core change.
+
 ### Built-in tools
 
 `src/builtins.rs` retains an `AddTool` example — takes
@@ -550,9 +607,10 @@ in the auth file. The trait surface remains provider-agnostic.
 
 `ProviderRegistry` is a name-keyed `HashMap<String, Arc<dyn ModelProvider>>`,
 parallel to `ToolRegistry`. `HarnessBuilder::add_provider` rejects duplicate
-names with `ProviderError::DuplicateProvider`. v1 ships `AnthropicProvider` as
-the only registered provider; Multi-Model support (the next roadmap item)
-plugs additional providers in at this seam without changes elsewhere.
+names with `ProviderError::DuplicateProvider`. The binary registers
+`AnthropicProvider` (`anthropic`) and `DeepSeekProvider` (`deepseek`); both
+plugged in at this seam without changes elsewhere. See "DeepSeek adapter" under
+§Model.
 
 ### `{{ENV_VAR}}` templating
 

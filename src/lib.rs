@@ -30,6 +30,7 @@ use crate::config::{
 use crate::harness::{Harness, HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicProvider;
+use crate::model::deepseek::DeepSeekProvider;
 use crate::provider::{ModelInstanceConfig, ModelProvider};
 
 #[derive(Parser, Debug)]
@@ -154,10 +155,14 @@ pub fn build_harness_from_config(
     let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();
     let anthropic: Arc<dyn ModelProvider> = Arc::new(AnthropicProvider::new());
     providers.insert("anthropic".to_string(), anthropic.clone());
+    let deepseek: Arc<dyn ModelProvider> = Arc::new(DeepSeekProvider::new());
+    providers.insert("deepseek".to_string(), deepseek.clone());
 
     let mut builder = HarnessBuilder::new()
         .add_provider("anthropic", anthropic)
-        .map_err(|e| anyhow::anyhow!("failed to register AnthropicProvider: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to register AnthropicProvider: {e}"))?
+        .add_provider("deepseek", deepseek)
+        .map_err(|e| anyhow::anyhow!("failed to register DeepSeekProvider: {e}"))?;
 
     builder = register_builtin_tools(builder)?;
 
@@ -187,14 +192,19 @@ pub fn build_harness_from_config(
             "api_key".to_string(),
             serde_json::Value::String(agent.model.api_key.clone()),
         );
-        if let Some(ProviderConfig::Anthropic {
-            base_url: Some(url),
-        }) = config.providers.get(&agent.model.provider_name)
-        {
-            extras.insert(
-                "base_url".to_string(),
-                serde_json::Value::String(url.clone()),
-            );
+        match config.providers.get(&agent.model.provider_name) {
+            Some(ProviderConfig::Anthropic {
+                base_url: Some(url),
+            })
+            | Some(ProviderConfig::DeepSeek {
+                base_url: Some(url),
+            }) => {
+                extras.insert(
+                    "base_url".to_string(),
+                    serde_json::Value::String(url.clone()),
+                );
+            }
+            _ => {}
         }
         let instance = ModelInstanceConfig::new(
             agent.model.model_name.clone(),
@@ -376,6 +386,43 @@ mod tests {
             ],
             "expected the five built-in tools registered",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn build_harness_from_config_registers_deepseek_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "deepseek".to_string(),
+            ProviderConfig::DeepSeek { base_url: None },
+        );
+        let config = Config {
+            agents: vec![ResolvedAgent {
+                name: "default".to_string(),
+                system_prompt: "test prompt".to_string(),
+                tools: vec!["read".to_string(), "write".to_string()],
+                model: ResolvedModel {
+                    alias: "default".to_string(),
+                    provider_name: "deepseek".to_string(),
+                    model_name: "deepseek-v4-flash".to_string(),
+                    api_key: "sk-test".to_string(),
+                },
+            }],
+            tools: HashMap::new(),
+            providers,
+        };
+        let (harness, agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        assert_eq!(agent_ids.len(), 1);
+        assert!(harness.provider_registry().get("deepseek").is_some());
         Ok(())
     }
 

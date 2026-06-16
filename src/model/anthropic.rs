@@ -217,18 +217,6 @@ fn model_input_to_anthropic(
     (system, messages, tools)
 }
 
-impl From<reqwest::Error> for Error {
-    fn from(e: reqwest::Error) -> Self {
-        Error::Http(e.to_string())
-    }
-}
-
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error::Deserialization(e.to_string())
-    }
-}
-
 #[derive(serde::Deserialize)]
 struct MessageStartPayload {
     message: MessageStartInner,

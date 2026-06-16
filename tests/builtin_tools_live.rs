@@ -121,6 +121,7 @@ async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::E
         while let Some(event) = subscription.next().await {
             match &event {
                 AgentEvent::TokenDelta { .. } => events_seen.push("TokenDelta"),
+                AgentEvent::ReasoningDelta { .. } => events_seen.push("ReasoningDelta"),
                 AgentEvent::BlockComplete { block } => {
                     events_seen.push("BlockComplete");
                     match block.block() {

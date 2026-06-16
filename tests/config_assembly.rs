@@ -40,6 +40,7 @@ fn default_topology_and_fixture_auth_produce_expected_harness()
     let args = LoadArgs {
         config: None,
         auth: Some(&auth_path),
+        model: None,
     };
 
     let config = load_with(args, &home, &env).expect("load_with succeeds for default + fixture");
@@ -94,6 +95,7 @@ fn loaded_config_carries_resolved_model_fields_for_default_agent() {
     let args = LoadArgs {
         config: None,
         auth: Some(&auth_path),
+        model: None,
     };
 
     let config = load_with(args, &home, &env).expect("load_with succeeds");

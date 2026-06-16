@@ -43,6 +43,7 @@ fn assemble_config_happy_path() {
         valid_auth(),
         Path::new(AUTH_PATH),
         &env,
+        None,
     )
     .expect("happy path assembles");
 
@@ -72,6 +73,7 @@ fn assemble_config_topology_parse_error_collects_auth_errors_too() {
         valid_auth(),
         Path::new(AUTH_PATH),
         &env,
+        None,
     )
     .expect_err("broken topology + missing env should error");
 
@@ -114,6 +116,7 @@ tools = ["nonsense"]
         valid_auth(),
         Path::new(AUTH_PATH),
         &env,
+        None,
     )
     .expect_err("dangling alias + undeclared tool should error");
 
@@ -151,6 +154,7 @@ fn assemble_config_all_pass_returns_config() {
         valid_auth(),
         Path::new(AUTH_PATH),
         &env,
+        None,
     )
     .expect("all-pass produces a Config");
 
@@ -173,6 +177,7 @@ fn load_with_succeeds_for_valid_paths_and_env() {
     let args = LoadArgs {
         config: Some(&topology_path),
         auth: Some(&auth_path),
+        model: None,
     };
     let config = load_with(args, &home, &env).expect("load_with succeeds");
 
@@ -194,6 +199,7 @@ fn load_with_embedded_default_topology_when_no_override() {
     let args = LoadArgs {
         config: None,
         auth: Some(&auth_path),
+        model: None,
     };
     let config = load_with(args, &home, &env).expect("embedded default loads");
 
@@ -217,6 +223,7 @@ fn load_with_auto_writes_missing_auth_file() {
     let args = LoadArgs {
         config: Some(&topology_path),
         auth: Some(&auth_path),
+        model: None,
     };
     let config = load_with(args, &home, &env).expect("auto-write + load succeeds");
 
@@ -288,6 +295,86 @@ fn embedded_default_topology_has_default_agent_with_five_tools() {
          (got {} chars)",
         agent.system_prompt.len()
     );
+}
+
+fn auth_with_two_aliases() -> &'static str {
+    r#"
+[providers.anthropic]
+type = "anthropic"
+
+[models.default]
+provider = "anthropic"
+model_name = "claude-sonnet-4-6"
+api_key = "{{ANTHROPIC_API_KEY}}"
+
+[models.fast]
+provider = "anthropic"
+model_name = "claude-haiku"
+api_key = "{{ANTHROPIC_API_KEY}}"
+"#
+}
+
+#[test]
+fn assemble_config_model_override_selects_existing_alias() {
+    let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-foo")]);
+    let config = assemble_config(
+        valid_topology(),
+        Path::new(TOPOLOGY_PATH),
+        auth_with_two_aliases(),
+        Path::new(AUTH_PATH),
+        &env,
+        Some("fast"),
+    )
+    .expect("override of an existing alias assembles");
+
+    assert_eq!(config.agents.len(), 1);
+    let agent = &config.agents[0];
+    assert_eq!(agent.model.alias, "fast");
+    assert_eq!(agent.model.model_name, "claude-haiku");
+}
+
+#[test]
+fn assemble_config_model_override_absent_alias_dangles() -> Result<(), Box<dyn std::error::Error>> {
+    let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-foo")]);
+    let errors = assemble_config(
+        valid_topology(),
+        Path::new(TOPOLOGY_PATH),
+        valid_auth(),
+        Path::new(AUTH_PATH),
+        &env,
+        Some("absent"),
+    )
+    .expect_err("override of an absent alias should error");
+
+    let mut saw_dangling = false;
+    for err in errors.as_slice() {
+        if let ConfigError::DanglingAlias { alias } = err {
+            assert_eq!(alias, "absent");
+            saw_dangling = true;
+        }
+    }
+    assert!(
+        saw_dangling,
+        "expected DanglingAlias for the absent override alias; got {errors}"
+    );
+    Ok(())
+}
+
+#[test]
+fn assemble_config_no_model_override_uses_declared_alias() {
+    let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-foo")]);
+    let config = assemble_config(
+        valid_topology(),
+        Path::new(TOPOLOGY_PATH),
+        auth_with_two_aliases(),
+        Path::new(AUTH_PATH),
+        &env,
+        None,
+    )
+    .expect("no override assembles");
+
+    assert_eq!(config.agents.len(), 1);
+    assert_eq!(config.agents[0].model.alias, "default");
 }
 
 #[test]

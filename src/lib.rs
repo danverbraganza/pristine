@@ -47,6 +47,11 @@ struct Cli {
     #[arg(long = "auth", global = true, value_name = "PATH")]
     auth: Option<PathBuf>,
 
+    /// Override the model alias every topology agent resolves against. Absent
+    /// = use the alias declared in the topology.
+    #[arg(long = "model", global = true, value_name = "ALIAS")]
+    model: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -81,6 +86,7 @@ async fn run_async() -> anyhow::Result<()> {
     let config = match load_config(LoadArgs {
         config: cli.config.as_deref(),
         auth: cli.auth.as_deref(),
+        model: cli.model.as_deref(),
     }) {
         Ok(c) => c,
         Err(errors) => {
@@ -312,12 +318,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_model_flag() {
-        let result = Cli::try_parse_from(["pristine", "--model", "foo", "run"]);
-        assert!(
-            result.is_err(),
-            "the --model flag is no longer accepted by the CLI"
-        );
+    fn cli_accepts_model_flag() {
+        let cli = Cli::try_parse_from(["pristine", "--model", "openrouter.deepseek", "run"])
+            .expect("CLI accepts --model flag before the subcommand");
+        assert_eq!(cli.model.as_deref(), Some("openrouter.deepseek"));
+        assert!(matches!(cli.command, Some(Command::Run)));
     }
 
     #[test]

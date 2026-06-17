@@ -38,3 +38,21 @@ Then invoke it from a project directory:
 cd ~/my-project
 1p-chat
 ```
+
+### Overriding the model alias
+
+By default the chat client runs the topology's `default` model alias. To launch against a different model
+without editing your auth file, pass `--model`:
+
+```sh
+just --justfile /path/to/pristine/justfile chat --model="openrouter.deepseek"
+```
+
+The value is an auth model-alias *name* that must be defined as a `[models.<name>]` table in
+`~/pristine-auth.toml`. Because TOML treats `.` as a key separator, dotted alias names must be quoted in
+the table header, e.g.:
+
+```toml
+[models."openrouter.deepseek"]
+# provider/model configuration ...
+```

@@ -31,6 +31,7 @@ use crate::harness::{Harness, HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
 use crate::model::anthropic::AnthropicProvider;
 use crate::model::deepseek::DeepSeekProvider;
+use crate::model::openrouter::OpenRouterProvider;
 use crate::provider::{ModelInstanceConfig, ModelProvider};
 
 #[derive(Parser, Debug)]
@@ -45,6 +46,11 @@ struct Cli {
     /// `<home>/pristine-auth.toml` location. Accepted at any position.
     #[arg(long = "auth", global = true, value_name = "PATH")]
     auth: Option<PathBuf>,
+
+    /// Override the model alias every topology agent resolves against. Absent
+    /// = use the alias declared in the topology.
+    #[arg(long = "model", global = true, value_name = "ALIAS")]
+    model: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -80,6 +86,7 @@ async fn run_async() -> anyhow::Result<()> {
     let config = match load_config(LoadArgs {
         config: cli.config.as_deref(),
         auth: cli.auth.as_deref(),
+        model: cli.model.as_deref(),
     }) {
         Ok(c) => c,
         Err(errors) => {
@@ -157,12 +164,16 @@ pub fn build_harness_from_config(
     providers.insert("anthropic".to_string(), anthropic.clone());
     let deepseek: Arc<dyn ModelProvider> = Arc::new(DeepSeekProvider::new());
     providers.insert("deepseek".to_string(), deepseek.clone());
+    let openrouter: Arc<dyn ModelProvider> = Arc::new(OpenRouterProvider::new());
+    providers.insert("openrouter".to_string(), openrouter.clone());
 
     let mut builder = HarnessBuilder::new()
         .add_provider("anthropic", anthropic)
         .map_err(|e| anyhow::anyhow!("failed to register AnthropicProvider: {e}"))?
         .add_provider("deepseek", deepseek)
-        .map_err(|e| anyhow::anyhow!("failed to register DeepSeekProvider: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to register DeepSeekProvider: {e}"))?
+        .add_provider("openrouter", openrouter)
+        .map_err(|e| anyhow::anyhow!("failed to register OpenRouterProvider: {e}"))?;
 
     builder = register_builtin_tools(builder)?;
 
@@ -197,6 +208,9 @@ pub fn build_harness_from_config(
                 base_url: Some(url),
             })
             | Some(ProviderConfig::DeepSeek {
+                base_url: Some(url),
+            })
+            | Some(ProviderConfig::OpenRouter {
                 base_url: Some(url),
             }) => {
                 extras.insert(
@@ -304,12 +318,11 @@ mod tests {
     }
 
     #[test]
-    fn cli_rejects_model_flag() {
-        let result = Cli::try_parse_from(["pristine", "--model", "foo", "run"]);
-        assert!(
-            result.is_err(),
-            "the --model flag is no longer accepted by the CLI"
-        );
+    fn cli_accepts_model_flag() {
+        let cli = Cli::try_parse_from(["pristine", "--model", "openrouter.deepseek", "run"])
+            .expect("CLI accepts --model flag before the subcommand");
+        assert_eq!(cli.model.as_deref(), Some("openrouter.deepseek"));
+        assert!(matches!(cli.command, Some(Command::Run)));
     }
 
     #[test]
@@ -423,6 +436,43 @@ mod tests {
         };
         assert_eq!(agent_ids.len(), 1);
         assert!(harness.provider_registry().get("deepseek").is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn build_harness_from_config_registers_openrouter_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openrouter".to_string(),
+            ProviderConfig::OpenRouter { base_url: None },
+        );
+        let config = Config {
+            agents: vec![ResolvedAgent {
+                name: "default".to_string(),
+                system_prompt: "test prompt".to_string(),
+                tools: vec!["read".to_string(), "write".to_string()],
+                model: ResolvedModel {
+                    alias: "default".to_string(),
+                    provider_name: "openrouter".to_string(),
+                    model_name: "anthropic/claude-3.5-sonnet".to_string(),
+                    api_key: "sk-test".to_string(),
+                },
+            }],
+            tools: HashMap::new(),
+            providers,
+        };
+        let (harness, agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        assert_eq!(agent_ids.len(), 1);
+        assert!(harness.provider_registry().get("openrouter").is_some());
         Ok(())
     }
 

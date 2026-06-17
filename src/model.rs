@@ -2,6 +2,8 @@
 
 pub mod anthropic;
 pub mod deepseek;
+mod openai_dialect;
+pub mod openrouter;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ModelRole {

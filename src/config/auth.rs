@@ -23,7 +23,8 @@ pub struct AuthConfig {
 /// One entry of `[providers.X]` in the auth file. The `type` discriminator
 /// selects the variant; provider-specific dialect (e.g. Anthropic's
 /// `base_url`) is decoded inline. `rename_all = "snake_case"` means the TOML
-/// discriminators are `type = "anthropic"` and `type = "deep_seek"`.
+/// discriminators are `type = "anthropic"`, `type = "deep_seek"`, and
+/// `type = "open_router"`.
 ///
 /// `ProviderConfig` is a directly-tagged enum because serde's `flatten` is
 /// incompatible with `deny_unknown_fields`.
@@ -35,6 +36,10 @@ pub enum ProviderConfig {
         base_url: Option<String>,
     },
     DeepSeek {
+        #[serde(default)]
+        base_url: Option<String>,
+    },
+    OpenRouter {
         #[serde(default)]
         base_url: Option<String>,
     },
@@ -107,6 +112,20 @@ type = "deep_seek"
         match cfg {
             ProviderConfig::DeepSeek { base_url } => assert!(base_url.is_none()),
             other => return Err(format!("expected DeepSeek variant, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn provider_kind_openrouter_with_default_base_url() -> Result<(), Box<dyn std::error::Error>> {
+        // The `open_router` discriminator is the snake_case rename of `OpenRouter`.
+        let toml = r#"
+type = "open_router"
+"#;
+        let cfg: ProviderConfig = toml::from_str(toml)?;
+        match cfg {
+            ProviderConfig::OpenRouter { base_url } => assert!(base_url.is_none()),
+            other => return Err(format!("expected OpenRouter variant, got {other:?}").into()),
         }
         Ok(())
     }

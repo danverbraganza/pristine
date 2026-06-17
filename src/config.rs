@@ -75,17 +75,31 @@ impl Config {
 /// NOT short-circuit the other file's parse, nor any independent passes. The
 /// caller sees the maximal collection of errors that could be discovered in
 /// one walk.
+///
+/// `model_override`, when `Some`, rewrites the `model` alias of every agent in
+/// the parsed topology before resolution runs, so all agents resolve against
+/// the given alias instead of their declared one. The override value is opaque:
+/// an alias absent from `auth.models` surfaces as `ConfigError::DanglingAlias`
+/// exactly as a bad declared alias would.
 pub fn assemble_config<E: EnvSource>(
     topology_input: &str,
     topology_path: &Path,
     auth_input: &str,
     auth_path: &Path,
     env: &E,
+    model_override: Option<&str>,
 ) -> Result<Config, ConfigErrors> {
     let mut errors = ConfigErrors::new();
 
     let topology = match parse_topology_with_env(topology_input, topology_path, env) {
-        Ok(value) => Some(value),
+        Ok(mut value) => {
+            if let Some(model) = model_override {
+                for agent in &mut value.agents {
+                    agent.model = model.to_string();
+                }
+            }
+            Some(value)
+        }
         Err(parse_errors) => {
             errors.extend(parse_errors);
             None
@@ -131,26 +145,32 @@ pub fn assemble_config<E: EnvSource>(
 }
 
 /// CLI-supplied inputs that select the topology and auth files for one call to
-/// [`load`]. Both fields are optional overrides; their `None` shapes select the
-/// embedded `default.toml` (for `config`) and `<home>/pristine-auth.toml` (for
-/// `auth`).
+/// [`load`], plus an optional model-alias override. The path fields are
+/// optional overrides; their `None` shapes select the embedded `default.toml`
+/// (for `config`) and `<home>/pristine-auth.toml` (for `auth`). `model`, when
+/// `Some`, overrides the model alias every topology agent resolves against;
+/// `None` keeps each agent's declared alias.
 ///
-/// Borrow-based to avoid `PathBuf` clones at the CLI boundary; the binary owns
-/// the parsed clap values and passes them by reference.
+/// Borrow-based to avoid `PathBuf`/`String` clones at the CLI boundary; the
+/// binary owns the parsed clap values and passes them by reference.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadArgs<'a> {
     /// CLI `-c/--config` override. `None` selects the embedded `default.toml`.
     pub config: Option<&'a Path>,
     /// CLI `--auth` override. `None` selects `<home>/pristine-auth.toml`.
     pub auth: Option<&'a Path>,
+    /// CLI `--model` override. `None` keeps each topology agent's declared
+    /// alias; `Some` rewrites every agent's alias before resolution.
+    pub model: Option<&'a str>,
 }
 
 impl<'a> LoadArgs<'a> {
-    /// Construct a `LoadArgs` with both overrides absent.
+    /// Construct a `LoadArgs` with all overrides absent.
     pub fn new() -> Self {
         Self {
             config: None,
             auth: None,
+            model: None,
         }
     }
 }
@@ -231,6 +251,7 @@ pub fn load_with<H: HomeSource, E: EnvSource>(
         &auth_input,
         &auth_path,
         env,
+        args.model,
     ) {
         Ok(config) if errors.is_empty() => Ok(config),
         Ok(_) => Err(errors),

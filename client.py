@@ -15,6 +15,7 @@ each input line is echoed to stderr for transcript clarity and the client
 exits cleanly on EOF.  Runnable as `uv run client.py`.
 """
 
+import argparse
 import json
 import pathlib
 import subprocess
@@ -341,12 +342,21 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
 
 def main() -> None:
     project_dir = pathlib.Path(__file__).parent
-    invocation_dir = sys.argv[1] if len(sys.argv) > 1 else None
+
+    parser = argparse.ArgumentParser(description="Chat REPL for the Pristine agent harness.")
+    parser.add_argument("invocation_dir", nargs="?", default=None)
+    parser.add_argument("--model", default=None)
+    args = parser.parse_args()
+    invocation_dir = args.invocation_dir
 
     binary = project_dir / "target" / "debug" / "pristine"
 
+    command = [str(binary), "run"]
+    if args.model is not None:
+        command += ["--model", args.model]
+
     proc = subprocess.Popen(
-        [str(binary), "run"],
+        command,
         cwd=invocation_dir,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

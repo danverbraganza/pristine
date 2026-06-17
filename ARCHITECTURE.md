@@ -425,6 +425,28 @@ change at one cross-provider example:
   message per result). This is a mapping cost paid inside the adapter, not a
   core change.
 
+### OpenRouter adapter
+
+The OpenRouter adapter (`src/model/openrouter.rs`) targets the OpenRouter
+aggregator, which exposes the same OpenAI-compatible ChatCompletions dialect as
+DeepSeek. It is the second same-dialect provider, and that second example is
+what motivated extracting the shared `src/model/openai_dialect.rs` module
+(bd-jsr): request/response shaping, the streaming parser, and the `StreamDelta`
+type are now factored out and back both adapters rather than being duplicated.
+
+The adapter posts to `/v1/chat/completions` against a default base URL of
+`https://openrouter.ai/api` (overridable via `ModelInstanceConfig::extras`),
+with `Authorization: Bearer` auth. Model names are namespaced by upstream
+provider (e.g. `anthropic/claude-3.5-sonnet`) and passed through verbatim.
+Reasoning is surfaced via the `reasoning` delta field; the shared `StreamDelta`
+reads both `reasoning` and `reasoning_content`, so one parser covers OpenRouter
+and DeepSeek alike. OpenRouter's optional attribution headers (`HTTP-Referer` /
+`X-Title`) are omitted for now; making them configurable is deferred.
+
+Like DeepSeek, OpenRouter plugged in at the `ProviderRegistry` seam with **zero
+core changes** — the dialect work lives entirely in `openai_dialect.rs` and the
+thin per-provider adapter on top of it.
+
 ### Built-in tools
 
 `src/builtins.rs` retains an `AddTool` example — takes

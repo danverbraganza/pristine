@@ -1,4 +1,4 @@
-//! DeepSeek ARModel implementation, speaking the OpenAI ChatCompletions dialect.
+//! OpenRouter ARModel implementation, speaking the OpenAI ChatCompletions dialect.
 
 use std::sync::Arc;
 
@@ -8,49 +8,50 @@ use super::openai_dialect::{
 use super::{ARModel, Error, ModelInput, ModelStreamEvent};
 use crate::provider::{ModelInstanceConfig, ModelProvider, ProviderError};
 
-const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
+const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api";
 
-pub struct DeepSeekModel {
+pub struct OpenRouterModel {
     client: reqwest::Client,
     api_key: String,
     model_name: String,
     base_url: String,
 }
 
-/// `ModelProvider` implementation for DeepSeek. Carries no per-provider state
+/// `ModelProvider` implementation for OpenRouter. Carries no per-provider state
 /// today; reads `api_key` and an optional `base_url` from
 /// `ModelInstanceConfig::extras` on each `build_model` call. The `base_url`
-/// knob is the only DeepSeek-specific dialect kept out of the
+/// knob is the only OpenRouter-specific dialect kept out of the
 /// provider-agnostic `ModelProvider` trait by design.
 #[derive(Default)]
-pub struct DeepSeekProvider;
+pub struct OpenRouterProvider;
 
-impl DeepSeekProvider {
+impl OpenRouterProvider {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl ModelProvider for DeepSeekProvider {
+impl ModelProvider for OpenRouterProvider {
     fn build_model(&self, config: ModelInstanceConfig) -> Result<Arc<dyn ARModel>, ProviderError> {
         let extras = config
             .extras
             .as_object()
             .ok_or_else(|| ProviderError::BuildFailure {
-                reason: "deepseek provider requires extras to be a JSON object".to_string(),
+                reason: "openrouter provider requires extras to be a JSON object".to_string(),
             })?;
 
         let api_key = match extras.get("api_key") {
             Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
             Some(_) => {
                 return Err(ProviderError::BuildFailure {
-                    reason: "deepseek provider requires api_key in extras to be a non-empty string"
-                        .to_string(),
+                    reason:
+                        "openrouter provider requires api_key in extras to be a non-empty string"
+                            .to_string(),
                 });
             }
             None => {
                 return Err(ProviderError::BuildFailure {
-                    reason: "deepseek provider requires api_key in extras".to_string(),
+                    reason: "openrouter provider requires api_key in extras".to_string(),
                 });
             }
         };
@@ -59,14 +60,14 @@ impl ModelProvider for DeepSeekProvider {
             Some(serde_json::Value::String(s)) => s.clone(),
             Some(_) => {
                 return Err(ProviderError::BuildFailure {
-                    reason: "deepseek provider requires base_url in extras to be a string"
+                    reason: "openrouter provider requires base_url in extras to be a string"
                         .to_string(),
                 });
             }
             None => DEFAULT_BASE_URL.to_string(),
         };
 
-        Ok(Arc::new(DeepSeekModel {
+        Ok(Arc::new(OpenRouterModel {
             client: reqwest::Client::new(),
             api_key,
             model_name: config.model_name,
@@ -75,7 +76,7 @@ impl ModelProvider for DeepSeekProvider {
     }
 }
 
-impl ARModel for DeepSeekModel {
+impl ARModel for OpenRouterModel {
     fn complete<'a>(
         &'a self,
         input: &'a ModelInput,
@@ -99,6 +100,8 @@ impl ARModel for DeepSeekModel {
                 return Box::pin(futures::stream::once(async move { Err(err) }));
             }
         };
+        // Optional OpenRouter HTTP-Referer / X-Title attribution headers are
+        // omitted; configurability is deferred.
         let url = format!("{}/v1/chat/completions", self.base_url);
         stream_openai_chat(self.client.clone(), url, self.api_key.clone(), body)
     }
@@ -107,12 +110,13 @@ impl ARModel for DeepSeekModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{ContentPart, Role, ToolSpec, Turn};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
     fn provider_build_requires_api_key() -> Result<(), Box<dyn std::error::Error>> {
-        let provider = DeepSeekProvider::new();
+        let provider = OpenRouterProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new("x", serde_json::json!({})));
         match result {
             Err(ProviderError::BuildFailure { reason }) => {
@@ -129,7 +133,7 @@ mod tests {
 
     #[test]
     fn provider_build_rejects_non_string_api_key() -> Result<(), Box<dyn std::error::Error>> {
-        let provider = DeepSeekProvider::new();
+        let provider = OpenRouterProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new(
             "x",
             serde_json::json!({ "api_key": 42 }),
@@ -149,7 +153,7 @@ mod tests {
 
     #[test]
     fn provider_build_rejects_non_object_extras() -> Result<(), Box<dyn std::error::Error>> {
-        let provider = DeepSeekProvider::new();
+        let provider = OpenRouterProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new("x", serde_json::Value::Null));
         match result {
             Err(ProviderError::BuildFailure { reason }) => {
@@ -166,10 +170,10 @@ mod tests {
 
     #[test]
     fn provider_build_succeeds_with_minimum_extras() {
-        let provider = DeepSeekProvider::new();
+        let provider = OpenRouterProvider::new();
         provider
             .build_model(ModelInstanceConfig::new(
-                "deepseek-v4-pro",
+                "anthropic/claude-3.5-sonnet",
                 serde_json::json!({ "api_key": "k" }),
             ))
             .expect("provider builds with api_key alone");
@@ -177,7 +181,7 @@ mod tests {
 
     #[test]
     fn provider_build_rejects_non_string_base_url() -> Result<(), Box<dyn std::error::Error>> {
-        let provider = DeepSeekProvider::new();
+        let provider = OpenRouterProvider::new();
         let result = provider.build_model(ModelInstanceConfig::new(
             "x",
             serde_json::json!({ "api_key": "k", "base_url": 42 }),
@@ -196,12 +200,49 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_model_is_send_sync() {
-        assert_send_sync::<DeepSeekModel>();
+    fn default_base_url_yields_chat_completions_url_and_advertises_tools()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The default base_url composes the documented OpenRouter endpoint.
+        let url = format!("{}/v1/chat/completions", DEFAULT_BASE_URL);
+        assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
+
+        // Non-empty ModelInput.tools must be advertised in the request body
+        // from the start (regression guard for the dropped-tools bug).
+        let input = ModelInput {
+            turns: vec![Turn {
+                role: Role::User,
+                content: vec![ContentPart::Text("hi".into())],
+            }],
+            tools: vec![ToolSpec {
+                name: "echo".into(),
+                description: "d".into(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            }],
+        };
+        let (messages, tools) = model_input_to_openai(&input);
+        let request = OpenAiRequest {
+            model: "anthropic/claude-3.5-sonnet",
+            messages,
+            stream: true,
+            max_tokens: MAX_TOKENS,
+            stream_options: StreamOptions {
+                include_usage: true,
+            },
+            tools,
+        };
+        let value = serde_json::to_value(&request)?;
+        assert_eq!(value["model"], "anthropic/claude-3.5-sonnet");
+        assert_eq!(value["tools"][0]["function"]["name"], "echo");
+        Ok(())
     }
 
     #[test]
-    fn deepseek_provider_is_send_sync() {
-        assert_send_sync::<DeepSeekProvider>();
+    fn openrouter_model_is_send_sync() {
+        assert_send_sync::<OpenRouterModel>();
+    }
+
+    #[test]
+    fn openrouter_provider_is_send_sync() {
+        assert_send_sync::<OpenRouterProvider>();
     }
 }

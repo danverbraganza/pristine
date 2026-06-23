@@ -64,6 +64,12 @@ pub enum SkillDiagnostic {
     },
     /// The frontmatter omitted the required `description` field.
     DescriptionMissing { path: PathBuf },
+    /// The frontmatter `description` exceeded the maximum permitted length.
+    DescriptionTooLong {
+        path: PathBuf,
+        len: usize,
+        max: usize,
+    },
     /// A project-scope path was skipped because project trust was not granted.
     BypassedPath { path: PathBuf },
     /// A configured scan path could not be resolved (e.g. `~` with no `HOME`).

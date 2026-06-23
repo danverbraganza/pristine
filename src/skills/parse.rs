@@ -7,7 +7,8 @@
 //! - Fatal (skip the skill, [`Err`]): completely unparseable frontmatter, or a
 //!   missing/empty `description`.
 //! - Non-fatal (load the skill, warnings ride alongside on the [`Ok`] side): the
-//!   `name` not matching the parent directory, or a `name` exceeding 64 chars.
+//!   `name` not matching the parent directory, a `name` exceeding 64 chars, or a
+//!   `description` exceeding 1024 chars.
 //!
 //! Lenient YAML: skills authored for other clients sometimes contain unquoted
 //! scalars containing a colon, which strict YAML rejects. When the initial parse
@@ -49,7 +50,8 @@ struct Frontmatter {
 ///
 /// Returns `Ok((record, warnings))` when the skill loads — `warnings` carries
 /// non-fatal [`SkillDiagnostic`] entries ([`SkillDiagnostic::NameMismatch`],
-/// [`SkillDiagnostic::NameTooLong`]) and may be empty. Returns `Err(diagnostic)` when the skill must be skipped: an
+/// [`SkillDiagnostic::NameTooLong`], [`SkillDiagnostic::DescriptionTooLong`]) and
+/// may be empty. Returns `Err(diagnostic)` when the skill must be skipped: an
 /// unreadable file, frontmatter that cannot be parsed even after the lenient
 /// fallback, a missing `name`, or a missing/empty `description`.
 pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>), SkillDiagnostic> {
@@ -87,13 +89,6 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
             path: path.to_path_buf(),
         })?;
 
-    if description.chars().count() > MAX_DESCRIPTION_LEN {
-        return Err(SkillDiagnostic::MalformedYaml {
-            path: path.to_path_buf(),
-            reason: format!("`description` exceeds {MAX_DESCRIPTION_LEN} characters",),
-        });
-    }
-
     // Optional fields are parsed above to surface malformed values, but are not
     // yet stored or enforced (deferred to a later phase).
     let _ = (
@@ -112,6 +107,15 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
             path: path.to_path_buf(),
             name: name.clone(),
             max: MAX_NAME_LEN,
+        });
+    }
+
+    let description_len = description.chars().count();
+    if description_len > MAX_DESCRIPTION_LEN {
+        warnings.push(SkillDiagnostic::DescriptionTooLong {
+            path: path.to_path_buf(),
+            len: description_len,
+            max: MAX_DESCRIPTION_LEN,
         });
     }
 
@@ -339,6 +343,25 @@ mod tests {
 
         let err = parse_skill_md(&path).unwrap_err();
         assert!(matches!(err, SkillDiagnostic::DescriptionMissing { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_description_warns_but_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let long = "a".repeat(MAX_DESCRIPTION_LEN + 1);
+        let contents = format!("---\nname: long-desc\ndescription: {long}\n---\nBody.\n");
+        let path = write_skill(&tmp, "long-desc", &contents)?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        // The full, untruncated description is preserved on the record.
+        assert_eq!(record.description, long);
+        assert_eq!(warnings.len(), 1);
+        assert!(matches!(
+            &warnings[0],
+            SkillDiagnostic::DescriptionTooLong { len, max, .. }
+                if *len == MAX_DESCRIPTION_LEN + 1 && *max == MAX_DESCRIPTION_LEN
+        ));
         Ok(())
     }
 

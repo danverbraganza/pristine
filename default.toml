@@ -65,3 +65,6 @@ builtin = "insert"
 [tools.exec_bash]
 type = "builtin"
 builtin = "exec_bash"
+
+
+[skills]

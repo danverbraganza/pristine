@@ -28,6 +28,8 @@ Configuration is the primary user interface. Rather than hard-coding agent topol
 
 Support Skills as a higher-level abstraction over tool calls and prompt injection. A Skill is a composable capability that can be attached to an Agent, bundling one or more tools with associated prompt fragments and lifecycle hooks. Skills allow reusable agent capabilities to be packaged, shared, and composed without requiring callers to manually wire individual tools and prompts.
 
+Pristine intends to align with the [Agent Skills open standard](https://agentskills.io) (frontmatter-described, progressively disclosed, filesystem-discovered skill directories) so that skills authored for other compliant clients are portable into Pristine. Requirements are being captured in [`docs/skills-requirements.md`](docs/skills-requirements.md); design follow-up will live alongside it under `docs/` and ultimately land in `ARCHITECTURE.md`.
+
 ### 2. Multi-Agent Routing
 
 Enable the MessageBus `route(from, to)` method for inter-agent communication (see ARCHITECTURE.md MessageBus). When a route is established, completed `AgentMessage` blocks from one Agent's outbound stream are forwarded to another Agent's inbound stream. Receiving Agents see these as `AgentMessage { from }` blocks in their History, enabling peer-to-peer dialogue. This unlocks the multi-agent scenarios described in the project goals.
@@ -45,3 +47,15 @@ Implement the `DLModel` trait for diffusion language models (see ARCHITECTURE.md
 ## Persistence
 
 History is currently in-memory and does not survive process restarts. A persistence layer will allow History to be durably stored and recovered, enabling long-lived agent sessions, crash recovery, and offline inspection of agent traces. The persistence boundary should sit behind a trait so that storage backends (local file, SQLite, remote store) can be swapped without changing the Agent or Harness.
+
+## Code style invariants
+
+These are project-wide constraints on how Rust code is laid out. They are
+enumerated here rather than scattered across review comments so they survive
+agent handoffs and so deviations are easy to point to.
+
+* **No `mod.rs` files.** Pristine uses the Rust 2018 path style throughout. A
+  submodule named `foo` is rooted at `src/foo.rs` (the module file) with its
+  submodules under `src/foo/*.rs`. There are zero `mod.rs` files in the tree
+  today, and no new ones are to be added. This applies to both library code
+  and any future binaries.

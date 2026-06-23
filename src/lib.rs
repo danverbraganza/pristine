@@ -26,7 +26,7 @@ use clap::{Parser, Subcommand};
 use crate::agent::{AgentId, SystemPrompt};
 use crate::builtins::{Edit, ExecBash, Insert, Read, Write};
 use crate::config::{
-    Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, load as load_config,
+    Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, ToolConfig, load as load_config,
 };
 use crate::harness::{Harness, HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
@@ -35,6 +35,7 @@ use crate::model::deepseek::DeepSeekProvider;
 use crate::model::openrouter::OpenRouterProvider;
 use crate::provider::{ModelInstanceConfig, ModelProvider};
 use crate::skills::{SkillsRegistry, SkillsRegistrySource};
+use crate::tool::Tool;
 
 #[derive(Parser, Debug)]
 #[command(name = "pristine", about = "Pristine agent harness")]
@@ -185,7 +186,8 @@ pub fn build_harness_from_config(
         .add_provider("openrouter", openrouter)
         .map_err(|e| anyhow::anyhow!("failed to register OpenRouterProvider: {e}"))?;
 
-    builder = register_builtin_tools(builder)?;
+    let builtin_ctx = BuiltinContext {};
+    builder = register_builtin_tools(builder, &config.tools, &builtin_ctx)?;
 
     let mut provider_errors = ConfigErrors::new();
     for agent in &config.agents {
@@ -273,30 +275,95 @@ pub fn build_harness_from_config(
     Ok((harness, agent_ids))
 }
 
-/// Register the five built-in tools shipped with pristine. Kept here, rather
-/// than driven by `Config.tools`; a future bead may fold these into a
-/// `Config.tools`-driven registration loop.
-fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuilder> {
-    let builder = builder
-        .add_tool(Arc::new(ExecBash::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register ExecBash: {e}"))?
-        .add_tool(Arc::new(Edit::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Edit: {e}"))?
-        .add_tool(Arc::new(Read::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Read: {e}"))?
-        .add_tool(Arc::new(Write::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Write: {e}"))?
-        .add_tool(Arc::new(Insert::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Insert: {e}"))?;
+/// Dependencies a builtin constructor closure may need at registration time.
+///
+/// Field-less today: the five shipped builtins take no dependencies. The struct
+/// exists now to lock the [`BuiltinCtor`] signature so a later phase can add a
+/// dependency (e.g. the skills registry) without re-touching every table entry.
+struct BuiltinContext {}
+
+/// Constructor closure for a single builtin tool, keyed by its `Tool::name()`.
+type BuiltinCtor = Box<dyn Fn(&BuiltinContext) -> anyhow::Result<Arc<dyn Tool>>>;
+
+/// Name-keyed dispatch table of builtin tool constructors. Keys are the
+/// `Tool::name()` values the corresponding `[tools.X]` config declarations
+/// reference; each value constructs the builtin as an `Arc<dyn Tool>`.
+fn builtin_constructors() -> HashMap<&'static str, BuiltinCtor> {
+    let mut table: HashMap<&'static str, BuiltinCtor> = HashMap::new();
+    table.insert(
+        "read",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Read::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "write",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Write::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "edit",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Edit::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "insert",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Insert::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "exec_bash",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(ExecBash::new()) as Arc<dyn Tool>)),
+    );
+    table
+}
+
+/// Register the builtin tools declared in `tools`, driven by the dispatch table.
+///
+/// Iterates the dispatch table's known builtin names and registers a builtin
+/// iff its name is a key present in `tools`. Iterating the table (not `tools`)
+/// means unknown or extra `tools` entries are ignored. For the shipped
+/// `default.toml`, which declares all five builtin names, this registers exactly
+/// those five — behavior identical to the prior unconditional registration.
+fn register_builtin_tools(
+    mut builder: HarnessBuilder,
+    tools: &HashMap<String, ToolConfig>,
+    ctx: &BuiltinContext,
+) -> anyhow::Result<HarnessBuilder> {
+    for (name, ctor) in builtin_constructors() {
+        if !tools.contains_key(name) {
+            continue;
+        }
+        let tool = ctor(ctx)?;
+        builder = builder
+            .add_tool(tool)
+            .map_err(|e| anyhow::anyhow!("failed to register {name}: {e}"))?;
+    }
     Ok(builder)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ResolvedAgent, ResolvedModel, SkillsConfig};
+    use crate::config::{ResolvedAgent, ResolvedModel, SkillsConfig, ToolConfig};
     use clap::Parser;
     use std::collections::HashMap;
+
+    /// Build a `config.tools` map declaring the named builtins, mirroring the
+    /// `[tools.X]` entries a topology file would carry.
+    fn tool_configs(names: &[&str]) -> HashMap<String, ToolConfig> {
+        names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    ToolConfig::Builtin {
+                        builtin: name.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The five builtin names declared by the shipped `default.toml`.
+    fn all_builtin_tool_configs() -> HashMap<String, ToolConfig> {
+        tool_configs(&["read", "write", "edit", "insert", "exec_bash"])
+    }
 
     #[test]
     fn cli_accepts_config_flag() {
@@ -385,7 +452,7 @@ mod tests {
                     api_key: "sk-test".to_string(),
                 },
             }],
-            tools: HashMap::new(),
+            tools: all_builtin_tool_configs(),
             providers: anthropic_provider_only(),
             skills: SkillsConfig::default(),
         }
@@ -431,6 +498,84 @@ mod tests {
     }
 
     #[test]
+    fn register_builtin_tools_subset_registers_only_declared()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "write"]);
+        let (harness, _agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        let mut tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            vec!["read".to_string(), "write".to_string()],
+            "only the declared subset registers",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn register_builtin_tools_none_declared_registers_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.tools = HashMap::new();
+        let (harness, _agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        assert!(
+            harness.tools().list().is_empty(),
+            "no declared tools means no builtins register",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn register_builtin_tools_ignores_unknown_tool_names() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "nonesuch"]);
+        let (harness, _agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        let tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert_eq!(
+            tool_names,
+            vec!["read".to_string()],
+            "unknown config tool names are ignored",
+        );
+        Ok(())
+    }
+
+    #[test]
     fn build_harness_from_config_registers_deepseek_provider()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut providers = HashMap::new();
@@ -450,7 +595,7 @@ mod tests {
                     api_key: "sk-test".to_string(),
                 },
             }],
-            tools: HashMap::new(),
+            tools: all_builtin_tool_configs(),
             providers,
             skills: SkillsConfig::default(),
         };
@@ -488,7 +633,7 @@ mod tests {
                     api_key: "sk-test".to_string(),
                 },
             }],
-            tools: HashMap::new(),
+            tools: all_builtin_tool_configs(),
             providers,
             skills: SkillsConfig::default(),
         };

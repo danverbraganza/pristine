@@ -48,8 +48,8 @@ struct Frontmatter {
 /// warnings.
 ///
 /// Returns `Ok((record, warnings))` when the skill loads — `warnings` carries
-/// non-fatal [`SkillDiagnostic`] entries (name mismatch, oversized name) and may
-/// be empty. Returns `Err(diagnostic)` when the skill must be skipped: an
+/// non-fatal [`SkillDiagnostic`] entries ([`SkillDiagnostic::NameMismatch`],
+/// [`SkillDiagnostic::NameTooLong`]) and may be empty. Returns `Err(diagnostic)` when the skill must be skipped: an
 /// unreadable file, frontmatter that cannot be parsed even after the lenient
 /// fallback, a missing `name`, or a missing/empty `description`.
 pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>), SkillDiagnostic> {
@@ -108,10 +108,10 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
     let mut warnings = Vec::new();
 
     if name.chars().count() > MAX_NAME_LEN {
-        warnings.push(SkillDiagnostic::NameMismatch {
+        warnings.push(SkillDiagnostic::NameTooLong {
             path: path.to_path_buf(),
-            frontmatter_name: name.clone(),
-            directory_name: directory_name(&directory),
+            name: name.clone(),
+            max: MAX_NAME_LEN,
         });
     }
 
@@ -420,8 +420,48 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert!(matches!(
             &warnings[0],
-            SkillDiagnostic::NameMismatch { frontmatter_name, .. } if frontmatter_name == &long
+            SkillDiagnostic::NameTooLong { name, max, .. }
+                if name == &long && *max == MAX_NAME_LEN
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_name_and_mismatch_yield_distinct_diagnostics()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let long = "a".repeat(MAX_NAME_LEN + 1);
+        // Directory differs from the (oversized) frontmatter name.
+        let contents = format!("---\nname: {long}\ndescription: Long name.\n---\nBody.\n");
+        let path = write_skill(&tmp, "short-dir", &contents)?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        assert_eq!(record.name, long);
+
+        // Exactly one of each distinct diagnostic — no duplicate NameMismatch.
+        assert_eq!(warnings.len(), 2);
+
+        let too_long = warnings
+            .iter()
+            .filter(|d| matches!(d, SkillDiagnostic::NameTooLong { .. }))
+            .count();
+        let mismatch = warnings
+            .iter()
+            .filter(|d| matches!(d, SkillDiagnostic::NameMismatch { .. }))
+            .count();
+        assert_eq!(too_long, 1, "expected exactly one NameTooLong");
+        assert_eq!(mismatch, 1, "expected exactly one NameMismatch");
+
+        assert!(warnings.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::NameTooLong { name, max, .. }
+                if name == &long && *max == MAX_NAME_LEN
+        )));
+        assert!(warnings.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::NameMismatch { frontmatter_name, directory_name, .. }
+                if frontmatter_name == &long && directory_name == "short-dir"
+        )));
         Ok(())
     }
 }

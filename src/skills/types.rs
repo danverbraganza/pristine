@@ -56,6 +56,12 @@ pub enum SkillDiagnostic {
         frontmatter_name: String,
         directory_name: String,
     },
+    /// The frontmatter `name` exceeded the maximum permitted length.
+    NameTooLong {
+        path: PathBuf,
+        name: String,
+        max: usize,
+    },
     /// The frontmatter omitted the required `description` field.
     DescriptionMissing { path: PathBuf },
     /// A project-scope path was skipped because project trust was not granted.

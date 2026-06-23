@@ -298,7 +298,25 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
         if "id" in msg:
             print(f"[drain_events] unexpected response message (id={msg['id']}); ignoring", file=sys.stderr)
             continue
-        params = msg.get("params", {})
+        method = msg.get("method")
+        params = msg.get("params")
+        if method == "skills_loaded":
+            skills = params.get("skills", []) if isinstance(params, dict) else []
+            names = ", ".join(str(s.get("name", "?")) for s in skills)
+            suffix = f": {names}" if names else ""
+            err_console.print(f"[dim]Loaded {len(skills)} skill(s){suffix}[/]")
+            continue
+        if method == "skills_diagnostics":
+            count = len(params) if isinstance(params, list) else 0
+            if count:
+                err_console.print(f"[dim]Skills diagnostics: {count} item(s)[/]")
+            continue
+        if method != "agent.event":
+            print(f"[drain_events] ignoring notification with method={method!r}", file=sys.stderr)
+            continue
+        if not isinstance(params, dict):
+            print("[drain_events] agent.event has non-dict params; ignoring", file=sys.stderr)
+            continue
         event_type = params.get("type", "")
         agent_short = str(params.get("agent_id", ""))[:8]
         if event_type == "token_delta":

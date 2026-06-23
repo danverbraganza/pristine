@@ -189,7 +189,7 @@ impl crate::skills::SkillsRegistrySource for StubSkillsRegistry {
 }
 
 /// Fluent builder for a tempdir of skill directories, making
-/// [`FilesystemSkillsRegistry`](crate::skills::filesystem::FilesystemSkillsRegistry)
+/// [`filesystem::scan`](crate::skills::filesystem::scan)
 /// scan tests terse. Each `add_*` creates an immediate subdirectory containing
 /// a `SKILL.md`; [`SkillsFixture::path`] returns the tempdir root to point a
 /// scan path at. The owned `TempDir` is dropped (and the tree removed) when the

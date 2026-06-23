@@ -3,7 +3,7 @@
 //! The concrete storage type for discovered skills, mirroring `ToolRegistry`
 //! and `ProviderRegistry`. Discovery is lazy-strict: the registry is
 //! constructed empty, and the first call to `list()` or `get()` triggers
-//! [`FilesystemSkillsRegistry::scan`] exactly once via the `OnceLock` seam,
+//! [`filesystem::scan`] exactly once via the `OnceLock` seam,
 //! caching both the discovered catalog and the collected diagnostics in a single
 //! [`ScanResult`]. Storing the diagnostics alongside the catalog lets the
 //! harness drain them for the `skills_diagnostics` notification without a second
@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use crate::config::SkillsConfig;
 use crate::config::discover::ProcessHome;
-use crate::skills::filesystem::FilesystemSkillsRegistry;
+use crate::skills::filesystem;
 use crate::skills::source::SkillsRegistrySource;
 use crate::skills::types::{SkillDiagnostic, SkillRecord, SkillSummary};
 
@@ -30,7 +30,7 @@ pub struct ScanResult {
 /// Owned storage for the skills catalog.
 ///
 /// Constructed empty. The `OnceLock` is the lazy-discovery seam: the first
-/// access triggers [`FilesystemSkillsRegistry::scan`] exactly once and caches
+/// access triggers [`filesystem::scan`] exactly once and caches
 /// its [`ScanResult`].
 pub struct SkillsRegistry {
     /// Resolved configuration driving discovery.
@@ -60,7 +60,7 @@ impl SkillsRegistry {
     fn scan_result(&self) -> &ScanResult {
         self.scan.get_or_init(|| {
             let (catalog, diagnostics) =
-                FilesystemSkillsRegistry::scan(&self.config, self.trust_project, &ProcessHome);
+                filesystem::scan(&self.config, self.trust_project, &ProcessHome);
             ScanResult {
                 catalog,
                 diagnostics,

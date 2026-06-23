@@ -1,6 +1,6 @@
 //! Filesystem skill discovery.
 //!
-//! [`FilesystemSkillsRegistry::scan`] is the discovery entry point: it resolves
+//! [`scan`] is the discovery entry point: it resolves
 //! the configured scan paths via [`discover::resolve_paths`], walks each
 //! resolved directory one level deep for skill directories (an immediate
 //! subdirectory containing a `SKILL.md`), parses each candidate with
@@ -33,47 +33,40 @@ const MAX_ENTRIES_PER_PATH: usize = 4096;
 /// walk of each scan path.
 const NOISE_DIRS: &[&str] = &[".git", "node_modules"];
 
-/// Filesystem-backed skill discovery. A zero-field handle whose sole associated
-/// function, [`FilesystemSkillsRegistry::scan`], performs the discovery walk.
-pub struct FilesystemSkillsRegistry;
+/// Discover skills across the configured scan paths.
+///
+/// Resolves paths via [`resolve_paths`], walks user paths then project
+/// paths, parses each `SKILL.md`, applies last-wins shadowing (project over
+/// user across scopes; later path over earlier within a scope), and excludes
+/// any name listed in [`SkillsConfig::disabled`]. Returns the final catalog
+/// plus every diagnostic accumulated along the way (path-resolution,
+/// parse-time warnings/skips, and shadowing).
+pub fn scan(
+    config: &SkillsConfig,
+    trust_project: bool,
+    env: &dyn HomeSource,
+) -> (Vec<SkillRecord>, Vec<SkillDiagnostic>) {
+    let (user_paths, project_paths, mut diagnostics) = resolve_paths(config, trust_project, env);
 
-impl FilesystemSkillsRegistry {
-    /// Discover skills across the configured scan paths.
-    ///
-    /// Resolves paths via [`resolve_paths`], walks user paths then project
-    /// paths, parses each `SKILL.md`, applies last-wins shadowing (project over
-    /// user across scopes; later path over earlier within a scope), and excludes
-    /// any name listed in [`SkillsConfig::disabled`]. Returns the final catalog
-    /// plus every diagnostic accumulated along the way (path-resolution,
-    /// parse-time warnings/skips, and shadowing).
-    pub fn scan(
-        config: &SkillsConfig,
-        trust_project: bool,
-        env: &dyn HomeSource,
-    ) -> (Vec<SkillRecord>, Vec<SkillDiagnostic>) {
-        let (user_paths, project_paths, mut diagnostics) =
-            resolve_paths(config, trust_project, env);
+    // Catalog accumulated in discovery order. Later insertions of the same
+    // name shadow earlier ones (last-wins), emitting a `Shadowed`
+    // diagnostic. User paths are consumed before project paths so the
+    // project scope wins across scopes.
+    let mut catalog: Vec<SkillRecord> = Vec::new();
 
-        // Catalog accumulated in discovery order. Later insertions of the same
-        // name shadow earlier ones (last-wins), emitting a `Shadowed`
-        // diagnostic. User paths are consumed before project paths so the
-        // project scope wins across scopes.
-        let mut catalog: Vec<SkillRecord> = Vec::new();
-
-        for dir in user_paths.iter().chain(project_paths.iter()) {
-            for record in scan_one_path(dir, &mut diagnostics) {
-                insert_with_shadowing(&mut catalog, record, &mut diagnostics);
-            }
+    for dir in user_paths.iter().chain(project_paths.iter()) {
+        for record in scan_one_path(dir, &mut diagnostics) {
+            insert_with_shadowing(&mut catalog, record, &mut diagnostics);
         }
-
-        // Exact-name disabled filtering: a disabled skill is excluded from the
-        // catalog entirely, not parsed-then-rejected at activation.
-        if !config.disabled.is_empty() {
-            catalog.retain(|record| !config.disabled.iter().any(|d| d == &record.name));
-        }
-
-        (catalog, diagnostics)
     }
+
+    // Exact-name disabled filtering: a disabled skill is excluded from the
+    // catalog entirely, not parsed-then-rejected at activation.
+    if !config.disabled.is_empty() {
+        catalog.retain(|record| !config.disabled.iter().any(|d| d == &record.name));
+    }
+
+    (catalog, diagnostics)
 }
 
 /// Walk a single resolved scan path one level deep, returning the parsed skill
@@ -174,7 +167,7 @@ mod tests {
         let dir = fixture.path().to_path_buf();
         let config = config_with(vec![path_str(&dir)], vec![], vec![]);
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].name, "alpha");
@@ -191,7 +184,7 @@ mod tests {
         let dir = fixture.path().to_path_buf();
         let config = config_with(vec![path_str(&dir)], vec![], vec![]);
 
-        let (catalog, _diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, _diags) = scan(&config, false, &MockHome::none());
 
         let mut names: Vec<&str> = catalog.iter().map(|r| r.name.as_str()).collect();
         names.sort_unstable();
@@ -209,7 +202,7 @@ mod tests {
             vec![],
         );
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].description, "Late version.");
@@ -237,7 +230,7 @@ mod tests {
 
         // Project paths require trust to be visible; test scan directly with
         // trust granted for the cross-scope case.
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, true, &MockHome::none());
+        let (catalog, diags) = scan(&config, true, &MockHome::none());
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].description, "Project version.");
@@ -260,7 +253,7 @@ mod tests {
         let dir = fixture.path().to_path_buf();
         let config = config_with(vec![path_str(&dir)], vec![], vec![]);
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].name, "good");
@@ -281,7 +274,7 @@ mod tests {
         let dir = fixture.path().to_path_buf();
         let config = config_with(vec![path_str(&dir)], vec![], vec![]);
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert_eq!(catalog.len(), 1);
         assert_eq!(catalog[0].name, "declared");
@@ -300,7 +293,7 @@ mod tests {
         let dir = fixture.path().to_path_buf();
         let config = config_with(vec![path_str(&dir)], vec![], vec![]);
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert!(catalog.is_empty());
         assert!(
@@ -328,8 +321,7 @@ mod tests {
             .into_owned();
         let config = config_with(vec![format!("~/{leaf}")], vec![], vec![]);
 
-        let (catalog, diags) =
-            FilesystemSkillsRegistry::scan(&config, false, &MockHome::some(home));
+        let (catalog, diags) = scan(&config, false, &MockHome::some(home));
 
         assert_eq!(catalog.len(), 1, "diags: {diags:?}");
         assert_eq!(catalog[0].name, "alpha");
@@ -343,7 +335,7 @@ mod tests {
         // tests sharing the process cwd.)
         let config = config_with(vec!["does-not-exist/skills".to_string()], vec![], vec![]);
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert!(catalog.is_empty());
         assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
@@ -355,7 +347,7 @@ mod tests {
         let project = SkillsFixture::new()?.add_skill("proj", "Project skill.", "P")?;
         let config = config_with(vec![], vec![path_str(project.path())], vec![]);
 
-        let (catalog, diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, diags) = scan(&config, false, &MockHome::none());
 
         assert!(catalog.is_empty(), "project skills must be invisible");
         let bypassed: Vec<&PathBuf> = diags
@@ -377,7 +369,7 @@ mod tests {
         let dir = fixture.path().to_path_buf();
         let config = config_with(vec![path_str(&dir)], vec![], vec!["drop".to_string()]);
 
-        let (catalog, _diags) = FilesystemSkillsRegistry::scan(&config, false, &MockHome::none());
+        let (catalog, _diags) = scan(&config, false, &MockHome::none());
 
         let names: Vec<&str> = catalog.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["keep"]);

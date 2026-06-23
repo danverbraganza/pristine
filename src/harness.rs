@@ -56,7 +56,7 @@ impl SkillsAnnouncer {
             return Vec::new();
         }
         let mut notifications = Vec::new();
-        let skills = self.source.summarize();
+        let skills = self.source.list();
         if !skills.is_empty() {
             notifications.push(SkillsNotification::Loaded(SkillsLoadedNotification {
                 skills,

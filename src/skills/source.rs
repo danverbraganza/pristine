@@ -21,14 +21,6 @@ pub trait SkillsRegistrySource: Send + Sync {
     /// name is unknown.
     fn get(&self, name: &str) -> Option<SkillRecord>;
 
-    /// Catalog projected for the `skills_loaded` notification. Defaults to
-    /// [`list`](SkillsRegistrySource::list); the two coincide for the
-    /// filesystem registry but the separate method keeps the notification
-    /// surface explicit and overridable.
-    fn summarize(&self) -> Vec<SkillSummary> {
-        self.list()
-    }
-
     /// Diagnostics accumulated during discovery, surfaced via the
     /// `skills_diagnostics` notification. Defaults to empty for sources (e.g.
     /// in-memory stubs) that perform no discovery and produce no diagnostics.

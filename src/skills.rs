@@ -8,6 +8,7 @@
 //! filesystem implementor populates the catalog.
 
 pub mod discover;
+pub mod parse;
 pub mod registry;
 pub mod source;
 pub mod types;

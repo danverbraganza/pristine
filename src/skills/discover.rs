@@ -5,7 +5,8 @@
 //! expanded against the injected [`HomeSource`] and cwd-relative paths are
 //! joined onto the current working directory. Resolution is pure path math
 //! modulo reading the home dir and the cwd — no directory walking, no file
-//! reads, no logging. Directory scanning is a later phase ([`crate::skills`]).
+//! reads, no logging. Directory scanning is handled by
+//! [`FilesystemSkillsRegistry::scan`](crate::skills::filesystem::FilesystemSkillsRegistry::scan).
 //!
 //! Path-level failures surface as [`SkillDiagnostic`] entries rather than hard
 //! errors: a `~/...` path with no home dir becomes a

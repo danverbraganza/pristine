@@ -5,8 +5,8 @@
 //! constructed empty, and the first call to `list()` or `get()` triggers
 //! [`FilesystemSkillsRegistry::scan`] exactly once via the `OnceLock` seam,
 //! caching both the discovered catalog and the collected diagnostics in a single
-//! [`ScanResult`]. Storing the diagnostics alongside the catalog lets a later
-//! phase drain them for the `skills_diagnostics` notification without a second
+//! [`ScanResult`]. Storing the diagnostics alongside the catalog lets the
+//! harness drain them for the `skills_diagnostics` notification without a second
 //! scan or a constructor change.
 
 use std::sync::OnceLock;
@@ -35,8 +35,9 @@ pub struct ScanResult {
 pub struct SkillsRegistry {
     /// Resolved configuration driving discovery.
     config: SkillsConfig,
-    /// Whether project-scope discovery is permitted. Hardcoded `false` by the
-    /// caller until the `--trust-project-skills` flag lands.
+    /// Whether project-scope discovery is permitted, wired from the
+    /// `--trust-project-skills` CLI flag. When false, project-scope paths are
+    /// skipped and each is recorded as a `bypassed_path` diagnostic.
     trust_project: bool,
     /// Lazy-discovery seam. Populated on first access with the scanned catalog
     /// and diagnostics.
@@ -86,10 +87,6 @@ impl SkillsRegistrySource for SkillsRegistry {
             .iter()
             .find(|record| record.name == name)
             .cloned()
-    }
-
-    fn summarize(&self) -> Vec<SkillSummary> {
-        self.list()
     }
 
     fn diagnostics(&self) -> Vec<SkillDiagnostic> {

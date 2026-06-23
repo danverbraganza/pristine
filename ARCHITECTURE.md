@@ -670,6 +670,122 @@ file path plus line/column information when the underlying error carries it
 rejected by `#[serde(deny_unknown_fields)]` on every typed struct and surface
 through `TomlParse`. No configuration failure is silent.
 
+## Skills
+
+Skills are filesystem-authored capabilities the agent discovers and the model
+activates on demand. A skill is a directory containing a `SKILL.md` with YAML
+frontmatter (`name`, `description`, plus optional fields) and a Markdown body.
+The engine surfaces discovery outcomes as structured JSON-RPC notifications and
+never decides display; the model reads the catalog from its system prompt and
+pulls a skill's body in by calling a tool. The feature tracks the Agent Skills
+open standard at <https://agentskills.io>.
+
+### `SystemPrompt` and the slot model
+
+The agent's system prompt is not a flat `String` inside the engine. `Agent`
+holds a `SystemPrompt` struct (`src/agent.rs`) with named-field slots: a fixed
+`base: String` and a dynamic skills slot, `skills: Option<Arc<dyn
+SkillsRegistrySource>>`. `SystemPrompt::render() -> String` concatenates the
+base text with a `## Available skills` Markdown section — one `**name**:
+description` bullet per discovered skill, closing with a pointer at
+`activate_skill` — but only when the slot is `Some` and its `list()` is
+non-empty. With no skills configured the slot is `None` and `render()` returns
+`base` unchanged, so out-of-the-box behavior is preserved bit-for-bit.
+
+The agent loop calls `render()` once per iteration when it builds the system
+`Turn`, so any catalog growth between turns is picked up without rebuilding the
+`Agent`. TOML and the `Config` types continue to carry `system_prompt: String`;
+the structured `SystemPrompt` is assembled at agent-build time inside
+`build_harness_from_config`, which wires the shared registry into every agent's
+`skills` slot.
+
+### `SkillsRegistry` / `SkillsRegistrySource` seam
+
+The skills catalog follows the same concrete-type-plus-trait shape as
+`ToolRegistry`/`Tool` and `ProviderRegistry`/`ModelProvider`. The trait
+`SkillsRegistrySource` (`src/skills/source.rs`) is the read-only abstraction the
+`SystemPrompt` slot and the `activate_skill` tool resolve against; it is
+synchronous and side-effect-free from the caller's perspective:
+
+- `list() -> Vec<SkillSummary>` powers tier-1 disclosure in the system prompt.
+- `get(name) -> Option<SkillRecord>` resolves a single skill for activation.
+- `summarize() -> Vec<SkillSummary>` and `diagnostics() -> Vec<SkillDiagnostic>`
+  are trait-default methods feeding the two notifications (below).
+
+`SkillsRegistry` (`src/skills/registry.rs`) is the engine-owned concrete
+implementor. The filesystem registry ships in v1; the trait is the seam for
+future implementors. A `StubSkillsRegistry` in `src/test_support.rs` implements
+the trait over an in-memory `Vec<SkillRecord>` for tests that exercise rendering
+or activation without touching the disk.
+
+### Lazy-strict discovery contract
+
+Discovery is lazy-strict. `SkillsRegistry` is constructed empty; the first call
+to `list()` or `get()` triggers `FilesystemSkillsRegistry::scan` exactly once,
+guarded by an `OnceLock<ScanResult>`. The scan resolves the configured paths
+(`~` expansion and cwd-relative joins happen at scan time, not config-parse
+time), walks each one level deep for skill directories, parses each `SKILL.md`,
+applies shadowing precedence (later path within a scope wins; project shadows
+user across scopes), and filters out `disabled` names. The `ScanResult` caches
+both the surviving catalog and every diagnostic accumulated during the scan, so
+the harness can drain diagnostics for the notification surface without a second
+scan or a constructor change.
+
+The `[skills]` TOML block is the kill-switch: block-present means enabled,
+`enabled = false` disables. With no block, `Config::skills` is the default
+(disabled) value, no registry is constructed, the slot stays `None`, and a
+declared `activate_skill` fails to construct. The embedded `default.toml` stays
+skills-free, so default behavior is unchanged.
+
+### JSON-RPC notifications
+
+Two session-level notifications fire once, immediately after the first agent
+turn triggers discovery (`src/rpc.rs`, emitted via `SkillsAnnouncer` in
+`src/harness.rs`):
+
+- `skills_loaded` — the catalog `{ skills: [{ name, description }, ...] }`.
+  Emitted only when the catalog is non-empty.
+- `skills_diagnostics` — an array of kind-tagged entries (`shadowed`,
+  `malformed_yaml`, `name_mismatch`, `description_missing`, `bypassed_path`,
+  `resolution_failure`). Emitted only when at least one diagnostic exists.
+
+Both are one-shot: a client attaching after startup misses them, which is
+acceptable for the single-client stdio transport.
+
+### `activate_skill` tool
+
+`ActivateSkill` (`src/builtins/activate_skill.rs`) is just-another builtin with a
+static name (`"activate_skill"`), a static description (it does not enumerate
+skills — the system-prompt section is the sole tier-1 disclosure surface), and a
+static input schema `{ name: string }`. On a hit it returns `{ body: "..." }`
+with frontmatter stripped; on an unknown name it returns a `ToolError::Execution`
+carrying `{ kind: "unknown_skill", name, known: [...] }` so the model can retry.
+
+Registration is config-gated through the builtin dispatch table in `src/lib.rs`.
+`BuiltinContext` carries `Option<Arc<dyn SkillsRegistrySource>>`; the
+`activate_skill` constructor closure registers the tool iff `[tools.activate_skill]`
+is declared *and* the registry is present. A `[tools.activate_skill]` declared
+without a `[skills]` block surfaces as a harness-assembly error rather than a
+silent no-op.
+
+### `--trust-project-skills` CLI plumbing
+
+Project-scope discovery is gated behind a per-invocation `--trust-project-skills`
+flag; persistent per-project trust is deferred. The flag threads end to end:
+
+- `src/lib.rs`: a global boolean `--trust-project-skills` on `Cli` (defaults
+  false). `run_async` passes `cli.trust_project_skills` into
+  `build_harness_from_config`, which forwards it as `SkillsRegistry::new(config,
+  trust_project)`.
+- Without trust, `FilesystemSkillsRegistry::scan` skips every project-scope path
+  and records each as a `bypassed_path` diagnostic; user-scope discovery is
+  unaffected.
+- `client.py`: an argparse `--trust-project-skills` (`action="store_true"`,
+  `default=None`) is forwarded to the binary only when explicitly passed,
+  mirroring the existing `--model` pattern.
+- `justfile`: `chat *args` already forwards arbitrary arguments via `{{args}}`,
+  so the flag passes through `just chat` with no justfile change.
+
 ## Key Technological Choices
 
 - Tokio

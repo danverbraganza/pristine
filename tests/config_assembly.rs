@@ -45,7 +45,7 @@ fn default_topology_and_fixture_auth_produce_expected_harness()
 
     let config = load_with(args, &home, &env).expect("load_with succeeds for default + fixture");
 
-    let (harness, agent_ids) = match build_harness_from_config(config) {
+    let (harness, agent_ids) = match build_harness_from_config(config, false) {
         Ok(value) => value,
         Err(HarnessAssemblyError::Config(errors)) => {
             return Err(format!("expected Ok harness, got Config errors: {errors}").into());

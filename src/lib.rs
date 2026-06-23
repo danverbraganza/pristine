@@ -55,6 +55,12 @@ struct Cli {
     #[arg(long = "model", global = true, value_name = "ALIAS")]
     model: Option<String>,
 
+    /// Grant trust to project-scope skills for this invocation. Absent =
+    /// project-scope skill paths are skipped and each is recorded as a
+    /// `bypassed_path` diagnostic. Accepted at any position.
+    #[arg(long = "trust-project-skills", global = true)]
+    trust_project_skills: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -98,7 +104,8 @@ async fn run_async() -> anyhow::Result<()> {
         }
     };
 
-    let (mut harness, agent_ids) = match build_harness_from_config(config) {
+    let (mut harness, agent_ids) = match build_harness_from_config(config, cli.trust_project_skills)
+    {
         Ok(value) => value,
         Err(HarnessAssemblyError::Config(errors)) => {
             eprintln!("{errors}");
@@ -164,6 +171,7 @@ impl From<anyhow::Error> for HarnessAssemblyError {
 /// `ConfigErrors` aggregate so multiple bad provider names render together.
 pub fn build_harness_from_config(
     config: Config,
+    trust_project: bool,
 ) -> Result<(Harness, Vec<AgentId>), HarnessAssemblyError> {
     // Maintain a parallel `HashMap<String, Arc<dyn ModelProvider>>` because
     // `HarnessBuilder` does not expose its `ProviderRegistry` pre-build. The
@@ -187,12 +195,17 @@ pub fn build_harness_from_config(
         .map_err(|e| anyhow::anyhow!("failed to register OpenRouterProvider: {e}"))?;
 
     // Construct the skills registry once and share it across every agent's
-    // system-prompt slot and the `activate_skill` builtin. Phase 2 hardcodes
-    // `trust_project = false`; the `--trust-project-skills` flag arrives in
-    // Phase 5. When skills are not enabled the slot stays `None`, rendering is
-    // unchanged, and a declared `activate_skill` fails to construct.
+    // system-prompt slot and the `activate_skill` builtin. `trust_project`
+    // carries the `--trust-project-skills` flag through to discovery: when
+    // false, project-scope paths are skipped and each is recorded as a
+    // `bypassed_path` diagnostic. When skills are not enabled the slot stays
+    // `None`, rendering is unchanged, and a declared `activate_skill` fails to
+    // construct.
     let skills: Option<Arc<dyn SkillsRegistrySource>> = if config.skills.is_enabled() {
-        Some(Arc::new(SkillsRegistry::new(config.skills.clone(), false)))
+        Some(Arc::new(SkillsRegistry::new(
+            config.skills.clone(),
+            trust_project,
+        )))
     } else {
         None
     };
@@ -447,6 +460,32 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Run)));
     }
 
+    #[test]
+    fn cli_accepts_trust_project_skills_flag() {
+        let cli = Cli::try_parse_from(["pristine", "--trust-project-skills", "run"])
+            .expect("CLI accepts --trust-project-skills before the subcommand");
+        assert!(cli.trust_project_skills);
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_trust_project_skills_flag_after_subcommand() {
+        let cli = Cli::try_parse_from(["pristine", "run", "--trust-project-skills"])
+            .expect("CLI accepts --trust-project-skills in subcommand position via global = true");
+        assert!(cli.trust_project_skills);
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_trust_project_skills_defaults_false_when_absent() {
+        let cli =
+            Cli::try_parse_from(["pristine", "run"]).expect("CLI parses with no optional flags");
+        assert!(
+            !cli.trust_project_skills,
+            "the flag defaults to false when not passed",
+        );
+    }
+
     fn anthropic_provider_only() -> HashMap<String, ProviderConfig> {
         let mut providers = HashMap::new();
         providers.insert(
@@ -479,7 +518,7 @@ mod tests {
     fn build_harness_from_config_happy_path_registers_one_agent_and_five_tools()
     -> Result<(), Box<dyn std::error::Error>> {
         let config = one_agent_config();
-        let result = build_harness_from_config(config);
+        let result = build_harness_from_config(config, false);
         let (harness, agent_ids) = match result {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
@@ -519,7 +558,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut config = one_agent_config();
         config.tools = tool_configs(&["read", "write"]);
-        let (harness, _agent_ids) = match build_harness_from_config(config) {
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -548,7 +587,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut config = one_agent_config();
         config.tools = HashMap::new();
-        let (harness, _agent_ids) = match build_harness_from_config(config) {
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -569,7 +608,7 @@ mod tests {
     {
         let mut config = one_agent_config();
         config.tools = tool_configs(&["read", "nonesuch"]);
-        let (harness, _agent_ids) = match build_harness_from_config(config) {
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -612,7 +651,7 @@ mod tests {
         config.tools = tool_configs(&["read", "activate_skill"]);
         config.skills = enabled_skills_config(&fixture);
 
-        let (harness, _agent_ids) = match build_harness_from_config(config) {
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -647,6 +686,93 @@ mod tests {
         Ok(())
     }
 
+    /// A `SkillsConfig` enabled with `fixture` mounted as the sole *project*
+    /// scope path and the user scope emptied. Project-scope discovery hinges on
+    /// the trust flag, so this config isolates the flag's effect.
+    fn project_scope_skills_config(fixture: &SkillsFixture) -> SkillsConfig {
+        SkillsConfig {
+            enabled: Some(true),
+            user_paths: Some(Vec::new()),
+            project_paths: Some(vec![fixture.path().to_string_lossy().into_owned()]),
+            disabled: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_harness_trust_project_true_discovers_project_skill()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture =
+            SkillsFixture::new()?.add_skill("proj", "Project-scope skill", "# Proj\nbody")?;
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        config.skills = project_scope_skills_config(&fixture);
+
+        let (harness, _agent_ids) = match build_harness_from_config(config, true) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+
+        let value = harness
+            .tools()
+            .dispatch("activate_skill", serde_json::json!({ "name": "proj" }))
+            .await?;
+        let body = value["body"].as_str().ok_or("body is a string")?;
+        assert!(
+            body.contains("# Proj"),
+            "trust granted: project-scope skill is discovered and activatable, got {body:?}",
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_harness_trust_project_false_skips_project_skill_with_bypass_diagnostic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture =
+            SkillsFixture::new()?.add_skill("proj", "Project-scope skill", "# Proj\nbody")?;
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        config.skills = project_scope_skills_config(&fixture);
+
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+
+        // Without trust the project skill is invisible: activation reports the
+        // skill as unknown rather than returning its body.
+        let result = harness
+            .tools()
+            .dispatch("activate_skill", serde_json::json!({ "name": "proj" }))
+            .await;
+        assert!(
+            result.is_err(),
+            "no trust: project-scope skill must not be discovered or activatable",
+        );
+
+        // The bypass is recorded as a diagnostic on the shared registry.
+        let project_path = fixture.path().to_path_buf();
+        let registry = SkillsRegistry::new(project_scope_skills_config(&fixture), false);
+        let diagnostics = registry.diagnostics();
+        assert!(
+            diagnostics.iter().any(|d| matches!(
+                d,
+                crate::skills::SkillDiagnostic::BypassedPath { path } if path == &project_path
+            )),
+            "no trust: each bypassed project path yields a bypassed_path diagnostic, got {diagnostics:?}",
+        );
+        Ok(())
+    }
+
     #[test]
     fn build_harness_activate_skill_declared_without_skills_is_assembly_error()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -654,7 +780,7 @@ mod tests {
         config.tools = tool_configs(&["read", "activate_skill"]);
         // skills stays disabled (default), so the activate_skill closure finds
         // `BuiltinContext::skills_registry == None` and returns an error.
-        match build_harness_from_config(config) {
+        match build_harness_from_config(config, false) {
             Ok(_) => Err("expected assembly error for declared-but-no-skills".into()),
             Err(HarnessAssemblyError::Other(_)) => Ok(()),
             Err(HarnessAssemblyError::Config(errors)) => {
@@ -687,7 +813,7 @@ mod tests {
             providers,
             skills: SkillsConfig::default(),
         };
-        let (harness, agent_ids) = match build_harness_from_config(config) {
+        let (harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -725,7 +851,7 @@ mod tests {
             providers,
             skills: SkillsConfig::default(),
         };
-        let (harness, agent_ids) = match build_harness_from_config(config) {
+        let (harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -748,7 +874,7 @@ mod tests {
             providers: anthropic_provider_only(),
             skills: SkillsConfig::default(),
         };
-        let (_harness, agent_ids) = match build_harness_from_config(config) {
+        let (_harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -766,7 +892,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut config = one_agent_config();
         config.agents[0].model.provider_name = "nonesuch".to_string();
-        match build_harness_from_config(config) {
+        match build_harness_from_config(config, false) {
             Ok(_) => return Err("unknown provider must fail".into()),
             Err(HarnessAssemblyError::Config(errors)) => {
                 let mut saw_unknown = false;
@@ -805,7 +931,7 @@ mod tests {
         };
         config.agents.push(second);
 
-        let (_harness, agent_ids) = match build_harness_from_config(config) {
+        let (_harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());

@@ -2,10 +2,11 @@
 //!
 //! This module hosts the Skills data types ([`SkillSummary`], [`SkillRecord`],
 //! [`SkillDiagnostic`]), the [`SkillsRegistrySource`] trait seam, and the
-//! concrete [`SkillsRegistry`]. In Phase 2 the registry is constructed empty
-//! (no filesystem discovery); the trait is the abstraction the
-//! [`crate::agent::SystemPrompt`] skills slot resolves against, and a future
-//! filesystem implementor populates the catalog.
+//! concrete [`SkillsRegistry`]. The registry is constructed empty and runs the
+//! filesystem scan lazily on first access; the trait is the abstraction the
+//! [`crate::agent::SystemPrompt`] skills slot resolves against, with the
+//! filesystem implementor populating the catalog from the configured scan
+//! paths.
 
 pub mod discover;
 pub mod filesystem;

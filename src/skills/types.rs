@@ -1,9 +1,9 @@
 //! Core data types for the Skills feature.
 //!
-//! These are introduced ahead of the registry and discovery machinery so the
-//! [`SkillsRegistrySource`](crate::skills::SkillsRegistrySource) trait has a
-//! stable surface to reference. Later phases populate these via filesystem
-//! discovery.
+//! These define the stable surface the
+//! [`SkillsRegistrySource`](crate::skills::SkillsRegistrySource) trait
+//! references. Filesystem discovery populates them by scanning the configured
+//! skill paths.
 
 use std::path::PathBuf;
 
@@ -35,9 +35,9 @@ pub struct SkillRecord {
 ///
 /// Serializes as an internally-tagged enum with `snake_case` kind tags so the
 /// notification payload reads `{ "kind": "shadowed", ... }`. The variants are
-/// the closed set the requirements doc enumerates. No implementors produce
-/// these in Phase 2 — the type is the stable wire shape the diagnostics surface
-/// will carry once discovery (a later phase) constructs them.
+/// the closed set the requirements doc enumerates. Filesystem discovery
+/// produces these during the scan; the registry caches them for the
+/// `skills_diagnostics` notification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SkillDiagnostic {

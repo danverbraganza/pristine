@@ -155,6 +155,39 @@ impl crate::tool::Tool for EchoTool {
     }
 }
 
+/// In-memory [`SkillsRegistrySource`](crate::skills::SkillsRegistrySource) for
+/// tests that exercise `SystemPrompt` slot rendering or skill lookup without
+/// touching the filesystem. Wraps a caller-provided `Vec<SkillRecord>`: `list`
+/// projects each record to its `SkillSummary`, `get` matches by exact name.
+#[cfg(test)]
+pub(crate) struct StubSkillsRegistry {
+    records: Vec<crate::skills::SkillRecord>,
+}
+
+#[cfg(test)]
+impl StubSkillsRegistry {
+    pub fn new(records: Vec<crate::skills::SkillRecord>) -> Self {
+        Self { records }
+    }
+}
+
+#[cfg(test)]
+impl crate::skills::SkillsRegistrySource for StubSkillsRegistry {
+    fn list(&self) -> Vec<crate::skills::SkillSummary> {
+        self.records
+            .iter()
+            .map(|r| crate::skills::SkillSummary {
+                name: r.name.clone(),
+                description: r.description.clone(),
+            })
+            .collect()
+    }
+
+    fn get(&self, name: &str) -> Option<crate::skills::SkillRecord> {
+        self.records.iter().find(|r| r.name == name).cloned()
+    }
+}
+
 /// Test-only `Shell` fixture: pops scripted `Result<ShellOutput, ShellError>`
 /// entries in order on each call. Mirrors `StubArModel`'s pattern. Also
 /// records the most recent `timeout` argument so tests can assert on the

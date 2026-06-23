@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use serde::Serialize;
+
 /// Tier-1 disclosure payload: the name and description surfaced in the system
 /// prompt's `## Available skills` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,4 +25,38 @@ pub struct SkillRecord {
     pub description: String,
     pub body: String,
     pub directory: PathBuf,
+}
+
+/// Kind-tagged outcomes recorded during discovery and surfaced to the client
+/// via the `skills_diagnostics` JSON-RPC notification.
+///
+/// Serializes as an internally-tagged enum with `snake_case` kind tags so the
+/// notification payload reads `{ "kind": "shadowed", ... }`. The variants are
+/// the closed set the requirements doc enumerates. No implementors produce
+/// these in Phase 2 — the type is the stable wire shape the diagnostics surface
+/// will carry once discovery (a later phase) constructs them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkillDiagnostic {
+    /// A skill was shadowed by another of the same name with higher
+    /// precedence (later path within a scope, or project over user).
+    Shadowed {
+        name: String,
+        shadowed_path: PathBuf,
+        winning_path: PathBuf,
+    },
+    /// The frontmatter YAML in a `SKILL.md` could not be parsed.
+    MalformedYaml { path: PathBuf, reason: String },
+    /// The frontmatter `name` did not match the skill's directory name.
+    NameMismatch {
+        path: PathBuf,
+        frontmatter_name: String,
+        directory_name: String,
+    },
+    /// The frontmatter omitted the required `description` field.
+    DescriptionMissing { path: PathBuf },
+    /// A project-scope path was skipped because project trust was not granted.
+    BypassedPath { path: PathBuf },
+    /// A configured scan path could not be resolved (e.g. `~` with no `HOME`).
+    ResolutionFailure { path: String, reason: String },
 }

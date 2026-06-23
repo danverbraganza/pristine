@@ -34,6 +34,7 @@ use crate::model::anthropic::AnthropicProvider;
 use crate::model::deepseek::DeepSeekProvider;
 use crate::model::openrouter::OpenRouterProvider;
 use crate::provider::{ModelInstanceConfig, ModelProvider};
+use crate::skills::{SkillsRegistry, SkillsRegistrySource};
 
 #[derive(Parser, Debug)]
 #[command(name = "pristine", about = "Pristine agent harness")]
@@ -190,6 +191,16 @@ pub fn build_harness_from_config(
         return Err(HarnessAssemblyError::Config(provider_errors));
     }
 
+    // Construct the skills registry once and share it across every agent's
+    // system-prompt slot. Phase 2 hardcodes `trust_project = false`; the
+    // `--trust-project-skills` flag arrives in Phase 5. When skills are not
+    // enabled the slot stays `None` and rendering is unchanged.
+    let skills: Option<Arc<dyn SkillsRegistrySource>> = if config.skills.is_enabled() {
+        Some(Arc::new(SkillsRegistry::new(config.skills.clone(), false)))
+    } else {
+        None
+    };
+
     let mut agent_ids = Vec::with_capacity(config.agents.len());
     for (idx, agent) in config.agents.iter().enumerate() {
         let provider = providers.get(&agent.model.provider_name).ok_or_else(|| {
@@ -237,7 +248,7 @@ pub fn build_harness_from_config(
                 id: agent_id,
                 system_prompt: SystemPrompt {
                     base: agent.system_prompt.clone(),
-                    skills: None,
+                    skills: skills.clone(),
                 },
                 model_id,
             });

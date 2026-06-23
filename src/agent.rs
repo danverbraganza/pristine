@@ -34,21 +34,29 @@ impl SystemPrompt {
     /// Render the prompt into the text placed in the system `Turn`.
     ///
     /// Returns `self.base` unchanged when there is no skills slot or the slot's
-    /// catalog is empty. Phase 1 has no registry implementors, so this is
-    /// always the `base`-only path today; the skills-section rendering lands in
-    /// a later phase.
+    /// catalog is empty. When the slot is populated, appends a tier-1
+    /// `## Available skills` markdown section after the base: one bullet per
+    /// skill (`**name**: description`) and a closing line pointing the model at
+    /// the `activate_skill` tool.
     pub fn render(&self) -> String {
-        // Phase 1 forward declaration: the skills slot has no registry
-        // implementors yet, so `list()` is always empty and rendering reduces
-        // to the base text. The `## Available skills` markdown section lands in
-        // a later phase; the slot is consulted here so behavior changes are
-        // localized to `render` when it does.
-        if let Some(skills) = &self.skills
-            && !skills.list().is_empty()
-        {
+        let Some(skills) = &self.skills else {
+            return self.base.clone();
+        };
+        let summaries = skills.list();
+        if summaries.is_empty() {
             return self.base.clone();
         }
-        self.base.clone()
+
+        let mut out = self.base.clone();
+        out.push_str("\n\n## Available skills\n\n");
+        for summary in &summaries {
+            out.push_str(&format!(
+                "- **{}**: {}\n",
+                summary.name, summary.description
+            ));
+        }
+        out.push_str("\nTo use a skill, call the `activate_skill` tool with the skill's name.");
+        out
     }
 }
 
@@ -395,23 +403,15 @@ mod tests {
 
     use crate::history::UserId;
     use crate::messagebus::InMemoryMessageBus;
-    use crate::skills::{SkillRecord, SkillSummary};
-    use crate::test_support::{EchoTool, StubArModel};
+    use crate::skills::SkillRecord;
+    use crate::test_support::{EchoTool, StubArModel, StubSkillsRegistry};
 
-    /// Minimal in-test `SkillsRegistrySource` for `SystemPrompt::render`
-    /// coverage. Phase 1 ships no production implementors; `StubSkillsRegistry`
-    /// in `test_support` lands in Phase 2.
-    struct StubSkillsSource {
-        summaries: Vec<SkillSummary>,
-    }
-
-    impl SkillsRegistrySource for StubSkillsSource {
-        fn list(&self) -> Vec<SkillSummary> {
-            self.summaries.clone()
-        }
-
-        fn get(&self, _name: &str) -> Option<SkillRecord> {
-            None
+    fn skill_record(name: &str, description: &str) -> SkillRecord {
+        SkillRecord {
+            name: name.to_string(),
+            description: description.to_string(),
+            body: String::new(),
+            directory: std::path::PathBuf::new(),
         }
     }
 
@@ -428,27 +428,25 @@ mod tests {
     fn system_prompt_render_returns_base_when_skills_slot_is_empty() {
         let prompt = SystemPrompt {
             base: "you are pristine".to_string(),
-            skills: Some(Arc::new(StubSkillsSource {
-                summaries: Vec::new(),
-            })),
+            skills: Some(Arc::new(StubSkillsRegistry::new(Vec::new()))),
         };
         assert_eq!(prompt.render(), "you are pristine");
     }
 
     #[test]
-    fn system_prompt_render_returns_base_in_phase_one_even_with_populated_slot() {
+    fn system_prompt_render_appends_skills_section_when_slot_populated() {
         let prompt = SystemPrompt {
             base: "you are pristine".to_string(),
-            skills: Some(Arc::new(StubSkillsSource {
-                summaries: vec![SkillSummary {
-                    name: "demo".to_string(),
-                    description: "a demo skill".to_string(),
-                }],
-            })),
+            skills: Some(Arc::new(StubSkillsRegistry::new(vec![
+                skill_record("demo", "a demo skill"),
+                skill_record("other", "another skill"),
+            ]))),
         };
-        // Phase 1 has no skills-section rendering yet; a populated slot still
-        // renders only the base text.
-        assert_eq!(prompt.render(), "you are pristine");
+        let expected = "you are pristine\n\n## Available skills\n\n\
+- **demo**: a demo skill\n\
+- **other**: another skill\n\
+\nTo use a skill, call the `activate_skill` tool with the skill's name.";
+        assert_eq!(prompt.render(), expected);
     }
 
     fn user_block(content: &str) -> Block {

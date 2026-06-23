@@ -11,7 +11,10 @@ use serde::Serialize;
 
 /// Tier-1 disclosure payload: the name and description surfaced in the system
 /// prompt's `## Available skills` section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializes as `{ "name", "description" }` for inclusion in the
+/// `skills_loaded` JSON-RPC notification's `skills` array.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkillSummary {
     pub name: String,
     pub description: String,

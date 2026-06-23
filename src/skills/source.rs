@@ -6,7 +6,7 @@
 //! `skills.rs`; re-exported from the module root so existing `use` paths keep
 //! working.
 
-use crate::skills::types::{SkillRecord, SkillSummary};
+use crate::skills::types::{SkillDiagnostic, SkillRecord, SkillSummary};
 
 /// Read-only source of skills surfaced to an agent.
 ///
@@ -20,4 +20,19 @@ pub trait SkillsRegistrySource: Send + Sync {
     /// Resolve a single skill by name for activation. Returns `None` when the
     /// name is unknown.
     fn get(&self, name: &str) -> Option<SkillRecord>;
+
+    /// Catalog projected for the `skills_loaded` notification. Defaults to
+    /// [`list`](SkillsRegistrySource::list); the two coincide for the
+    /// filesystem registry but the separate method keeps the notification
+    /// surface explicit and overridable.
+    fn summarize(&self) -> Vec<SkillSummary> {
+        self.list()
+    }
+
+    /// Diagnostics accumulated during discovery, surfaced via the
+    /// `skills_diagnostics` notification. Defaults to empty for sources (e.g.
+    /// in-memory stubs) that perform no discovery and produce no diagnostics.
+    fn diagnostics(&self) -> Vec<SkillDiagnostic> {
+        Vec::new()
+    }
 }

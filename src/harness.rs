@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 
 use futures::stream::BoxStream;
@@ -13,8 +14,61 @@ use crate::history::{AgentId, Block};
 use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
 use crate::model::{ARModel, ModelRole};
 use crate::provider::{ModelProvider, ProviderError, ProviderRegistry};
+use crate::rpc::{SkillsLoadedNotification, SkillsNotification};
+use crate::skills::SkillsRegistrySource;
 use crate::tool::{Tool, ToolError, ToolRegistry};
 use crate::user::{User, UserId};
+
+/// One-shot emitter for the session-level `skills_loaded` /
+/// `skills_diagnostics` notifications.
+///
+/// Discovery is lazy-strict: the first system-prompt render triggers the
+/// registry's filesystem scan. This announcer is the seam that surfaces that
+/// outcome on the JSON-RPC notification surface exactly once. The transport
+/// (`crate::stdio`) calls [`take`](SkillsAnnouncer::take) after the first
+/// `send_message`-triggered turn; the `emitted` guard makes a multi-turn agent
+/// loop unable to re-emit.
+pub struct SkillsAnnouncer {
+    source: Arc<dyn SkillsRegistrySource>,
+    emitted: AtomicBool,
+}
+
+impl SkillsAnnouncer {
+    /// Wrap a skills source for one-shot announcement.
+    pub fn new(source: Arc<dyn SkillsRegistrySource>) -> Self {
+        Self {
+            source,
+            emitted: AtomicBool::new(false),
+        }
+    }
+
+    /// Drain the discovery outcome into the notifications to emit, exactly once.
+    ///
+    /// Returns the notifications on the first call and an empty `Vec` on every
+    /// subsequent call. Triggers the registry's lazy scan if it has not run.
+    ///
+    /// Omission rules (requirements §6.2): a `skills_loaded` notification is
+    /// emitted only when the catalog is non-empty; `skills_diagnostics` only
+    /// when there is at least one diagnostic. When discovery found nothing and
+    /// produced no diagnostics, nothing is emitted.
+    pub fn take(&self) -> Vec<SkillsNotification> {
+        if self.emitted.swap(true, Ordering::SeqCst) {
+            return Vec::new();
+        }
+        let mut notifications = Vec::new();
+        let skills = self.source.summarize();
+        if !skills.is_empty() {
+            notifications.push(SkillsNotification::Loaded(SkillsLoadedNotification {
+                skills,
+            }));
+        }
+        let diagnostics = self.source.diagnostics();
+        if !diagnostics.is_empty() {
+            notifications.push(SkillsNotification::Diagnostics(diagnostics));
+        }
+        notifications
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ModelId(String);
@@ -99,6 +153,7 @@ pub struct Harness {
     pending: Vec<PendingAgent>,
     tools: Arc<ToolRegistry>,
     provider_registry: Arc<ProviderRegistry>,
+    skills: Option<Arc<SkillsAnnouncer>>,
 }
 
 pub struct HarnessBuilder {
@@ -106,6 +161,7 @@ pub struct HarnessBuilder {
     pending: Vec<PendingAgent>,
     tools: Arc<ToolRegistry>,
     provider_registry: Arc<ProviderRegistry>,
+    skills: Option<Arc<dyn SkillsRegistrySource>>,
 }
 
 impl HarnessBuilder {
@@ -115,7 +171,15 @@ impl HarnessBuilder {
             pending: Vec::new(),
             tools: Arc::new(ToolRegistry::new()),
             provider_registry: Arc::new(ProviderRegistry::new()),
+            skills: None,
         }
+    }
+
+    /// Wire the shared skills source whose discovery outcome is announced once
+    /// on the JSON-RPC notification surface. Omitted when skills are disabled.
+    pub fn skills(mut self, source: Arc<dyn SkillsRegistrySource>) -> Self {
+        self.skills = Some(source);
+        self
     }
 
     pub fn add_model(mut self, id: ModelId, model: Arc<dyn ARModel>) -> Self {
@@ -169,6 +233,9 @@ impl HarnessBuilder {
             pending: self.pending,
             tools: self.tools,
             provider_registry: self.provider_registry,
+            skills: self
+                .skills
+                .map(|source| Arc::new(SkillsAnnouncer::new(source))),
         })
     }
 }
@@ -295,6 +362,13 @@ impl Harness {
 
     pub fn provider_registry(&self) -> &Arc<ProviderRegistry> {
         &self.provider_registry
+    }
+
+    /// The one-shot skills announcer, present iff skills are enabled. Handed to
+    /// the transport so the discovery outcome surfaces once on the notification
+    /// surface after the first agent turn.
+    pub fn skills_announcer(&self) -> Option<Arc<SkillsAnnouncer>> {
+        self.skills.clone()
     }
 }
 
@@ -639,6 +713,108 @@ mod tests {
             .build()
             .expect("build harness");
         assert!(harness.provider_registry().get("stub").is_some());
+    }
+
+    #[test]
+    fn skills_announcer_emits_loaded_once_with_payload() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::skills::SkillRecord;
+        use crate::test_support::StubSkillsRegistry;
+
+        let source: Arc<dyn SkillsRegistrySource> =
+            Arc::new(StubSkillsRegistry::new(vec![SkillRecord {
+                name: "alpha".to_string(),
+                description: "first skill".to_string(),
+                body: String::new(),
+                directory: std::path::PathBuf::from("/tmp/alpha"),
+            }]));
+        let announcer = SkillsAnnouncer::new(source);
+
+        let first = announcer.take();
+        assert_eq!(
+            first.len(),
+            1,
+            "expected only skills_loaded (no diagnostics)"
+        );
+        match &first[0] {
+            SkillsNotification::Loaded(loaded) => {
+                assert_eq!(loaded.skills.len(), 1);
+                assert_eq!(loaded.skills[0].name, "alpha");
+                assert_eq!(loaded.skills[0].description, "first skill");
+            }
+            other => return Err(format!("expected Loaded, got method {}", other.method()).into()),
+        }
+        assert_eq!(announcer.take().len(), 0, "second take must be empty");
+        Ok(())
+    }
+
+    #[test]
+    fn skills_announcer_emits_diagnostics_for_malformed_skill()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::config::SkillsConfig;
+        use crate::skills::SkillsRegistry;
+        use crate::test_support::SkillsFixture;
+
+        // A SKILL.md with unterminated frontmatter yields a parse diagnostic.
+        let fixture = SkillsFixture::new()?.add_raw_skill("broken", "---\nname: broken\n")?;
+        let path = fixture
+            .path()
+            .to_str()
+            .ok_or("fixture path not valid UTF-8")?
+            .to_string();
+        let config = SkillsConfig {
+            enabled: Some(true),
+            user_paths: Some(vec![path]),
+            project_paths: Some(vec![]),
+            disabled: vec![],
+        };
+        let source: Arc<dyn SkillsRegistrySource> = Arc::new(SkillsRegistry::new(config, false));
+        let announcer = SkillsAnnouncer::new(source);
+
+        let notifications = announcer.take();
+        let diagnostics = notifications
+            .iter()
+            .find_map(|n| match n {
+                SkillsNotification::Diagnostics(d) => Some(d),
+                _ => None,
+            })
+            .ok_or("expected a skills_diagnostics notification")?;
+        assert!(!diagnostics.is_empty(), "expected at least one diagnostic");
+        // Kind-tagged serialization carries a `kind` discriminator.
+        let value = serde_json::to_value(diagnostics)?;
+        assert!(
+            value[0].get("kind").is_some(),
+            "diagnostic must serialize with a kind tag: {value}"
+        );
+        // No skills survived discovery, so no skills_loaded is emitted.
+        assert!(
+            notifications
+                .iter()
+                .all(|n| !matches!(n, SkillsNotification::Loaded(_))),
+            "empty catalog must not emit skills_loaded"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn skills_announcer_emits_nothing_when_empty() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::test_support::StubSkillsRegistry;
+
+        let source: Arc<dyn SkillsRegistrySource> = Arc::new(StubSkillsRegistry::new(vec![]));
+        let announcer = SkillsAnnouncer::new(source);
+        assert!(
+            announcer.take().is_empty(),
+            "empty catalog and no diagnostics must emit nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn harness_skills_announcer_absent_when_skills_disabled() {
+        let (harness, _agent_id, _model_id) = build_harness_with_one_agent();
+        assert!(
+            harness.skills_announcer().is_none(),
+            "harness without a skills source exposes no announcer"
+        );
     }
 
     #[test]

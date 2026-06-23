@@ -115,8 +115,16 @@ async fn run_async() -> anyhow::Result<()> {
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let owner_id = harness.owner_id();
     let bus = harness.bus().clone() as Arc<dyn MessageBus>;
+    let skills_announcer = harness.skills_announcer();
 
-    crate::stdio::run_server(bus, primary_agent_id, owner_id, shutdown_token).await?;
+    crate::stdio::run_server(
+        bus,
+        primary_agent_id,
+        owner_id,
+        shutdown_token,
+        skills_announcer,
+    )
+    .await?;
 
     harness.shutdown();
     harness.join().await?;
@@ -253,6 +261,10 @@ pub fn build_harness_from_config(
                 model_id,
             });
         agent_ids.push(agent_id);
+    }
+
+    if let Some(source) = &skills {
+        builder = builder.skills(source.clone());
     }
 
     let harness = builder

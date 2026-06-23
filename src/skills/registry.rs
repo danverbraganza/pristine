@@ -87,6 +87,14 @@ impl SkillsRegistrySource for SkillsRegistry {
             .find(|record| record.name == name)
             .cloned()
     }
+
+    fn summarize(&self) -> Vec<SkillSummary> {
+        self.list()
+    }
+
+    fn diagnostics(&self) -> Vec<SkillDiagnostic> {
+        self.scan_result().diagnostics.clone()
+    }
 }
 
 #[cfg(test)]

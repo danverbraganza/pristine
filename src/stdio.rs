@@ -6,6 +6,7 @@ use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::harness::SkillsAnnouncer;
 use crate::history::{AgentId, UserId};
 use crate::messagebus::{AgentEvent, MessageBus};
 use crate::rpc::{AgentEventNotification, PristineRpcServer, RpcServerImpl};
@@ -84,6 +85,7 @@ pub async fn run_server(
     agent_id: AgentId,
     owner_id: UserId,
     shutdown_token: CancellationToken,
+    skills: Option<Arc<SkillsAnnouncer>>,
 ) -> Result<(), StdioError> {
     let server = RpcServerImpl::new(bus.clone(), agent_id, owner_id, shutdown_token.clone());
     let module = server.into_rpc();
@@ -112,10 +114,32 @@ pub async fn run_server(
                 if let DispatchOutcome::DrainEvents =
                     classify_outcome(&envelope.method, success)
                 {
+                    // The first turn's system-prompt render triggers skills
+                    // discovery; surface its outcome once before draining the
+                    // agent's event stream. `SkillsAnnouncer::take` is a no-op
+                    // on every subsequent turn.
+                    if let Some(announcer) = &skills {
+                        write_skills_notifications(announcer, &mut stdout).await?;
+                    }
                     drain_events(&*bus, agent_id, &mut stdout).await?;
                 }
             }
         }
+    }
+    Ok(())
+}
+
+async fn write_skills_notifications(
+    announcer: &SkillsAnnouncer,
+    stdout: &mut tokio::io::Stdout,
+) -> Result<(), StdioError> {
+    for notification in announcer.take() {
+        let jsonrpc = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": notification.method(),
+            "params": notification.params()?,
+        });
+        write_line(stdout, &jsonrpc.to_string()).await?;
     }
     Ok(())
 }

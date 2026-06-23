@@ -54,3 +54,34 @@ impl SkillsRegistrySource for SkillsRegistry {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `SkillsConfig` with explicitly empty path arrays so discovery has
+    /// nothing to find regardless of the dev machine's home directory. Using
+    /// `Some(vec![])` (not `default()`, which resolves to conventional paths)
+    /// keeps the empty-contract assertions valid both today and after Phase 3c
+    /// wires discovery.
+    fn empty_config() -> SkillsConfig {
+        SkillsConfig {
+            enabled: Some(true),
+            user_paths: Some(vec![]),
+            project_paths: Some(vec![]),
+            disabled: vec![],
+        }
+    }
+
+    #[test]
+    fn list_is_empty_over_empty_paths() {
+        let registry = SkillsRegistry::new(empty_config(), false);
+        assert!(registry.list().is_empty());
+    }
+
+    #[test]
+    fn get_returns_none_over_empty_paths() {
+        let registry = SkillsRegistry::new(empty_config(), false);
+        assert!(registry.get("anything").is_none());
+    }
+}

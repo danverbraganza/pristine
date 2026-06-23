@@ -188,6 +188,58 @@ impl crate::skills::SkillsRegistrySource for StubSkillsRegistry {
     }
 }
 
+/// Fluent builder for a tempdir of skill directories, making
+/// [`FilesystemSkillsRegistry`](crate::skills::filesystem::FilesystemSkillsRegistry)
+/// scan tests terse. Each `add_*` creates an immediate subdirectory containing
+/// a `SKILL.md`; [`SkillsFixture::path`] returns the tempdir root to point a
+/// scan path at. The owned `TempDir` is dropped (and the tree removed) when the
+/// fixture goes out of scope, so callers keep it alive for the test's duration.
+#[cfg(test)]
+pub(crate) struct SkillsFixture {
+    dir: tempfile::TempDir,
+}
+
+#[cfg(test)]
+impl SkillsFixture {
+    /// Create an empty skills tempdir.
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            dir: tempfile::TempDir::new()?,
+        })
+    }
+
+    /// The tempdir root: the directory a scan path should point at.
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Add a well-formed skill: writes `<root>/<name>/SKILL.md` with `name` and
+    /// `description` frontmatter and `body` as the Markdown body.
+    pub fn add_skill(
+        self,
+        name: &str,
+        description: &str,
+        body: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n");
+        self.add_raw_skill(name, &contents)
+    }
+
+    /// Add a skill directory whose `SKILL.md` carries exactly `contents`. Used
+    /// for malformed-frontmatter and name-mismatch cases where the well-formed
+    /// [`SkillsFixture::add_skill`] helper would not produce the desired shape.
+    pub fn add_raw_skill(
+        self,
+        dir_name: &str,
+        contents: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let skill_dir = self.dir.path().join(dir_name);
+        std::fs::create_dir_all(&skill_dir)?;
+        std::fs::write(skill_dir.join("SKILL.md"), contents)?;
+        Ok(self)
+    }
+}
+
 /// Test-only `Shell` fixture: pops scripted `Result<ShellOutput, ShellError>`
 /// entries in order on each call. Mirrors `StubArModel`'s pattern. Also
 /// records the most recent `timeout` argument so tests can assert on the

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::{AgentId, SystemPrompt};
-use crate::builtins::{Edit, ExecBash, Insert, Read, Write};
+use crate::builtins::{ActivateSkill, Edit, ExecBash, Insert, Read, Write};
 use crate::config::{
     Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, ToolConfig, load as load_config,
 };
@@ -186,7 +186,20 @@ pub fn build_harness_from_config(
         .add_provider("openrouter", openrouter)
         .map_err(|e| anyhow::anyhow!("failed to register OpenRouterProvider: {e}"))?;
 
-    let builtin_ctx = BuiltinContext {};
+    // Construct the skills registry once and share it across every agent's
+    // system-prompt slot and the `activate_skill` builtin. Phase 2 hardcodes
+    // `trust_project = false`; the `--trust-project-skills` flag arrives in
+    // Phase 5. When skills are not enabled the slot stays `None`, rendering is
+    // unchanged, and a declared `activate_skill` fails to construct.
+    let skills: Option<Arc<dyn SkillsRegistrySource>> = if config.skills.is_enabled() {
+        Some(Arc::new(SkillsRegistry::new(config.skills.clone(), false)))
+    } else {
+        None
+    };
+
+    let builtin_ctx = BuiltinContext {
+        skills_registry: skills.clone(),
+    };
     builder = register_builtin_tools(builder, &config.tools, &builtin_ctx)?;
 
     let mut provider_errors = ConfigErrors::new();
@@ -200,16 +213,6 @@ pub fn build_harness_from_config(
     if !provider_errors.is_empty() {
         return Err(HarnessAssemblyError::Config(provider_errors));
     }
-
-    // Construct the skills registry once and share it across every agent's
-    // system-prompt slot. Phase 2 hardcodes `trust_project = false`; the
-    // `--trust-project-skills` flag arrives in Phase 5. When skills are not
-    // enabled the slot stays `None` and rendering is unchanged.
-    let skills: Option<Arc<dyn SkillsRegistrySource>> = if config.skills.is_enabled() {
-        Some(Arc::new(SkillsRegistry::new(config.skills.clone(), false)))
-    } else {
-        None
-    };
 
     let mut agent_ids = Vec::with_capacity(config.agents.len());
     for (idx, agent) in config.agents.iter().enumerate() {
@@ -277,10 +280,13 @@ pub fn build_harness_from_config(
 
 /// Dependencies a builtin constructor closure may need at registration time.
 ///
-/// Field-less today: the five shipped builtins take no dependencies. The struct
-/// exists now to lock the [`BuiltinCtor`] signature so a later phase can add a
-/// dependency (e.g. the skills registry) without re-touching every table entry.
-struct BuiltinContext {}
+/// The five filesystem builtins take no dependencies and ignore `ctx`.
+/// `activate_skill` reads `skills_registry`: it is `Some` iff `[skills]` is
+/// enabled, and a closure that needs it but finds `None` returns an error so a
+/// declared-but-skills-absent config surfaces as a harness assembly failure.
+struct BuiltinContext {
+    skills_registry: Option<Arc<dyn SkillsRegistrySource>>,
+}
 
 /// Constructor closure for a single builtin tool, keyed by its `Tool::name()`.
 type BuiltinCtor = Box<dyn Fn(&BuiltinContext) -> anyhow::Result<Arc<dyn Tool>>>;
@@ -309,6 +315,16 @@ fn builtin_constructors() -> HashMap<&'static str, BuiltinCtor> {
     table.insert(
         "exec_bash",
         Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(ExecBash::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "activate_skill",
+        Box::new(|ctx: &BuiltinContext| match &ctx.skills_registry {
+            Some(reg) => Ok(Arc::new(ActivateSkill::new(reg.clone())) as Arc<dyn Tool>),
+            None => Err(anyhow::anyhow!(
+                "[tools.activate_skill] is declared but skills are not enabled; \
+                 add a [skills] block (or remove [tools.activate_skill])"
+            )),
+        }),
     );
     table
 }
@@ -341,6 +357,7 @@ fn register_builtin_tools(
 mod tests {
     use super::*;
     use crate::config::{ResolvedAgent, ResolvedModel, SkillsConfig, ToolConfig};
+    use crate::test_support::SkillsFixture;
     use clap::Parser;
     use std::collections::HashMap;
 
@@ -573,6 +590,77 @@ mod tests {
             "unknown config tool names are ignored",
         );
         Ok(())
+    }
+
+    /// A `SkillsConfig` enabled and pointed at `fixture`'s tempdir for the user
+    /// scope, with project scope emptied so the (bypassed) defaults never leak
+    /// real filesystem state into the test.
+    fn enabled_skills_config(fixture: &SkillsFixture) -> SkillsConfig {
+        SkillsConfig {
+            enabled: Some(true),
+            user_paths: Some(vec![fixture.path().to_string_lossy().into_owned()]),
+            project_paths: Some(Vec::new()),
+            disabled: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_harness_with_skills_and_activate_skill_activates_end_to_end()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = SkillsFixture::new()?.add_skill("greet", "Greet the user", "# Greet\nhi")?;
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        config.skills = enabled_skills_config(&fixture);
+
+        let (harness, _agent_ids) = match build_harness_from_config(config) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+
+        let mut tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            vec!["activate_skill".to_string(), "read".to_string()],
+            "activate_skill registers when [skills] and [tools.activate_skill] both present",
+        );
+
+        let value = harness
+            .tools()
+            .dispatch("activate_skill", serde_json::json!({ "name": "greet" }))
+            .await?;
+        let body = value["body"].as_str().ok_or("body is a string")?;
+        assert!(
+            body.contains("# Greet") && body.contains("hi"),
+            "activated body carries the SKILL.md markdown body, got {body:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_harness_activate_skill_declared_without_skills_is_assembly_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        // skills stays disabled (default), so the activate_skill closure finds
+        // `BuiltinContext::skills_registry == None` and returns an error.
+        match build_harness_from_config(config) {
+            Ok(_) => Err("expected assembly error for declared-but-no-skills".into()),
+            Err(HarnessAssemblyError::Other(_)) => Ok(()),
+            Err(HarnessAssemblyError::Config(errors)) => {
+                Err(format!("expected Other assembly error, got Config errors: {errors}").into())
+            }
+        }
     }
 
     #[test]

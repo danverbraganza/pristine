@@ -1,5 +1,6 @@
 //! Built-in tools provided by the Pristine engine.
 
+pub mod activate_skill;
 pub mod add;
 pub mod edit;
 pub mod exec_bash;
@@ -8,6 +9,7 @@ mod path;
 pub mod read;
 pub mod write;
 
+pub use activate_skill::ActivateSkill;
 pub use add::AddTool;
 pub use edit::Edit;
 pub use exec_bash::ExecBash;

@@ -7,6 +7,7 @@
 //! [`crate::agent::SystemPrompt`] skills slot resolves against, and a future
 //! filesystem implementor populates the catalog.
 
+pub mod discover;
 pub mod registry;
 pub mod source;
 pub mod types;

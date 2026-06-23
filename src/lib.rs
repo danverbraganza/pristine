@@ -271,7 +271,7 @@ fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ResolvedAgent, ResolvedModel};
+    use crate::config::{ResolvedAgent, ResolvedModel, SkillsConfig};
     use clap::Parser;
     use std::collections::HashMap;
 
@@ -364,6 +364,7 @@ mod tests {
             }],
             tools: HashMap::new(),
             providers: anthropic_provider_only(),
+            skills: SkillsConfig::default(),
         }
     }
 
@@ -428,6 +429,7 @@ mod tests {
             }],
             tools: HashMap::new(),
             providers,
+            skills: SkillsConfig::default(),
         };
         let (harness, agent_ids) = match build_harness_from_config(config) {
             Ok(value) => value,
@@ -465,6 +467,7 @@ mod tests {
             }],
             tools: HashMap::new(),
             providers,
+            skills: SkillsConfig::default(),
         };
         let (harness, agent_ids) = match build_harness_from_config(config) {
             Ok(value) => value,
@@ -487,6 +490,7 @@ mod tests {
             agents: Vec::new(),
             tools: HashMap::new(),
             providers: anthropic_provider_only(),
+            skills: SkillsConfig::default(),
         };
         let (_harness, agent_ids) = match build_harness_from_config(config) {
             Ok(value) => value,

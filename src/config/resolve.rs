@@ -101,6 +101,7 @@ mod tests {
         TopologyConfig {
             agents,
             tools: HashMap::new(),
+            skills: None,
         }
     }
 

@@ -377,6 +377,137 @@ fn assemble_config_no_model_override_uses_declared_alias() {
     assert_eq!(config.agents[0].model.alias, "default");
 }
 
+fn topology_with_skills(skills_block: &str) -> String {
+    format!(
+        r#"
+[[agents]]
+name = "default"
+model = "default"
+system_prompt = "you are pristine"
+tools = ["read"]
+
+[tools.read]
+type = "builtin"
+builtin = "read"
+
+{skills_block}
+"#
+    )
+}
+
+fn assemble_skills(skills_block: &str) -> Config {
+    let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-foo")]);
+    let topology = topology_with_skills(skills_block);
+    assemble_config(
+        &topology,
+        Path::new(TOPOLOGY_PATH),
+        valid_auth(),
+        Path::new(AUTH_PATH),
+        &env,
+        None,
+    )
+    .expect("skills topology assembles")
+}
+
+#[test]
+fn assemble_config_no_skills_block_disabled() {
+    let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-foo")]);
+    let config = assemble_config(
+        valid_topology(),
+        Path::new(TOPOLOGY_PATH),
+        valid_auth(),
+        Path::new(AUTH_PATH),
+        &env,
+        None,
+    )
+    .expect("no-skills topology assembles");
+    assert!(
+        !config.skills.is_enabled(),
+        "absent [skills] block resolves to disabled"
+    );
+    assert_eq!(
+        config.skills,
+        crate::config::SkillsConfig::default(),
+        "absent block stores the disabled default"
+    );
+}
+
+#[test]
+fn assemble_config_skills_block_omitting_enabled_is_enabled() {
+    // THE KEY TEST: a present [skills] block that omits `enabled` must resolve
+    // to ENABLED after flattening, even though it only sets unrelated fields.
+    let config = assemble_skills("[skills]\nuser_paths = [\"~/custom\"]");
+    assert!(
+        config.skills.is_enabled(),
+        "present block omitting `enabled` resolves to ENABLED"
+    );
+    assert_eq!(config.skills.enabled, Some(true));
+}
+
+#[test]
+fn assemble_config_empty_skills_block_is_enabled() {
+    let config = assemble_skills("[skills]");
+    assert!(
+        config.skills.is_enabled(),
+        "present empty block resolves to ENABLED"
+    );
+}
+
+#[test]
+fn assemble_config_skills_enabled_false_is_disabled() {
+    let config = assemble_skills("[skills]\nenabled = false");
+    assert!(
+        !config.skills.is_enabled(),
+        "explicit enabled = false is the kill-switch"
+    );
+    assert_eq!(config.skills.enabled, Some(false));
+}
+
+#[test]
+fn assemble_config_skills_enabled_true_is_enabled() {
+    let config = assemble_skills("[skills]\nenabled = true");
+    assert!(config.skills.is_enabled());
+    assert_eq!(config.skills.enabled, Some(true));
+}
+
+#[test]
+fn assemble_config_skills_custom_paths_replace_defaults() {
+    let config = assemble_skills("[skills]\nuser_paths = [\"~/a\"]\nproject_paths = [\"./b\"]");
+    assert_eq!(
+        config.skills.effective_user_paths(),
+        vec!["~/a".to_string()]
+    );
+    assert_eq!(
+        config.skills.effective_project_paths(),
+        vec!["./b".to_string()]
+    );
+}
+
+#[test]
+fn assemble_config_skills_rejects_unknown_field() {
+    let env = MapEnv::new([("ANTHROPIC_API_KEY", "sk-foo")]);
+    let topology = topology_with_skills("[skills]\nbogus = 1");
+    let errors = assemble_config(
+        &topology,
+        Path::new(TOPOLOGY_PATH),
+        valid_auth(),
+        Path::new(AUTH_PATH),
+        &env,
+        None,
+    )
+    .expect_err("unknown skills field is rejected");
+    let mut saw_parse = false;
+    for err in errors.as_slice() {
+        if let ConfigError::TomlParse { .. } = err {
+            saw_parse = true;
+        }
+    }
+    assert!(
+        saw_parse,
+        "expected a TomlParse error for the unknown skills field; got {errors}"
+    );
+}
+
 #[test]
 fn load_with_missing_home_when_default_auth_path_used() {
     let home = MockHome::none();

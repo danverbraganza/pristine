@@ -34,7 +34,7 @@ pub use parse::{
 };
 pub use resolve::{ResolvedAgent, ResolvedModel, resolve_aliases};
 pub use template::{EnvSource, ProcessEnv, template_value};
-pub use topology::{AgentConfig, ToolConfig, TopologyConfig};
+pub use topology::{AgentConfig, SkillsConfig, ToolConfig, TopologyConfig};
 pub use validate::validate_tool_refs;
 
 /// Canonical default topology shipped with pristine: the coding-assistant
@@ -57,6 +57,13 @@ pub struct Config {
     pub agents: Vec<ResolvedAgent>,
     pub tools: HashMap<String, ToolConfig>,
     pub providers: HashMap<String, ProviderConfig>,
+    /// Flattened skills configuration. The topology's present/absent bit is
+    /// collapsed here: a present `[skills]` block that omits `enabled` is
+    /// stored with `enabled = Some(true)` (block-present means enabled), an
+    /// explicit `enabled = false` stays disabled, and an absent block becomes
+    /// `SkillsConfig::default()` (disabled). Downstream gates on
+    /// `skills.is_enabled()`.
+    pub skills: SkillsConfig,
 }
 
 impl Config {
@@ -137,10 +144,25 @@ pub fn assemble_config<E: EnvSource>(
         _ => return Err(errors),
     };
 
+    // Flatten the topology's optional skills block into a concrete
+    // `SkillsConfig`, preserving "block-present means enabled": a present block
+    // that omits `enabled` is stored as `Some(true)` so downstream
+    // `is_enabled()` returns true even though the present/absent bit is gone.
+    let skills = match topology.skills.clone() {
+        Some(mut cfg) => {
+            if cfg.enabled.is_none() {
+                cfg.enabled = Some(true);
+            }
+            cfg
+        }
+        None => SkillsConfig::default(),
+    };
+
     Ok(Config {
         agents: resolved_agents,
         tools: topology.tools.clone(),
         providers: auth.providers.clone(),
+        skills,
     })
 }
 

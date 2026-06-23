@@ -8,7 +8,7 @@ use futures::stream::BoxStream;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::AgentBuilder;
+use crate::agent::{AgentBuilder, SystemPrompt};
 use crate::history::{AgentId, Block};
 use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
 use crate::model::{ARModel, ModelRole};
@@ -34,7 +34,7 @@ impl std::fmt::Display for ModelId {
 #[derive(Clone, Debug)]
 pub struct PendingAgent {
     pub id: AgentId,
-    pub system_prompt: String,
+    pub system_prompt: SystemPrompt,
     pub model_id: ModelId,
 }
 
@@ -314,6 +314,13 @@ mod tests {
     use crate::tool::Tool;
     use serde_json::json;
 
+    fn prompt(base: &str) -> SystemPrompt {
+        SystemPrompt {
+            base: base.to_string(),
+            skills: None,
+        }
+    }
+
     fn build_harness_with_one_agent() -> (Harness, AgentId, ModelId) {
         let model_id = ModelId::new("stub");
         let agent_id = AgentId::new();
@@ -321,7 +328,7 @@ mod tests {
             .add_model(model_id.clone(), Arc::new(StubArModel::empty()))
             .add_agent(PendingAgent {
                 id: agent_id,
-                system_prompt: "test".to_string(),
+                system_prompt: prompt("test"),
                 model_id: model_id.clone(),
             })
             .build()
@@ -336,7 +343,7 @@ mod tests {
         let result = HarnessBuilder::new()
             .add_agent(PendingAgent {
                 id: agent_id,
-                system_prompt: "test".to_string(),
+                system_prompt: prompt("test"),
                 model_id: missing.clone(),
             })
             .build();
@@ -424,7 +431,7 @@ mod tests {
             .add_model(model_id.clone(), model)
             .add_agent(PendingAgent {
                 id: agent_id,
-                system_prompt: "test".to_string(),
+                system_prompt: prompt("test"),
                 model_id: model_id.clone(),
             })
             .build()
@@ -485,12 +492,12 @@ mod tests {
             .add_model(model_id_b.clone(), model_b)
             .add_agent(PendingAgent {
                 id: agent_a,
-                system_prompt: "a".to_string(),
+                system_prompt: prompt("a"),
                 model_id: model_id_a,
             })
             .add_agent(PendingAgent {
                 id: agent_b,
-                system_prompt: "b".to_string(),
+                system_prompt: prompt("b"),
                 model_id: model_id_b,
             })
             .build()
@@ -551,7 +558,7 @@ mod tests {
             .add_model(model_id.clone(), Arc::new(StubArModel::empty()))
             .add_agent(PendingAgent {
                 id: agent_id,
-                system_prompt: "test".to_string(),
+                system_prompt: prompt("test"),
                 model_id,
             })
             .add_tool(Arc::new(EchoTool::new("echo")))

@@ -10,6 +10,7 @@ pub mod model;
 pub mod provider;
 pub mod rpc;
 pub mod shell;
+pub mod skills;
 pub mod stdio;
 pub mod tool;
 pub mod user;
@@ -22,7 +23,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
-use crate::agent::AgentId;
+use crate::agent::{AgentId, SystemPrompt};
 use crate::builtins::{Edit, ExecBash, Insert, Read, Write};
 use crate::config::{
     Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, load as load_config,
@@ -234,7 +235,10 @@ pub fn build_harness_from_config(
             .add_model(model_id.clone(), model)
             .add_agent(PendingAgent {
                 id: agent_id,
-                system_prompt: agent.system_prompt.clone(),
+                system_prompt: SystemPrompt {
+                    base: agent.system_prompt.clone(),
+                    skills: None,
+                },
                 model_id,
             });
         agent_ids.push(agent_id);

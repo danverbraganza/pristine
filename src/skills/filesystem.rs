@@ -5,7 +5,7 @@
 //! resolved directory one level deep for skill directories (an immediate
 //! subdirectory containing a `SKILL.md`), parses each candidate with
 //! [`parse::parse_skill_md`], applies shadowing precedence, and filters out
-//! [`SkillsConfig::disabled`] names. It is pure modulo filesystem I/O: no shared
+//! [`ResolvedSkillsConfig::disabled`] names. It is pure modulo filesystem I/O: no shared
 //! state, no logging.
 //!
 //! Shadowing precedence (requirements doc §5): within a scope, a later path in
@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use crate::config::SkillsConfig;
+use crate::config::ResolvedSkillsConfig;
 use crate::config::discover::HomeSource;
 use crate::skills::discover::resolve_paths;
 use crate::skills::parse::parse_skill_md;
@@ -38,11 +38,11 @@ const NOISE_DIRS: &[&str] = &[".git", "node_modules"];
 /// Resolves paths via [`resolve_paths`], walks user paths then project
 /// paths, parses each `SKILL.md`, applies last-wins shadowing (project over
 /// user across scopes; later path over earlier within a scope), and excludes
-/// any name listed in [`SkillsConfig::disabled`]. Returns the final catalog
+/// any name listed in [`ResolvedSkillsConfig::disabled`]. Returns the final catalog
 /// plus every diagnostic accumulated along the way (path-resolution,
 /// parse-time warnings/skips, and shadowing).
 pub fn scan(
-    config: &SkillsConfig,
+    config: &ResolvedSkillsConfig,
     trust_project: bool,
     env: &dyn HomeSource,
 ) -> (Vec<SkillRecord>, Vec<SkillDiagnostic>) {
@@ -142,15 +142,18 @@ fn insert_with_shadowing(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SkillsConfig;
+    use crate::config::ResolvedSkillsConfig;
     use crate::test_support::{MockHome, SkillsFixture};
     use std::path::PathBuf;
 
-    /// Build a `SkillsConfig` whose user/project arrays are exactly `user` /
-    /// `project`, bypassing the conventional defaults.
-    fn config_with(user: Vec<String>, project: Vec<String>, disabled: Vec<String>) -> SkillsConfig {
-        SkillsConfig {
-            enabled: Some(true),
+    /// Build a `ResolvedSkillsConfig` whose user/project arrays are exactly
+    /// `user` / `project`, bypassing the conventional defaults.
+    fn config_with(
+        user: Vec<String>,
+        project: Vec<String>,
+        disabled: Vec<String>,
+    ) -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
             user_paths: Some(user),
             project_paths: Some(project),
             disabled,

@@ -208,7 +208,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::config::SkillsConfig;
+    use crate::config::ResolvedSkillsConfig;
     use crate::skills::SkillsRegistry;
     use crate::test_support::SkillsFixture;
 
@@ -242,8 +242,7 @@ mod tests {
             .to_str()
             .ok_or("fixture path not valid UTF-8")?
             .to_string();
-        let config = SkillsConfig {
-            enabled: Some(true),
+        let config = ResolvedSkillsConfig {
             user_paths: Some(vec![path]),
             project_paths: Some(vec![]),
             disabled: vec![],

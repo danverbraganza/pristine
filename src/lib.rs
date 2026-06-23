@@ -198,17 +198,13 @@ pub fn build_harness_from_config(
     // system-prompt slot and the `activate_skill` builtin. `trust_project`
     // carries the `--trust-project-skills` flag through to discovery: when
     // false, project-scope paths are skipped and each is recorded as a
-    // `bypassed_path` diagnostic. When skills are not enabled the slot stays
-    // `None`, rendering is unchanged, and a declared `activate_skill` fails to
-    // construct.
-    let skills: Option<Arc<dyn SkillsRegistrySource>> = if config.skills.is_enabled() {
-        Some(Arc::new(SkillsRegistry::new(
-            config.skills.clone(),
-            trust_project,
-        )))
-    } else {
-        None
-    };
+    // `bypassed_path` diagnostic. When `config.skills` is `None` (disabled) the
+    // slot stays `None`, rendering is unchanged, and a declared `activate_skill`
+    // fails to construct.
+    let skills: Option<Arc<dyn SkillsRegistrySource>> = config.skills.as_ref().map(|resolved| {
+        Arc::new(SkillsRegistry::new(resolved.clone(), trust_project))
+            as Arc<dyn SkillsRegistrySource>
+    });
 
     let builtin_ctx = BuiltinContext {
         skills_registry: skills.clone(),
@@ -369,7 +365,7 @@ fn register_builtin_tools(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ResolvedAgent, ResolvedModel, SkillsConfig, ToolConfig};
+    use crate::config::{ResolvedAgent, ResolvedModel, ResolvedSkillsConfig, ToolConfig};
     use crate::test_support::SkillsFixture;
     use clap::Parser;
     use std::collections::HashMap;
@@ -510,7 +506,7 @@ mod tests {
             }],
             tools: all_builtin_tool_configs(),
             providers: anthropic_provider_only(),
-            skills: SkillsConfig::default(),
+            skills: None,
         }
     }
 
@@ -631,12 +627,11 @@ mod tests {
         Ok(())
     }
 
-    /// A `SkillsConfig` enabled and pointed at `fixture`'s tempdir for the user
+    /// A `ResolvedSkillsConfig` pointed at `fixture`'s tempdir for the user
     /// scope, with project scope emptied so the (bypassed) defaults never leak
     /// real filesystem state into the test.
-    fn enabled_skills_config(fixture: &SkillsFixture) -> SkillsConfig {
-        SkillsConfig {
-            enabled: Some(true),
+    fn enabled_skills_config(fixture: &SkillsFixture) -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
             user_paths: Some(vec![fixture.path().to_string_lossy().into_owned()]),
             project_paths: Some(Vec::new()),
             disabled: Vec::new(),
@@ -649,7 +644,7 @@ mod tests {
         let fixture = SkillsFixture::new()?.add_skill("greet", "Greet the user", "# Greet\nhi")?;
         let mut config = one_agent_config();
         config.tools = tool_configs(&["read", "activate_skill"]);
-        config.skills = enabled_skills_config(&fixture);
+        config.skills = Some(enabled_skills_config(&fixture));
 
         let (harness, _agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
@@ -686,12 +681,11 @@ mod tests {
         Ok(())
     }
 
-    /// A `SkillsConfig` enabled with `fixture` mounted as the sole *project*
+    /// A `ResolvedSkillsConfig` with `fixture` mounted as the sole *project*
     /// scope path and the user scope emptied. Project-scope discovery hinges on
     /// the trust flag, so this config isolates the flag's effect.
-    fn project_scope_skills_config(fixture: &SkillsFixture) -> SkillsConfig {
-        SkillsConfig {
-            enabled: Some(true),
+    fn project_scope_skills_config(fixture: &SkillsFixture) -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
             user_paths: Some(Vec::new()),
             project_paths: Some(vec![fixture.path().to_string_lossy().into_owned()]),
             disabled: Vec::new(),
@@ -705,7 +699,7 @@ mod tests {
             SkillsFixture::new()?.add_skill("proj", "Project-scope skill", "# Proj\nbody")?;
         let mut config = one_agent_config();
         config.tools = tool_configs(&["read", "activate_skill"]);
-        config.skills = project_scope_skills_config(&fixture);
+        config.skills = Some(project_scope_skills_config(&fixture));
 
         let (harness, _agent_ids) = match build_harness_from_config(config, true) {
             Ok(value) => value,
@@ -736,7 +730,7 @@ mod tests {
             SkillsFixture::new()?.add_skill("proj", "Project-scope skill", "# Proj\nbody")?;
         let mut config = one_agent_config();
         config.tools = tool_configs(&["read", "activate_skill"]);
-        config.skills = project_scope_skills_config(&fixture);
+        config.skills = Some(project_scope_skills_config(&fixture));
 
         let (harness, _agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
@@ -811,7 +805,7 @@ mod tests {
             }],
             tools: all_builtin_tool_configs(),
             providers,
-            skills: SkillsConfig::default(),
+            skills: None,
         };
         let (harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
@@ -849,7 +843,7 @@ mod tests {
             }],
             tools: all_builtin_tool_configs(),
             providers,
-            skills: SkillsConfig::default(),
+            skills: None,
         };
         let (harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
@@ -872,7 +866,7 @@ mod tests {
             agents: Vec::new(),
             tools: HashMap::new(),
             providers: anthropic_provider_only(),
-            skills: SkillsConfig::default(),
+            skills: None,
         };
         let (_harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,

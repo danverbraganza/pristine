@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn skills_announcer_emits_diagnostics_for_malformed_skill()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::config::SkillsConfig;
+        use crate::config::ResolvedSkillsConfig;
         use crate::skills::SkillsRegistry;
         use crate::test_support::SkillsFixture;
 
@@ -761,8 +761,7 @@ mod tests {
             .to_str()
             .ok_or("fixture path not valid UTF-8")?
             .to_string();
-        let config = SkillsConfig {
-            enabled: Some(true),
+        let config = ResolvedSkillsConfig {
             user_paths: Some(vec![path]),
             project_paths: Some(vec![]),
             disabled: vec![],

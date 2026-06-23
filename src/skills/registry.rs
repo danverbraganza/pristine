@@ -11,7 +11,7 @@
 
 use std::sync::OnceLock;
 
-use crate::config::SkillsConfig;
+use crate::config::ResolvedSkillsConfig;
 use crate::config::discover::ProcessHome;
 use crate::skills::filesystem;
 use crate::skills::source::SkillsRegistrySource;
@@ -34,7 +34,7 @@ pub struct ScanResult {
 /// its [`ScanResult`].
 pub struct SkillsRegistry {
     /// Resolved configuration driving discovery.
-    config: SkillsConfig,
+    config: ResolvedSkillsConfig,
     /// Whether project-scope discovery is permitted, wired from the
     /// `--trust-project-skills` CLI flag. When false, project-scope paths are
     /// skipped and each is recorded as a `bypassed_path` diagnostic.
@@ -47,7 +47,7 @@ pub struct SkillsRegistry {
 impl SkillsRegistry {
     /// Construct an empty registry from resolved config and the trust flag. No
     /// discovery is performed until first access.
-    pub fn new(config: SkillsConfig, trust_project: bool) -> Self {
+    pub fn new(config: ResolvedSkillsConfig, trust_project: bool) -> Self {
         Self {
             config,
             trust_project,
@@ -98,13 +98,12 @@ impl SkillsRegistrySource for SkillsRegistry {
 mod tests {
     use super::*;
 
-    /// Build a `SkillsConfig` with explicitly empty path arrays so discovery has
-    /// nothing to find regardless of the dev machine's home directory. Using
-    /// `Some(vec![])` (not `default()`, which resolves to conventional paths)
-    /// keeps the empty-contract assertions valid.
-    fn empty_config() -> SkillsConfig {
-        SkillsConfig {
-            enabled: Some(true),
+    /// Build a `ResolvedSkillsConfig` with explicitly empty path arrays so
+    /// discovery has nothing to find regardless of the dev machine's home
+    /// directory. Using `Some(vec![])` (not `default()`, which resolves to
+    /// conventional paths) keeps the empty-contract assertions valid.
+    fn empty_config() -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
             user_paths: Some(vec![]),
             project_paths: Some(vec![]),
             disabled: vec![],

@@ -1,7 +1,7 @@
 //! Skill scan-path resolution.
 //!
 //! [`resolve_paths`] turns the unresolved string paths carried by
-//! [`SkillsConfig`] into absolute [`PathBuf`]s at scan time: a leading `~` is
+//! [`ResolvedSkillsConfig`] into absolute [`PathBuf`]s at scan time: a leading `~` is
 //! expanded against the injected [`HomeSource`] and cwd-relative paths are
 //! joined onto the current working directory. Resolution is pure path math
 //! modulo reading the home dir and the cwd — no directory walking, no file
@@ -18,16 +18,16 @@
 use std::path::PathBuf;
 
 use crate::config::discover::HomeSource;
-use crate::config::topology::SkillsConfig;
+use crate::config::topology::ResolvedSkillsConfig;
 use crate::skills::SkillDiagnostic;
 
 /// Resolve the configured/default skill scan paths to absolute [`PathBuf`]s.
 ///
 /// Returns `(user_paths, project_paths, diagnostics)`:
-/// - User paths come from [`SkillsConfig::effective_user_paths`], each expanded
+/// - User paths come from [`ResolvedSkillsConfig::effective_user_paths`], each expanded
 ///   and resolved to absolute. A `~/...` path with no home dir is dropped and
 ///   recorded as [`SkillDiagnostic::ResolutionFailure`].
-/// - Project paths come from [`SkillsConfig::effective_project_paths`]. When
+/// - Project paths come from [`ResolvedSkillsConfig::effective_project_paths`]. When
 ///   `trust_project` is `false` and that list is non-empty, every path is
 ///   recorded as [`SkillDiagnostic::BypassedPath`] and the returned project
 ///   vector is empty. When `trust_project` is `true`, each path is resolved the
@@ -36,7 +36,7 @@ use crate::skills::SkillDiagnostic;
 /// Pure modulo reading the home dir (`env`) and the process cwd. No directory
 /// walking, no file reads, no logging.
 pub fn resolve_paths(
-    config: &SkillsConfig,
+    config: &ResolvedSkillsConfig,
     trust_project: bool,
     env: &dyn HomeSource,
 ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<SkillDiagnostic>) {
@@ -112,11 +112,10 @@ mod tests {
     use super::*;
     use crate::test_support::MockHome;
 
-    /// A `SkillsConfig` with explicit path arrays, bypassing the defaults so a
-    /// test exercises exactly the paths it lists.
-    fn config_with(user: Vec<&str>, project: Vec<&str>) -> SkillsConfig {
-        SkillsConfig {
-            enabled: Some(true),
+    /// A `ResolvedSkillsConfig` with explicit path arrays, bypassing the
+    /// defaults so a test exercises exactly the paths it lists.
+    fn config_with(user: Vec<&str>, project: Vec<&str>) -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
             user_paths: Some(user.into_iter().map(String::from).collect()),
             project_paths: Some(project.into_iter().map(String::from).collect()),
             disabled: Vec::new(),
@@ -259,10 +258,7 @@ mod tests {
         let home = MockHome::some("/home/heidi");
         // Default config: no explicit path arrays, so the four conventional
         // defaults apply.
-        let config = SkillsConfig {
-            enabled: Some(true),
-            ..SkillsConfig::default()
-        };
+        let config = ResolvedSkillsConfig::default();
 
         let (user, project, diags) = resolve_paths(&config, true, &home);
 

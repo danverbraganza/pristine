@@ -91,7 +91,9 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
         })?;
 
     // Optional fields are parsed above to surface malformed values, but are not
-    // yet stored or enforced (deferred to a later phase).
+    // yet stored or enforced (deferred to a later phase). This discard marks them
+    // used: `#[derive(Deserialize)]` does not count as a read for dead-code
+    // analysis and `#[derive(Debug)]` is intentionally ignored by it.
     let _ = (
         &frontmatter.license,
         &frontmatter.compatibility,
@@ -132,12 +134,13 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
         });
     }
 
-    let dir_name = directory_name(&directory);
-    if !dir_name.is_empty() && dir_name != name {
+    if let Some(dir) = directory_name(&directory)
+        && dir != name
+    {
         warnings.push(SkillDiagnostic::NameMismatch {
             path: path.to_path_buf(),
             frontmatter_name: name.clone(),
-            directory_name: dir_name,
+            directory_name: dir.to_string(),
         });
     }
 
@@ -285,13 +288,14 @@ fn invalid_name_reason(name: &str) -> Option<&'static str> {
     None
 }
 
-/// The final component of a directory path, or an empty string if absent.
-fn directory_name(directory: &Path) -> String {
+/// The final component of a directory path as UTF-8, or `None` when it is
+/// absent, empty, or not valid UTF-8 — each of which suppresses the
+/// [`SkillDiagnostic::NameMismatch`] check at the call site.
+fn directory_name(directory: &Path) -> Option<&str> {
     directory
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string()
+        .filter(|n| !n.is_empty())
 }
 
 #[cfg(test)]

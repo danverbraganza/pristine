@@ -7,8 +7,9 @@
 //! - Fatal (skip the skill, [`Err`]): completely unparseable frontmatter, or a
 //!   missing/empty `description`.
 //! - Non-fatal (load the skill, warnings ride alongside on the [`Ok`] side): the
-//!   `name` not matching the parent directory, a `name` exceeding 64 chars, or a
-//!   `description` exceeding 1024 chars.
+//!   `name` not matching the parent directory, a `name` exceeding 64 chars, a
+//!   `name` violating the §3.1 charset/hyphen rule, or a `description` exceeding
+//!   1024 chars.
 //!
 //! Lenient YAML: skills authored for other clients sometimes contain unquoted
 //! scalars containing a colon, which strict YAML rejects. When the initial parse
@@ -50,8 +51,8 @@ struct Frontmatter {
 ///
 /// Returns `Ok((record, warnings))` when the skill loads — `warnings` carries
 /// non-fatal [`SkillDiagnostic`] entries ([`SkillDiagnostic::NameMismatch`],
-/// [`SkillDiagnostic::NameTooLong`], [`SkillDiagnostic::DescriptionTooLong`]) and
-/// may be empty. Returns `Err(diagnostic)` when the skill must be skipped: an
+/// [`SkillDiagnostic::NameTooLong`], [`SkillDiagnostic::InvalidName`],
+/// [`SkillDiagnostic::DescriptionTooLong`]) and may be empty. Returns `Err(diagnostic)` when the skill must be skipped: an
 /// unreadable file, frontmatter that cannot be parsed even after the lenient
 /// fallback, a missing `name`, or a missing/empty `description`.
 pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>), SkillDiagnostic> {
@@ -107,6 +108,18 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
             path: path.to_path_buf(),
             name: name.clone(),
             max: MAX_NAME_LEN,
+        });
+    }
+
+    // Charset/hyphen rule (§3.1). Independent of the length and mismatch checks,
+    // so a single name may trigger more than one warning. The `name` here is
+    // already trimmed and non-empty (presence is fatal above), so the
+    // empty/leading-after-trim cases cannot double-report the missing-name path.
+    if let Some(reason) = invalid_name_reason(&name) {
+        warnings.push(SkillDiagnostic::InvalidName {
+            path: path.to_path_buf(),
+            name: name.clone(),
+            reason: reason.to_string(),
         });
     }
 
@@ -245,6 +258,31 @@ fn rewrite_colon_line(content: &str) -> Option<String> {
 
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     Some(format!("{indent}{key}: \"{escaped}\""))
+}
+
+/// Check the §3.1 `name` character-set / hyphen rule and return a static reason
+/// for the first violation found, or `None` when the name conforms.
+///
+/// Permitted: lowercase ASCII letters, ASCII digits and hyphens only, with no
+/// leading hyphen, no trailing hyphen and no consecutive hyphens. Length (1–64)
+/// and presence are enforced separately and are not re-checked here.
+fn invalid_name_reason(name: &str) -> Option<&'static str> {
+    if name
+        .chars()
+        .any(|c| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+    {
+        return Some("contains characters other than lowercase ASCII letters, digits and hyphens");
+    }
+    if name.starts_with('-') {
+        return Some("leading hyphen");
+    }
+    if name.ends_with('-') {
+        return Some("trailing hyphen");
+    }
+    if name.contains("--") {
+        return Some("consecutive hyphens");
+    }
+    None
 }
 
 /// The final component of a directory path, or an empty string if absent.
@@ -484,6 +522,102 @@ mod tests {
             d,
             SkillDiagnostic::NameMismatch { frontmatter_name, directory_name, .. }
                 if frontmatter_name == &long && directory_name == "short-dir"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn conformant_name_yields_no_invalid_name_warning() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let path = write_skill(
+            &tmp,
+            "my-skill-1",
+            "---\nname: my-skill-1\ndescription: Conformant name.\n---\nBody.\n",
+        )?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        assert_eq!(record.name, "my-skill-1");
+        assert!(
+            !warnings
+                .iter()
+                .any(|d| matches!(d, SkillDiagnostic::InvalidName { .. })),
+            "conformant name must not produce an InvalidName warning"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_name_charset_warns_but_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let path = write_skill(
+            &tmp,
+            "My_Skill",
+            "---\nname: My_Skill\ndescription: Bad charset.\n---\nBody.\n",
+        )?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        assert_eq!(record.name, "My_Skill");
+        assert!(warnings.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::InvalidName { name, .. } if name == "My_Skill"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_name_leading_hyphen_warns_but_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let path = write_skill(
+            &tmp,
+            "-foo",
+            "---\nname: -foo\ndescription: Leading hyphen.\n---\nBody.\n",
+        )?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        assert_eq!(record.name, "-foo");
+        assert!(warnings.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::InvalidName { name, reason, .. }
+                if name == "-foo" && reason == "leading hyphen"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_name_trailing_hyphen_warns_but_loads() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = TempDir::new()?;
+        let path = write_skill(
+            &tmp,
+            "foo-",
+            "---\nname: foo-\ndescription: Trailing hyphen.\n---\nBody.\n",
+        )?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        assert_eq!(record.name, "foo-");
+        assert!(warnings.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::InvalidName { name, reason, .. }
+                if name == "foo-" && reason == "trailing hyphen"
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_name_consecutive_hyphens_warns_but_loads() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = TempDir::new()?;
+        let path = write_skill(
+            &tmp,
+            "a--b",
+            "---\nname: a--b\ndescription: Consecutive hyphens.\n---\nBody.\n",
+        )?;
+
+        let (record, warnings) = parse_skill_md(&path).map_err(|d| format!("{d:?}"))?;
+        assert_eq!(record.name, "a--b");
+        assert!(warnings.iter().any(|d| matches!(
+            d,
+            SkillDiagnostic::InvalidName { name, reason, .. }
+                if name == "a--b" && reason == "consecutive hyphens"
         )));
         Ok(())
     }

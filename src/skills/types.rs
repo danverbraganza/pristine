@@ -62,6 +62,14 @@ pub enum SkillDiagnostic {
         name: String,
         max: usize,
     },
+    /// The frontmatter `name` violated the character-set / hyphen rules
+    /// (lowercase ASCII letters, digits and hyphens only; no leading, trailing
+    /// or consecutive hyphens). `reason` names the specific violation.
+    InvalidName {
+        path: PathBuf,
+        name: String,
+        reason: String,
+    },
     /// The frontmatter omitted the required `description` field.
     DescriptionMissing { path: PathBuf },
     /// The frontmatter `description` exceeded the maximum permitted length.

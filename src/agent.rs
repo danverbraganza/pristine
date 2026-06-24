@@ -14,7 +14,60 @@ use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
     Usage,
 };
+use crate::skills::SkillsRegistrySource;
 use crate::tool::{ToolError, ToolRegistry};
+
+/// Structured system prompt with named-field slots.
+///
+/// Replaces the agent's former `system_prompt: String`. The fixed `base` text
+/// is authored in config; the dynamic `skills` slot, when present, contributes
+/// a tier-1 skills disclosure section. [`render`](SystemPrompt::render) is
+/// called once per agent iteration so catalog growth between turns is picked
+/// up without rebuilding the agent.
+#[derive(Clone)]
+pub struct SystemPrompt {
+    pub base: String,
+    pub skills: Option<Arc<dyn SkillsRegistrySource>>,
+}
+
+impl SystemPrompt {
+    /// Render the prompt into the text placed in the system `Turn`.
+    ///
+    /// Returns `self.base` unchanged when there is no skills slot or the slot's
+    /// catalog is empty. When the slot is populated, appends a tier-1
+    /// `## Available skills` markdown section after the base: one bullet per
+    /// skill (`**name**: description`) and a closing line pointing the model at
+    /// the `activate_skill` tool.
+    pub fn render(&self) -> String {
+        let Some(skills) = &self.skills else {
+            return self.base.clone();
+        };
+        let summaries = skills.list();
+        if summaries.is_empty() {
+            return self.base.clone();
+        }
+
+        let mut out = self.base.clone();
+        out.push_str("\n\n## Available skills\n\n");
+        for summary in &summaries {
+            out.push_str(&format!(
+                "- **{}**: {}\n",
+                summary.name, summary.description
+            ));
+        }
+        out.push_str("\nTo use a skill, call the `activate_skill` tool with the skill's name.");
+        out
+    }
+}
+
+impl std::fmt::Debug for SystemPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SystemPrompt")
+            .field("base", &self.base)
+            .field("skills", &self.skills.as_ref().map(|_| "<source>"))
+            .finish()
+    }
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -59,7 +112,7 @@ impl From<messagebus::Error> for Error {
 
 pub struct Agent {
     id: AgentId,
-    system_prompt: String,
+    system_prompt: SystemPrompt,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     history: History,
     inbound: BoxStream<'static, Block>,
@@ -69,7 +122,7 @@ pub struct Agent {
 
 pub struct AgentBuilder {
     id: Option<AgentId>,
-    system_prompt: Option<String>,
+    system_prompt: Option<SystemPrompt>,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     tools: Option<Arc<ToolRegistry>>,
 }
@@ -89,8 +142,8 @@ impl AgentBuilder {
         self
     }
 
-    pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = Some(prompt.into());
+    pub fn system_prompt(mut self, prompt: SystemPrompt) -> Self {
+        self.system_prompt = Some(prompt);
         self
     }
 
@@ -178,7 +231,7 @@ impl Agent {
                 let mut turns: Vec<Turn> = Vec::with_capacity(context.len() + 1);
                 turns.push(Turn {
                     role: Role::System,
-                    content: vec![ContentPart::Text(self.system_prompt.clone())],
+                    content: vec![ContentPart::Text(self.system_prompt.render())],
                 });
                 for block in context {
                     match block {
@@ -350,7 +403,51 @@ mod tests {
 
     use crate::history::UserId;
     use crate::messagebus::InMemoryMessageBus;
-    use crate::test_support::{EchoTool, StubArModel};
+    use crate::skills::SkillRecord;
+    use crate::test_support::{EchoTool, StubArModel, StubSkillsRegistry};
+
+    fn skill_record(name: &str, description: &str) -> SkillRecord {
+        SkillRecord {
+            name: name.to_string(),
+            description: description.to_string(),
+            body: String::new(),
+            directory: std::path::PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn system_prompt_render_returns_base_when_no_skills_slot() {
+        let prompt = SystemPrompt {
+            base: "you are pristine".to_string(),
+            skills: None,
+        };
+        assert_eq!(prompt.render(), "you are pristine");
+    }
+
+    #[test]
+    fn system_prompt_render_returns_base_when_skills_slot_is_empty() {
+        let prompt = SystemPrompt {
+            base: "you are pristine".to_string(),
+            skills: Some(Arc::new(StubSkillsRegistry::new(Vec::new()))),
+        };
+        assert_eq!(prompt.render(), "you are pristine");
+    }
+
+    #[test]
+    fn system_prompt_render_appends_skills_section_when_slot_populated() {
+        let prompt = SystemPrompt {
+            base: "you are pristine".to_string(),
+            skills: Some(Arc::new(StubSkillsRegistry::new(vec![
+                skill_record("demo", "a demo skill"),
+                skill_record("other", "another skill"),
+            ]))),
+        };
+        let expected = "you are pristine\n\n## Available skills\n\n\
+- **demo**: a demo skill\n\
+- **other**: another skill\n\
+\nTo use a skill, call the `activate_skill` tool with the skill's name.";
+        assert_eq!(prompt.render(), expected);
+    }
 
     fn user_block(content: &str) -> Block {
         Block::UserMessage {
@@ -372,7 +469,10 @@ mod tests {
         let bus = Arc::new(InMemoryMessageBus::new());
         let agent = AgentBuilder::new()
             .id(agent_id)
-            .system_prompt("test prompt")
+            .system_prompt(SystemPrompt {
+                base: "test prompt".to_string(),
+                skills: None,
+            })
             .model(ModelRole::Default, model)
             .build(bus.clone() as Arc<dyn MessageBus>)
             .expect("build agent");
@@ -634,7 +734,10 @@ mod tests {
         let model = Arc::new(StubArModel::empty());
         let agent = AgentBuilder::new()
             .id(agent_id)
-            .system_prompt("test prompt")
+            .system_prompt(SystemPrompt {
+                base: "test prompt".to_string(),
+                skills: None,
+            })
             .model(ModelRole::Default, model as Arc<dyn ARModel>)
             .tools(registry)
             .build(bus.clone() as Arc<dyn MessageBus>)
@@ -667,7 +770,10 @@ mod tests {
         let bus = Arc::new(InMemoryMessageBus::new());
         let agent = AgentBuilder::new()
             .id(agent_id)
-            .system_prompt("test prompt")
+            .system_prompt(SystemPrompt {
+                base: "test prompt".to_string(),
+                skills: None,
+            })
             .model(ModelRole::Default, model as Arc<dyn ARModel>)
             .tools(registry)
             .build(bus.clone() as Arc<dyn MessageBus>)
@@ -917,7 +1023,10 @@ mod tests {
         let bus = Arc::new(InMemoryMessageBus::new());
         let agent = AgentBuilder::new()
             .id(agent_id)
-            .system_prompt("test prompt")
+            .system_prompt(SystemPrompt {
+                base: "test prompt".to_string(),
+                skills: None,
+            })
             .model(ModelRole::Default, model as Arc<dyn ARModel>)
             .tools(registry)
             .build(bus.clone() as Arc<dyn MessageBus>)
@@ -1270,7 +1379,10 @@ mod tests {
         let bus = Arc::new(InMemoryMessageBus::new());
         let agent = AgentBuilder::new()
             .id(agent_id)
-            .system_prompt("test prompt")
+            .system_prompt(SystemPrompt {
+                base: "test prompt".to_string(),
+                skills: None,
+            })
             .model(ModelRole::Default, model as Arc<dyn ARModel>)
             .tools(registry)
             .build(bus.clone() as Arc<dyn MessageBus>)

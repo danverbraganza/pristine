@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::history::{AgentId, Block, UserId};
 use crate::messagebus::{AgentEvent, MessageBus};
 use crate::model::Usage;
+use crate::skills::{SkillDiagnostic, SkillSummary};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct InitializeResult {
@@ -67,6 +68,46 @@ impl AgentEventNotification {
                 event_type: "idle".to_string(),
                 data: serde_json::json!({}),
             },
+        }
+    }
+}
+
+/// Params for the `skills_loaded` notification: the discovered catalog
+/// projected to tier-1 `{ name, description }` summaries.
+#[derive(Serialize)]
+pub struct SkillsLoadedNotification {
+    pub skills: Vec<SkillSummary>,
+}
+
+/// A session-level skills notification fired once after the first system-prompt
+/// render triggers discovery. Unlike [`AgentEventNotification`] these are not
+/// agent-keyed: they describe the engine's global skills catalog.
+///
+/// Each variant maps to a distinct JSON-RPC method name
+/// ([`method`](SkillsNotification::method)) carrying its own `params` shape,
+/// mirroring the `agent.event` method + params dispatch in
+/// [`crate::stdio`].
+pub enum SkillsNotification {
+    /// `skills_loaded` — the catalog `{ skills: [{ name, description }, ...] }`.
+    Loaded(SkillsLoadedNotification),
+    /// `skills_diagnostics` — the array of kind-tagged diagnostics.
+    Diagnostics(Vec<SkillDiagnostic>),
+}
+
+impl SkillsNotification {
+    /// The JSON-RPC method name carried by this notification.
+    pub fn method(&self) -> &'static str {
+        match self {
+            SkillsNotification::Loaded(_) => "skills_loaded",
+            SkillsNotification::Diagnostics(_) => "skills_diagnostics",
+        }
+    }
+
+    /// The JSON-RPC `params` value for this notification.
+    pub fn params(&self) -> Result<serde_json::Value, serde_json::Error> {
+        match self {
+            SkillsNotification::Loaded(loaded) => serde_json::to_value(loaded),
+            SkillsNotification::Diagnostics(diagnostics) => serde_json::to_value(diagnostics),
         }
     }
 }
@@ -451,6 +492,49 @@ mod tests {
         let notification = AgentEventNotification::from_event(agent_id, &event);
         assert_eq!(notification.event_type, "error");
         assert_eq!(notification.data["message"], "boom");
+    }
+
+    #[test]
+    fn skills_loaded_notification_envelope_shape() -> Result<(), serde_json::Error> {
+        let notification = SkillsNotification::Loaded(SkillsLoadedNotification {
+            skills: vec![SkillSummary {
+                name: "alpha".to_string(),
+                description: "first".to_string(),
+            }],
+        });
+        assert_eq!(notification.method(), "skills_loaded");
+        let jsonrpc = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": notification.method(),
+            "params": notification.params()?,
+        });
+        assert_eq!(jsonrpc["method"], "skills_loaded");
+        assert!(jsonrpc.get("id").is_none(), "notifications carry no id");
+        assert_eq!(jsonrpc["params"]["skills"][0]["name"], "alpha");
+        assert_eq!(jsonrpc["params"]["skills"][0]["description"], "first");
+        Ok(())
+    }
+
+    #[test]
+    fn skills_diagnostics_notification_envelope_shape() -> Result<(), serde_json::Error> {
+        let notification =
+            SkillsNotification::Diagnostics(vec![SkillDiagnostic::DescriptionMissing {
+                path: std::path::PathBuf::from("/tmp/x/SKILL.md"),
+            }]);
+        assert_eq!(notification.method(), "skills_diagnostics");
+        let jsonrpc = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": notification.method(),
+            "params": notification.params()?,
+        });
+        assert_eq!(jsonrpc["method"], "skills_diagnostics");
+        assert!(jsonrpc.get("id").is_none(), "notifications carry no id");
+        assert!(
+            jsonrpc["params"].is_array(),
+            "diagnostics params is an array"
+        );
+        assert_eq!(jsonrpc["params"][0]["kind"], "description_missing");
+        Ok(())
     }
 
     #[test]

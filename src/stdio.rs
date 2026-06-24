@@ -6,6 +6,7 @@ use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::harness::SkillsAnnouncer;
 use crate::history::{AgentId, UserId};
 use crate::messagebus::{AgentEvent, MessageBus};
 use crate::rpc::{AgentEventNotification, PristineRpcServer, RpcServerImpl};
@@ -84,6 +85,7 @@ pub async fn run_server(
     agent_id: AgentId,
     owner_id: UserId,
     shutdown_token: CancellationToken,
+    skills: Option<Arc<SkillsAnnouncer>>,
 ) -> Result<(), StdioError> {
     let server = RpcServerImpl::new(bus.clone(), agent_id, owner_id, shutdown_token.clone());
     let module = server.into_rpc();
@@ -112,10 +114,35 @@ pub async fn run_server(
                 if let DispatchOutcome::DrainEvents =
                     classify_outcome(&envelope.method, success)
                 {
+                    // The first turn's system-prompt render triggers skills
+                    // discovery; surface its outcome once before draining the
+                    // agent's event stream. `SkillsAnnouncer::take` is a no-op
+                    // on every subsequent turn.
+                    if let Some(announcer) = &skills {
+                        write_skills_notifications(announcer, &mut stdout).await?;
+                    }
                     drain_events(&*bus, agent_id, &mut stdout).await?;
                 }
             }
         }
+    }
+    Ok(())
+}
+
+async fn write_skills_notifications<W>(
+    announcer: &SkillsAnnouncer,
+    out: &mut W,
+) -> Result<(), StdioError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    for notification in announcer.take() {
+        let jsonrpc = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": notification.method(),
+            "params": notification.params()?,
+        });
+        write_line(out, &jsonrpc.to_string()).await?;
     }
     Ok(())
 }
@@ -142,18 +169,24 @@ fn classify_outcome(method: &str, success: bool) -> DispatchOutcome {
     }
 }
 
-async fn write_line(out: &mut tokio::io::Stdout, text: &str) -> std::io::Result<()> {
+async fn write_line<W>(out: &mut W, text: &str) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     out.write_all(text.as_bytes()).await?;
     out.write_all(b"\n").await?;
     out.flush().await?;
     Ok(())
 }
 
-async fn drain_events(
+async fn drain_events<W>(
     bus: &dyn MessageBus,
     agent_id: AgentId,
-    stdout: &mut tokio::io::Stdout,
-) -> Result<(), StdioError> {
+    out: &mut W,
+) -> Result<(), StdioError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
     let mut events = bus.subscribe(agent_id)?;
     while let Some(event) = events.next().await {
         let is_terminal = matches!(event, AgentEvent::Idle | AgentEvent::Error { .. });
@@ -163,10 +196,124 @@ async fn drain_events(
             "method": "agent.event",
             "params": notification,
         });
-        write_line(stdout, &jsonrpc.to_string()).await?;
+        write_line(out, &jsonrpc.to_string()).await?;
         if is_terminal {
             break;
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::config::ResolvedSkillsConfig;
+    use crate::skills::SkillsRegistry;
+    use crate::test_support::SkillsFixture;
+
+    /// Parse the writer's bytes as newline-delimited JSON-RPC notifications.
+    fn parse_notifications(
+        bytes: &[u8],
+    ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+        let text = std::str::from_utf8(bytes)?;
+        text.lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).map_err(Into::into))
+            .collect()
+    }
+
+    /// Exercises the real write path end-to-end: a real `SkillsRegistry`
+    /// scanning a `SkillsFixture` (one valid skill, one malformed) wrapped in a
+    /// `SkillsAnnouncer`, drained through the (now generic) writer helper into an
+    /// in-memory buffer, then parsed back as JSON-RPC. This closes the gap that
+    /// the notification path was only unit-tested at the announcer level, never
+    /// through `write_skills_notifications` / `write_line`.
+    #[tokio::test]
+    async fn write_skills_notifications_serializes_loaded_and_diagnostics_over_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A valid skill (well-formed frontmatter) yields a catalog entry; a
+        // malformed one (frontmatter omits `description`) yields a diagnostic.
+        let fixture = SkillsFixture::new()?
+            .add_skill("alpha", "first skill", "body text")?
+            .add_raw_skill("broken", "---\nname: broken\n---\nbody\n")?;
+        let path = fixture
+            .path()
+            .to_str()
+            .ok_or("fixture path not valid UTF-8")?
+            .to_string();
+        let config = ResolvedSkillsConfig {
+            user_paths: Some(vec![path]),
+            project_paths: Some(vec![]),
+            disabled: vec![],
+        };
+        let source: Arc<dyn crate::skills::SkillsRegistrySource> =
+            Arc::new(SkillsRegistry::new(config, false));
+        let announcer = SkillsAnnouncer::new(source);
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_skills_notifications(&announcer, &mut buf).await?;
+
+        let notifications = parse_notifications(&buf)?;
+        assert!(
+            !notifications.is_empty(),
+            "expected at least one notification written"
+        );
+
+        // Every line is a well-formed JSON-RPC notification: version "2.0", a
+        // method, params, and no id.
+        for n in &notifications {
+            assert_eq!(n["jsonrpc"], "2.0", "missing jsonrpc 2.0: {n}");
+            assert!(n.get("method").is_some(), "missing method: {n}");
+            assert!(n.get("params").is_some(), "missing params: {n}");
+            assert!(
+                n.get("id").is_none(),
+                "notification must not carry an id: {n}"
+            );
+        }
+
+        // skills_loaded carries the valid skill's {name, description}.
+        let loaded = notifications
+            .iter()
+            .find(|n| n["method"] == "skills_loaded")
+            .ok_or("expected a skills_loaded notification")?;
+        let skills = loaded["params"]["skills"]
+            .as_array()
+            .ok_or("skills_loaded params.skills must be an array")?;
+        assert!(
+            skills
+                .iter()
+                .any(|s| s["name"] == "alpha" && s["description"] == "first skill"),
+            "skills_loaded missing valid skill entry: {loaded}"
+        );
+
+        // skills_diagnostics is a kind-tagged array containing the malformed
+        // skill's entry.
+        let diagnostics = notifications
+            .iter()
+            .find(|n| n["method"] == "skills_diagnostics")
+            .ok_or("expected a skills_diagnostics notification")?;
+        let entries = diagnostics["params"]
+            .as_array()
+            .ok_or("skills_diagnostics params must be an array")?;
+        assert!(!entries.is_empty(), "expected at least one diagnostic");
+        assert!(
+            entries.iter().all(|e| e.get("kind").is_some()),
+            "every diagnostic must carry a kind tag: {diagnostics}"
+        );
+        assert!(
+            entries.iter().any(|e| e["kind"] == "description_missing"),
+            "expected the malformed skill's description_missing diagnostic: {diagnostics}"
+        );
+
+        // Emit-once: a second drain on the same announcer writes nothing.
+        let mut buf2: Vec<u8> = Vec::new();
+        write_skills_notifications(&announcer, &mut buf2).await?;
+        assert!(
+            buf2.is_empty(),
+            "second drain must write nothing (emit-once guard), got: {buf2:?}"
+        );
+
+        Ok(())
+    }
 }

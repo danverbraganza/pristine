@@ -72,7 +72,11 @@ mod tests {
                 },
             );
         }
-        TopologyConfig { agents, tools }
+        TopologyConfig {
+            agents,
+            tools,
+            skills: None,
+        }
     }
 
     #[test]

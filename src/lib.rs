@@ -10,6 +10,7 @@ pub mod model;
 pub mod provider;
 pub mod rpc;
 pub mod shell;
+pub mod skills;
 pub mod stdio;
 pub mod tool;
 pub mod user;
@@ -22,10 +23,10 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
-use crate::agent::AgentId;
-use crate::builtins::{Edit, ExecBash, Insert, Read, Write};
+use crate::agent::{AgentId, SystemPrompt};
+use crate::builtins::{ActivateSkill, Edit, ExecBash, Insert, Read, Write};
 use crate::config::{
-    Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, load as load_config,
+    Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, ToolConfig, load as load_config,
 };
 use crate::harness::{Harness, HarnessBuilder, ModelId, PendingAgent};
 use crate::messagebus::MessageBus;
@@ -33,6 +34,8 @@ use crate::model::anthropic::AnthropicProvider;
 use crate::model::deepseek::DeepSeekProvider;
 use crate::model::openrouter::OpenRouterProvider;
 use crate::provider::{ModelInstanceConfig, ModelProvider};
+use crate::skills::{SkillsRegistry, SkillsRegistrySource};
+use crate::tool::Tool;
 
 #[derive(Parser, Debug)]
 #[command(name = "pristine", about = "Pristine agent harness")]
@@ -51,6 +54,12 @@ struct Cli {
     /// = use the alias declared in the topology.
     #[arg(long = "model", global = true, value_name = "ALIAS")]
     model: Option<String>,
+
+    /// Grant trust to project-scope skills for this invocation. Absent =
+    /// project-scope skill paths are skipped and each is recorded as a
+    /// `bypassed_path` diagnostic. Accepted at any position.
+    #[arg(long = "trust-project-skills", global = true)]
+    trust_project_skills: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -95,7 +104,8 @@ async fn run_async() -> anyhow::Result<()> {
         }
     };
 
-    let (mut harness, agent_ids) = match build_harness_from_config(config) {
+    let (mut harness, agent_ids) = match build_harness_from_config(config, cli.trust_project_skills)
+    {
         Ok(value) => value,
         Err(HarnessAssemblyError::Config(errors)) => {
             eprintln!("{errors}");
@@ -113,8 +123,16 @@ async fn run_async() -> anyhow::Result<()> {
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let owner_id = harness.owner_id();
     let bus = harness.bus().clone() as Arc<dyn MessageBus>;
+    let skills_announcer = harness.skills_announcer();
 
-    crate::stdio::run_server(bus, primary_agent_id, owner_id, shutdown_token).await?;
+    crate::stdio::run_server(
+        bus,
+        primary_agent_id,
+        owner_id,
+        shutdown_token,
+        skills_announcer,
+    )
+    .await?;
 
     harness.shutdown();
     harness.join().await?;
@@ -153,6 +171,7 @@ impl From<anyhow::Error> for HarnessAssemblyError {
 /// `ConfigErrors` aggregate so multiple bad provider names render together.
 pub fn build_harness_from_config(
     config: Config,
+    trust_project: bool,
 ) -> Result<(Harness, Vec<AgentId>), HarnessAssemblyError> {
     // Maintain a parallel `HashMap<String, Arc<dyn ModelProvider>>` because
     // `HarnessBuilder` does not expose its `ProviderRegistry` pre-build. The
@@ -175,7 +194,22 @@ pub fn build_harness_from_config(
         .add_provider("openrouter", openrouter)
         .map_err(|e| anyhow::anyhow!("failed to register OpenRouterProvider: {e}"))?;
 
-    builder = register_builtin_tools(builder)?;
+    // Construct the skills registry once and share it across every agent's
+    // system-prompt slot and the `activate_skill` builtin. `trust_project`
+    // carries the `--trust-project-skills` flag through to discovery: when
+    // false, project-scope paths are skipped and each is recorded as a
+    // `bypassed_path` diagnostic. When `config.skills` is `None` (disabled) the
+    // slot stays `None`, rendering is unchanged, and a declared `activate_skill`
+    // fails to construct.
+    let skills: Option<Arc<dyn SkillsRegistrySource>> = config.skills.as_ref().map(|resolved| {
+        Arc::new(SkillsRegistry::new(resolved.clone(), trust_project))
+            as Arc<dyn SkillsRegistrySource>
+    });
+
+    let builtin_ctx = BuiltinContext {
+        skills_registry: skills.clone(),
+    };
+    builder = register_builtin_tools(builder, &config.tools, &builtin_ctx)?;
 
     let mut provider_errors = ConfigErrors::new();
     for agent in &config.agents {
@@ -234,10 +268,17 @@ pub fn build_harness_from_config(
             .add_model(model_id.clone(), model)
             .add_agent(PendingAgent {
                 id: agent_id,
-                system_prompt: agent.system_prompt.clone(),
+                system_prompt: SystemPrompt {
+                    base: agent.system_prompt.clone(),
+                    skills: skills.clone(),
+                },
                 model_id,
             });
         agent_ids.push(agent_id);
+    }
+
+    if let Some(source) = &skills {
+        builder = builder.skills(source.clone());
     }
 
     let harness = builder
@@ -246,30 +287,109 @@ pub fn build_harness_from_config(
     Ok((harness, agent_ids))
 }
 
-/// Register the five built-in tools shipped with pristine. Kept here, rather
-/// than driven by `Config.tools`; a future bead may fold these into a
-/// `Config.tools`-driven registration loop.
-fn register_builtin_tools(builder: HarnessBuilder) -> anyhow::Result<HarnessBuilder> {
-    let builder = builder
-        .add_tool(Arc::new(ExecBash::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register ExecBash: {e}"))?
-        .add_tool(Arc::new(Edit::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Edit: {e}"))?
-        .add_tool(Arc::new(Read::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Read: {e}"))?
-        .add_tool(Arc::new(Write::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Write: {e}"))?
-        .add_tool(Arc::new(Insert::new()))
-        .map_err(|e| anyhow::anyhow!("failed to register Insert: {e}"))?;
+/// Dependencies a builtin constructor closure may need at registration time.
+///
+/// The five filesystem builtins take no dependencies and ignore `ctx`.
+/// `activate_skill` reads `skills_registry`: it is `Some` iff `[skills]` is
+/// enabled, and a closure that needs it but finds `None` returns an error so a
+/// declared-but-skills-absent config surfaces as a harness assembly failure.
+struct BuiltinContext {
+    skills_registry: Option<Arc<dyn SkillsRegistrySource>>,
+}
+
+/// Constructor closure for a single builtin tool, keyed by its `Tool::name()`.
+type BuiltinCtor = Box<dyn Fn(&BuiltinContext) -> anyhow::Result<Arc<dyn Tool>>>;
+
+/// Name-keyed dispatch table of builtin tool constructors. Keys are the
+/// `Tool::name()` values the corresponding `[tools.X]` config declarations
+/// reference; each value constructs the builtin as an `Arc<dyn Tool>`.
+fn builtin_constructors() -> HashMap<&'static str, BuiltinCtor> {
+    let mut table: HashMap<&'static str, BuiltinCtor> = HashMap::new();
+    table.insert(
+        "read",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Read::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "write",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Write::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "edit",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Edit::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "insert",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Insert::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "exec_bash",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(ExecBash::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "activate_skill",
+        Box::new(|ctx: &BuiltinContext| match &ctx.skills_registry {
+            Some(reg) => Ok(Arc::new(ActivateSkill::new(reg.clone())) as Arc<dyn Tool>),
+            None => Err(anyhow::anyhow!(
+                "[tools.activate_skill] is declared but skills are not enabled; \
+                 add a [skills] block (or remove [tools.activate_skill])"
+            )),
+        }),
+    );
+    table
+}
+
+/// Register the builtin tools declared in `tools`, driven by the dispatch table.
+///
+/// Iterates the dispatch table's known builtin names and registers a builtin
+/// iff its name is a key present in `tools`. Iterating the table (not `tools`)
+/// means unknown or extra `tools` entries are ignored. For the shipped
+/// `default.toml`, which declares all five builtin names, this registers exactly
+/// those five — behavior identical to the prior unconditional registration.
+fn register_builtin_tools(
+    mut builder: HarnessBuilder,
+    tools: &HashMap<String, ToolConfig>,
+    ctx: &BuiltinContext,
+) -> anyhow::Result<HarnessBuilder> {
+    for (name, ctor) in builtin_constructors() {
+        if !tools.contains_key(name) {
+            continue;
+        }
+        let tool = ctor(ctx)?;
+        builder = builder
+            .add_tool(tool)
+            .map_err(|e| anyhow::anyhow!("failed to register {name}: {e}"))?;
+    }
     Ok(builder)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ResolvedAgent, ResolvedModel};
+    use crate::config::{ResolvedAgent, ResolvedModel, ResolvedSkillsConfig, ToolConfig};
+    use crate::test_support::SkillsFixture;
     use clap::Parser;
     use std::collections::HashMap;
+
+    /// Build a `config.tools` map declaring the named builtins, mirroring the
+    /// `[tools.X]` entries a topology file would carry.
+    fn tool_configs(names: &[&str]) -> HashMap<String, ToolConfig> {
+        names
+            .iter()
+            .map(|name| {
+                (
+                    name.to_string(),
+                    ToolConfig::Builtin {
+                        builtin: name.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// The five builtin names declared by the shipped `default.toml`.
+    fn all_builtin_tool_configs() -> HashMap<String, ToolConfig> {
+        tool_configs(&["read", "write", "edit", "insert", "exec_bash"])
+    }
 
     #[test]
     fn cli_accepts_config_flag() {
@@ -336,6 +456,32 @@ mod tests {
         assert!(matches!(cli.command, Some(Command::Run)));
     }
 
+    #[test]
+    fn cli_accepts_trust_project_skills_flag() {
+        let cli = Cli::try_parse_from(["pristine", "--trust-project-skills", "run"])
+            .expect("CLI accepts --trust-project-skills before the subcommand");
+        assert!(cli.trust_project_skills);
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_trust_project_skills_flag_after_subcommand() {
+        let cli = Cli::try_parse_from(["pristine", "run", "--trust-project-skills"])
+            .expect("CLI accepts --trust-project-skills in subcommand position via global = true");
+        assert!(cli.trust_project_skills);
+        assert!(matches!(cli.command, Some(Command::Run)));
+    }
+
+    #[test]
+    fn cli_trust_project_skills_defaults_false_when_absent() {
+        let cli =
+            Cli::try_parse_from(["pristine", "run"]).expect("CLI parses with no optional flags");
+        assert!(
+            !cli.trust_project_skills,
+            "the flag defaults to false when not passed",
+        );
+    }
+
     fn anthropic_provider_only() -> HashMap<String, ProviderConfig> {
         let mut providers = HashMap::new();
         providers.insert(
@@ -358,8 +504,9 @@ mod tests {
                     api_key: "sk-test".to_string(),
                 },
             }],
-            tools: HashMap::new(),
+            tools: all_builtin_tool_configs(),
             providers: anthropic_provider_only(),
+            skills: None,
         }
     }
 
@@ -367,7 +514,7 @@ mod tests {
     fn build_harness_from_config_happy_path_registers_one_agent_and_five_tools()
     -> Result<(), Box<dyn std::error::Error>> {
         let config = one_agent_config();
-        let result = build_harness_from_config(config);
+        let result = build_harness_from_config(config, false);
         let (harness, agent_ids) = match result {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
@@ -403,6 +550,240 @@ mod tests {
     }
 
     #[test]
+    fn register_builtin_tools_subset_registers_only_declared()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "write"]);
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        let mut tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            vec!["read".to_string(), "write".to_string()],
+            "only the declared subset registers",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn register_builtin_tools_none_declared_registers_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.tools = HashMap::new();
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        assert!(
+            harness.tools().list().is_empty(),
+            "no declared tools means no builtins register",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn register_builtin_tools_ignores_unknown_tool_names() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "nonesuch"]);
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+        let tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert_eq!(
+            tool_names,
+            vec!["read".to_string()],
+            "unknown config tool names are ignored",
+        );
+        Ok(())
+    }
+
+    /// A `ResolvedSkillsConfig` pointed at `fixture`'s tempdir for the user
+    /// scope, with project scope emptied so the (bypassed) defaults never leak
+    /// real filesystem state into the test.
+    fn enabled_skills_config(fixture: &SkillsFixture) -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
+            user_paths: Some(vec![fixture.path().to_string_lossy().into_owned()]),
+            project_paths: Some(Vec::new()),
+            disabled: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_harness_with_skills_and_activate_skill_activates_end_to_end()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = SkillsFixture::new()?.add_skill("greet", "Greet the user", "# Greet\nhi")?;
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        config.skills = Some(enabled_skills_config(&fixture));
+
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+
+        let mut tool_names: Vec<String> = harness
+            .tools()
+            .list()
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        tool_names.sort();
+        assert_eq!(
+            tool_names,
+            vec!["activate_skill".to_string(), "read".to_string()],
+            "activate_skill registers when [skills] and [tools.activate_skill] both present",
+        );
+
+        let value = harness
+            .tools()
+            .dispatch("activate_skill", serde_json::json!({ "name": "greet" }))
+            .await?;
+        let body = value["body"].as_str().ok_or("body is a string")?;
+        assert!(
+            body.contains("# Greet") && body.contains("hi"),
+            "activated body carries the SKILL.md markdown body, got {body:?}",
+        );
+        Ok(())
+    }
+
+    /// A `ResolvedSkillsConfig` with `fixture` mounted as the sole *project*
+    /// scope path and the user scope emptied. Project-scope discovery hinges on
+    /// the trust flag, so this config isolates the flag's effect.
+    fn project_scope_skills_config(fixture: &SkillsFixture) -> ResolvedSkillsConfig {
+        ResolvedSkillsConfig {
+            user_paths: Some(Vec::new()),
+            project_paths: Some(vec![fixture.path().to_string_lossy().into_owned()]),
+            disabled: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn build_harness_trust_project_true_discovers_project_skill()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture =
+            SkillsFixture::new()?.add_skill("proj", "Project-scope skill", "# Proj\nbody")?;
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        config.skills = Some(project_scope_skills_config(&fixture));
+
+        let (harness, _agent_ids) = match build_harness_from_config(config, true) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+
+        let value = harness
+            .tools()
+            .dispatch("activate_skill", serde_json::json!({ "name": "proj" }))
+            .await?;
+        let body = value["body"].as_str().ok_or("body is a string")?;
+        assert!(
+            body.contains("# Proj"),
+            "trust granted: project-scope skill is discovered and activatable, got {body:?}",
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_harness_trust_project_false_skips_project_skill_with_bypass_diagnostic()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture =
+            SkillsFixture::new()?.add_skill("proj", "Project-scope skill", "# Proj\nbody")?;
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        config.skills = Some(project_scope_skills_config(&fixture));
+
+        let (harness, _agent_ids) = match build_harness_from_config(config, false) {
+            Ok(value) => value,
+            Err(HarnessAssemblyError::Config(errors)) => {
+                return Err(format!("expected Ok build, got Config errors: {errors}").into());
+            }
+            Err(HarnessAssemblyError::Other(err)) => {
+                return Err(format!("expected Ok build, got Other: {err}").into());
+            }
+        };
+
+        // Without trust the project skill is invisible: activation reports the
+        // skill as unknown rather than returning its body.
+        let result = harness
+            .tools()
+            .dispatch("activate_skill", serde_json::json!({ "name": "proj" }))
+            .await;
+        assert!(
+            result.is_err(),
+            "no trust: project-scope skill must not be discovered or activatable",
+        );
+
+        // The bypass is recorded as a diagnostic on the shared registry.
+        let project_path = fixture.path().to_path_buf();
+        let registry = SkillsRegistry::new(project_scope_skills_config(&fixture), false);
+        let diagnostics = registry.diagnostics();
+        assert!(
+            diagnostics.iter().any(|d| matches!(
+                d,
+                crate::skills::SkillDiagnostic::BypassedPath { path } if path == &project_path
+            )),
+            "no trust: each bypassed project path yields a bypassed_path diagnostic, got {diagnostics:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_harness_activate_skill_declared_without_skills_is_assembly_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.tools = tool_configs(&["read", "activate_skill"]);
+        // skills stays disabled (default), so the activate_skill closure finds
+        // `BuiltinContext::skills_registry == None` and returns an error.
+        match build_harness_from_config(config, false) {
+            Ok(_) => Err("expected assembly error for declared-but-no-skills".into()),
+            Err(HarnessAssemblyError::Other(_)) => Ok(()),
+            Err(HarnessAssemblyError::Config(errors)) => {
+                Err(format!("expected Other assembly error, got Config errors: {errors}").into())
+            }
+        }
+    }
+
+    #[test]
     fn build_harness_from_config_registers_deepseek_provider()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut providers = HashMap::new();
@@ -422,10 +803,11 @@ mod tests {
                     api_key: "sk-test".to_string(),
                 },
             }],
-            tools: HashMap::new(),
+            tools: all_builtin_tool_configs(),
             providers,
+            skills: None,
         };
-        let (harness, agent_ids) = match build_harness_from_config(config) {
+        let (harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -459,10 +841,11 @@ mod tests {
                     api_key: "sk-test".to_string(),
                 },
             }],
-            tools: HashMap::new(),
+            tools: all_builtin_tool_configs(),
             providers,
+            skills: None,
         };
-        let (harness, agent_ids) = match build_harness_from_config(config) {
+        let (harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -483,8 +866,9 @@ mod tests {
             agents: Vec::new(),
             tools: HashMap::new(),
             providers: anthropic_provider_only(),
+            skills: None,
         };
-        let (_harness, agent_ids) = match build_harness_from_config(config) {
+        let (_harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());
@@ -502,7 +886,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut config = one_agent_config();
         config.agents[0].model.provider_name = "nonesuch".to_string();
-        match build_harness_from_config(config) {
+        match build_harness_from_config(config, false) {
             Ok(_) => return Err("unknown provider must fail".into()),
             Err(HarnessAssemblyError::Config(errors)) => {
                 let mut saw_unknown = false;
@@ -541,7 +925,7 @@ mod tests {
         };
         config.agents.push(second);
 
-        let (_harness, agent_ids) = match build_harness_from_config(config) {
+        let (_harness, agent_ids) = match build_harness_from_config(config, false) {
             Ok(value) => value,
             Err(HarnessAssemblyError::Config(errors)) => {
                 return Err(format!("expected Ok build, got Config errors: {errors}").into());

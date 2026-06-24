@@ -34,7 +34,7 @@ pub use parse::{
 };
 pub use resolve::{ResolvedAgent, ResolvedModel, resolve_aliases};
 pub use template::{EnvSource, ProcessEnv, template_value};
-pub use topology::{AgentConfig, ToolConfig, TopologyConfig};
+pub use topology::{AgentConfig, ResolvedSkillsConfig, SkillsConfig, ToolConfig, TopologyConfig};
 pub use validate::validate_tool_refs;
 
 /// Canonical default topology shipped with pristine: the coding-assistant
@@ -57,6 +57,10 @@ pub struct Config {
     pub agents: Vec<ResolvedAgent>,
     pub tools: HashMap<String, ToolConfig>,
     pub providers: HashMap<String, ProviderConfig>,
+    /// Resolved skills configuration. `None` is the sole representation of
+    /// "disabled" (absent `[skills]` block or explicit `enabled = false`);
+    /// `Some` means enabled. Downstream gates on `skills.is_some()`.
+    pub skills: Option<ResolvedSkillsConfig>,
 }
 
 impl Config {
@@ -137,10 +141,14 @@ pub fn assemble_config<E: EnvSource>(
         _ => return Err(errors),
     };
 
+    // Absent block ⇒ None; present block ⇒ resolve the kill-switch.
+    let skills = topology.skills.and_then(|c| c.resolve());
+
     Ok(Config {
         agents: resolved_agents,
         tools: topology.tools.clone(),
         providers: auth.providers.clone(),
+        skills,
     })
 }
 

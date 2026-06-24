@@ -298,7 +298,25 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
         if "id" in msg:
             print(f"[drain_events] unexpected response message (id={msg['id']}); ignoring", file=sys.stderr)
             continue
-        params = msg.get("params", {})
+        method = msg.get("method")
+        params = msg.get("params")
+        if method == "skills_loaded":
+            skills = params.get("skills", []) if isinstance(params, dict) else []
+            names = ", ".join(str(s.get("name", "?")) for s in skills)
+            suffix = f": {names}" if names else ""
+            err_console.print(f"[dim]Loaded {len(skills)} skill(s){suffix}[/]")
+            continue
+        if method == "skills_diagnostics":
+            count = len(params) if isinstance(params, list) else 0
+            if count:
+                err_console.print(f"[dim]Skills diagnostics: {count} item(s)[/]")
+            continue
+        if method != "agent.event":
+            print(f"[drain_events] ignoring notification with method={method!r}", file=sys.stderr)
+            continue
+        if not isinstance(params, dict):
+            print("[drain_events] agent.event has non-dict params; ignoring", file=sys.stderr)
+            continue
         event_type = params.get("type", "")
         agent_short = str(params.get("agent_id", ""))[:8]
         if event_type == "token_delta":
@@ -346,6 +364,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chat REPL for the Pristine agent harness.")
     parser.add_argument("invocation_dir", nargs="?", default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument("--trust-project-skills", action="store_true", default=None)
     args = parser.parse_args()
     invocation_dir = args.invocation_dir
 
@@ -354,6 +373,8 @@ def main() -> None:
     command = [str(binary), "run"]
     if args.model is not None:
         command += ["--model", args.model]
+    if args.trust_project_skills:
+        command += ["--trust-project-skills"]
 
     proc = subprocess.Popen(
         command,

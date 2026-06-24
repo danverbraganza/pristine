@@ -20,7 +20,7 @@ use futures::StreamExt;
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use pristine::agent::AgentId;
+use pristine::agent::{AgentId, SystemPrompt};
 use pristine::builtins::{Edit, ExecBash, Insert, Read, Write};
 use pristine::harness::{HarnessBuilder, ModelId, PendingAgent};
 use pristine::history::Block;
@@ -78,7 +78,10 @@ async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::E
         .add_model(model_id.clone(), anthropic)
         .add_agent(PendingAgent {
             id: agent_id,
-            system_prompt: SYSTEM_PROMPT.to_string(),
+            system_prompt: SystemPrompt {
+                base: SYSTEM_PROMPT.to_string(),
+                skills: None,
+            },
             model_id,
         })
         .add_tool(Arc::new(ExecBash::new()))

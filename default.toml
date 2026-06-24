@@ -66,5 +66,9 @@ builtin = "insert"
 type = "builtin"
 builtin = "exec_bash"
 
-
 [skills]
+user_paths = [
+    "~/.agents/skills",
+    "~/.pristine/skills",
+    "~/.claude/skills",
+]

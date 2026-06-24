@@ -1,61 +1,45 @@
 # DESIGN
 
-Pristine is an SDK-first, configurable agent harness engine written in Rust. It is not an agent, a UI, or a product -- it is the core that agents, UIs, and products are built on. The goal is to enable experimentation and exploration in harness design by providing composable, swappable primitives for every layer of the agent stack: models, history, context compilation, tool execution, inter-agent routing, and client protocols.
+Pristine is an SDK-first, configurable agent harness engine, written in Rust. It is not an agent, a UI, or a product; it is the core that agents, UIs, and products are built on. The goal is to make harness design a place where experimentation is cheap, by exposing composable, swappable primitives at every layer of the stack: models, history, context compilation, tool execution, inter-agent routing, and client protocols.
 
-Pristine ships as a library crate and a thin binary. The library exposes a `HarnessBuilder` API so that any Rust program can construct, configure, and drive an agent harness programmatically. The binary (`pristine run`) is a reference client that wraps the library behind a JSON-RPC stdio server. This SDK-first posture means there is no canonical UI; Pristine is designed to be embedded and wrapped, not run directly by end users.
+The engine ships as a library crate and a thin binary. The library exposes a `HarnessBuilder` so that any Rust program can construct, configure, and drive a harness programmatically. The binary (`pristine run`) is a reference client that wraps the library behind a JSON-RPC stdio server. There is no canonical UI. Pristine is meant to be embedded and wrapped, not run directly by end users.
 
-The engine is deliberately model-agnostic and model-plural. An Agent references its models through a `ModelRole` indirection, and the harness can host multiple agents -- each with distinct model assignments, prompts, tools, and skills -- within a single process. The `MessageBus` trait abstracts all inter-agent and agent-to-client routing so that the same agent code runs unchanged whether the bus is in-memory, cross-process, or distributed.
+Pristine is model-agnostic and model-plural. Agents reference their models through a `ModelRole` indirection, and a single process can host many agents at once, each with its own model assignment, prompt, tools, and skills. The `MessageBus` trait abstracts all inter-agent and agent-to-client routing, so the same agent code runs unchanged whether the bus is in-memory, cross-process, or distributed.
 
-Configuration is the primary user interface. Rather than hard-coding agent topologies, Pristine will support declarative configuration files that describe which agents to run, how they are wired together, and what capabilities each has. The builder API remains the programmatic escape hatch for cases configuration cannot express.
+Configuration, not code, is how users assemble a harness. Topology — which agents run, how they are wired together, what each can do — is declarative. The builder API is the escape hatch for the cases configuration cannot express, and is expected to be the minority case.
 
-## Completed
+## Design Principles
 
-**Initial Build** -- Validated the core engine design with a hardcoded two-message demo exercising the Harness, Agent, History, Model, and MessageBus primitives. See ARCHITECTURE.md Phase 1.
+These are the rules the engine tries to keep. The mechanisms that implement them live in [ARCHITECTURE.md](ARCHITECTURE.md); this section is the philosophy.
 
-**JSON-RPC Server** -- Replaced the hardcoded demo with a JSON-RPC stdio server. `pristine run` reads newline-delimited JSON-RPC from stdin and writes responses and notifications to stdout. The Phase 1 demo flow is preserved as a Python client script. See ARCHITECTURE.md Phase 2 and Client Protocol.
+**Portable shape, adapter dialect.** The portable layer — the engine, its traits, and the types agents and clients touch — carries only what every targeted provider, model, or client requires. Provider dialect (wire formats, naming conventions, optional fields, error vocabularies) lives in adapters at the periphery. The portable layer does not grow on speculation; a capability is promoted from adapter-specific to portable only when it appears in a majority of providers, with at least two concrete examples in view. Adding the third provider should not require changing the second. The same shape applies to errors: portable types carry a typed dialect payload (`ToolError::Execution(Value)` wrapping a tool-private error enum), so each component speaks its own vocabulary without leaking it upward.
 
-**Tool Calls** -- Agents can invoke tools registered with the Harness. Defined the `Tool` trait and a `ToolRegistry`; extended the `ModelInput` contract with `tools: Vec<ToolSpec>` and `ContentPart::ToolUse`/`ToolResult`; extended `ModelStreamEvent` with streaming `ToolUseStart`/`Delta`/`Complete`; reconciled `Block::ToolCall`/`ToolResult` with correlation IDs; refactored the Anthropic adapter to serialize tools + tool content blocks and parse tool_use streaming events; wired the registry from `HarnessBuilder` through `Harness` to each `Agent`; replaced the History-to-ContentPart skip with real emission; added a tool-call cycle to `Agent::run` that dispatches tools and re-enters the model loop until the model returns no tool calls; surfaced an `AgentEvent::Idle` signal once per inbound block; expanded the JSON-RPC `block_complete` notification payload; shipped a built-in `add` tool. See ARCHITECTURE.md Tool Calls.
+**Separation of concerns at every boundary.** System prompts carry identity and behavior. Tools carry behavior and self-description. Skills bundle tools with prompt fragments and ship on the filesystem. Adapters carry transport and dialect. Clients carry presentation. Each layer owns what it owns and nothing else, and the seams between them are traits.
 
-**Built-in Tools** -- The harness ships five built-in tools that give the agent direct filesystem and shell capabilities: `Read`, `Write`, `Edit`, `Insert`, and `ExecBash`. Each lives in its own submodule under `src/builtins/` with co-located tests, owns its own typed error enum (the dialect), and emits errors through the shared `ToolError::Execution(serde_json::Value)` carrier (the portable shape). ExecBash uses a `Shell` trait for testability (`BashShell` real impl plus `StubShell` test fixture) and stages full stdout/stderr to per-process tmp files. The tools are registered in `HarnessBuilder` alongside the existing `AddTool` demo. See ARCHITECTURE.md "Built-in Tools".
+**Concrete storage, trait-shaped seam.** Every pluggable subsystem follows the same shape: a concrete type owned by the engine that holds the storage, and a trait that is the read-only abstraction the rest of the engine resolves against. `Tool`/`ToolRegistry`, `ModelProvider`/`ProviderRegistry`, and `SkillsRegistrySource`/`SkillsRegistry` are the three current instances. The engine never names a concrete implementor outside the registry's own module; consumers see only the trait. This is what makes "swap one provider for another" a config change rather than a code change.
 
-**Configuration File** -- The hardcoded `HarnessBuilder` setup is replaced with file-driven configuration produced by a new `pristine-config` module. Two orthogonal files own two orthogonal concerns: an embedded `default.toml` carries topology (agents, tools, system prompts) and a user-global `~/pristine-auth.toml` carries identity (providers, model aliases, credentials). Topology files are provider-agnostic; a single auth file is shared across many topologies. `pristine-config` exposes `assemble_config` plus `load`/`load_with` orchestrators that read both files, apply `{{ENV_VAR}}` templating, deserialize into typed structs with `deny_unknown_fields`, resolve model aliases, and validate tool references. `ModelProvider` is now a noun in the type system -- a trait plus `ProviderRegistry` parallel to `Tool`/`ToolRegistry` -- with `AnthropicProvider` as the v1 impl. Loading follows parse-don't-validate: every parse, templating, and resolution failure is collected into a `ConfigErrors` aggregate and surfaced before exit, so a successful `Config` is an inert, trustworthy data struct. When `~/pristine-auth.toml` is missing the binary auto-writes a template (chmod `0o600`) and continues. The CLI gains global `-c/--config` and `--auth` flags; `--model` is removed. Engine code (`Harness`, `Agent`, `ARModel`, `Tool`, `MessageBus`) is untouched -- the split lives entirely at the `pristine-config` boundary. Multi-Model support (roadmap item 1) is the natural next piece, since `ProviderRegistry` is now shaped for it. See ARCHITECTURE.md Configuration.
+**Configuration over code.** A new topology should be a TOML file, not a recompile. Two orthogonal files own two orthogonal concerns: a topology file (agents, tools, prompts) and a per-user auth file (providers, credentials, model aliases). Topology is provider-agnostic and shareable; identity is private and per-user.
 
-**Multi-Model Support** -- Implemented the `ARModel` trait for DeepSeek V4 (`deepseek-v4-pro` / `deepseek-v4-flash`), the first provider beyond Anthropic, validating the `ARModel`/`ModelProvider` abstraction against a non-Anthropic dialect. DeepSeek speaks the OpenAI-compatible ChatCompletions wire format -- a genuinely different dialect from Anthropic's: the system prompt is a `system`-role message rather than a top-level field, tool calls carry stringified `function.arguments` with the schema nested under `function.parameters`, and tool results are separate `role: "tool"` messages. The provider plugged in at the `ProviderRegistry` seam with zero core changes; `ModelInput`/`Turn`/`ContentPart` and the `ModelStreamEvent` reasoning surface proved sufficient as-is, and the `ModelRole` indirection on Agent was untouched. Two portable-layer observations were surfaced for later (a third provider) rather than acted on at one example: `ContentPart::ToolResult.is_error` is an Anthropic-ism the adapter folds into content text, and OpenAI's separate-message tool results require the adapter to explode one `Turn` into N wire messages. See ARCHITECTURE.md "DeepSeek adapter" and "Findings: the provider seam held". A follow-on added OpenRouter as a second OpenAI-dialect provider; the shared `openai_dialect` module now backs both DeepSeek and OpenRouter, validating the `ProviderRegistry` seam a second time with zero core changes (see ARCHITECTURE.md "OpenRouter adapter").
+**Parse, don't validate.** Configuration is parsed once, all errors are collected into a single aggregate, and the resulting `Config` is an inert, trustworthy data structure. The engine never re-checks invariants the loader has already established. A successful load means the harness can be built.
+
+**Composability is a property of the traits.** Every major subsystem — Model, History, MessageBus, ContextCompiler, Tool, ModelProvider, SkillsRegistry — is a trait with at least one concrete implementation and at least one test double. New implementations plug in at the seam without changing consumer code, and tests do not require live providers, real shells, or a filesystem.
 
 ## Roadmap
 
-### 1. Skills
+Items are roughly ordered. Each lands as its own design pass in `ARCHITECTURE.md`.
 
-Support Skills as a higher-level abstraction over tool calls and prompt injection. A Skill is a composable capability that can be attached to an Agent, bundling one or more tools with associated prompt fragments and lifecycle hooks. Skills allow reusable agent capabilities to be packaged, shared, and composed without requiring callers to manually wire individual tools and prompts.
+### 1. Multi-Agent Routing
 
-Pristine intends to align with the [Agent Skills open standard](https://agentskills.io) (frontmatter-described, progressively disclosed, filesystem-discovered skill directories) so that skills authored for other compliant clients are portable into Pristine. Requirements are being captured in [`docs/skills-requirements.md`](docs/skills-requirements.md); design follow-up will live alongside it under `docs/` and ultimately land in `ARCHITECTURE.md`.
+Enable `MessageBus::route(from, to)` so completed `AgentMessage` blocks from one agent's outbound stream are forwarded to another agent's inbound stream. Receiving agents see these as `AgentMessage { from }` blocks in their history, which is what makes peer-to-peer dialogue work. This is the piece that unlocks the multi-agent scenarios the project was built for. See [ARCHITECTURE.md MessageBus](ARCHITECTURE.md#messagebus).
 
-### 2. Multi-Agent Routing
+### 2. ContextCompiler
 
-Enable the MessageBus `route(from, to)` method for inter-agent communication (see ARCHITECTURE.md MessageBus). When a route is established, completed `AgentMessage` blocks from one Agent's outbound stream are forwarded to another Agent's inbound stream. Receiving Agents see these as `AgentMessage { from }` blocks in their History, enabling peer-to-peer dialogue. This unlocks the multi-agent scenarios described in the project goals.
+Extract history-to-`ModelInput` compilation into a pluggable `ContextCompiler` trait. The agent currently linearizes its history directly; moving that behind a trait lets selective summarization, vector-store lookups, and sequence-to-sequence compilation drop in without touching the agent or the model. `ModelInput` remains the stable contract between compiler and model. See [ARCHITECTURE.md Model](ARCHITECTURE.md#model), [History](ARCHITECTURE.md#history).
 
-### 3. ContextCompiler
+### 3. Persistence
 
-Extract History-to-`ModelInput` compilation into a pluggable `ContextCompiler` trait (see ARCHITECTURE.md Model, History). The Agent currently linearizes its History directly; this phase moves that logic behind a trait so that selective summarization, vector-store lookups, and sequence-to-sequence context compilation can be plugged in without changing Agent or Model. The `ModelInput` shape remains the stable contract between compiler and model.
+History is in-memory and does not survive a process restart, which rules out long sessions, crash recovery, and offline inspection of agent traces. Persistence sits behind a trait so storage backends (local file, SQLite, remote store) swap without changing the agent or harness. The wire format for stored history should be the same `ModelInput`-adjacent shape the `ContextCompiler` consumes, so the two roadmap items compose cleanly.
 
 ### 4. DLModel
 
-Implement the `DLModel` trait for diffusion language models (see ARCHITECTURE.md Model). Where `ARModel` produces sequential token streams via next-token prediction, `DLModel` enables masked-text denoising -- filling in blanked regions of an input in parallel. This opens the door to hybrid agent strategies that combine auto-regressive completion with diffusion-based refinement.
-
-## Error Handling and Observability
-
-## Persistence
-
-History is currently in-memory and does not survive process restarts. A persistence layer will allow History to be durably stored and recovered, enabling long-lived agent sessions, crash recovery, and offline inspection of agent traces. The persistence boundary should sit behind a trait so that storage backends (local file, SQLite, remote store) can be swapped without changing the Agent or Harness.
-
-## Code style invariants
-
-These are project-wide constraints on how Rust code is laid out. They are
-enumerated here rather than scattered across review comments so they survive
-agent handoffs and so deviations are easy to point to.
-
-* **No `mod.rs` files.** Pristine uses the Rust 2018 path style throughout. A
-  submodule named `foo` is rooted at `src/foo.rs` (the module file) with its
-  submodules under `src/foo/*.rs`. There are zero `mod.rs` files in the tree
-  today, and no new ones are to be added. This applies to both library code
-  and any future binaries.
+Implement a `DLModel` trait for diffusion language models. Where `ARModel` produces sequential token streams via next-token prediction, `DLModel` denoises masked regions of an input in parallel. The point is hybrid strategies that combine auto-regressive completion with diffusion-based refinement; the engine should be able to host both without either knowing about the other. See [ARCHITECTURE.md Model](ARCHITECTURE.md#model).

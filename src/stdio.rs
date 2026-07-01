@@ -8,8 +8,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::harness::SkillsAnnouncer;
 use crate::history::{AgentId, UserId};
-use crate::messagebus::{AgentEvent, MessageBus};
-use crate::rpc::{AgentEventNotification, PristineRpcServer, RpcServerImpl};
+use crate::messagebus::{AgentEvent, AgentForked, MessageBus};
+use crate::rpc::{
+    AgentEventNotification, AgentForkedNotification, PristineRpcServer, RpcServerImpl,
+};
 
 #[derive(Debug)]
 pub enum StdioError {
@@ -91,10 +93,18 @@ pub async fn run_server(
     let module = server.into_rpc();
     let mut stdout = tokio::io::stdout();
     let mut lines = spawn_stdin_reader();
+    // Forks originate from ANY agent (tool- or human-initiated), so subscribe to
+    // the bus-wide fork broadcast and surface each event as an `agent_forked`
+    // notification. The bus is held for the lifetime of this loop, so this
+    // stream stays open; a non-matching `None` merely disables the branch.
+    let mut forks = bus.subscribe_forks();
 
     loop {
         tokio::select! {
             _ = shutdown_token.cancelled() => break,
+            Some(event) = forks.next() => {
+                write_agent_forked(&mut stdout, &event).await?;
+            }
             line = lines.recv() => {
                 let Some(text) = line else { break };
 
@@ -144,6 +154,20 @@ where
         });
         write_line(out, &jsonrpc.to_string()).await?;
     }
+    Ok(())
+}
+
+async fn write_agent_forked<W>(out: &mut W, event: &AgentForked) -> Result<(), StdioError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let notification = AgentForkedNotification::from_event(event);
+    let jsonrpc = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "agent_forked",
+        "params": notification,
+    });
+    write_line(out, &jsonrpc.to_string()).await?;
     Ok(())
 }
 
@@ -314,6 +338,32 @@ mod tests {
             "second drain must write nothing (emit-once guard), got: {buf2:?}"
         );
 
+        Ok(())
+    }
+
+    /// Exercises the fork notification write path: an [`AgentForked`] bus event
+    /// serializes to a well-formed `agent_forked` JSON-RPC notification carrying
+    /// the new agent id, the origin, and the inherited handle.
+    #[tokio::test]
+    async fn write_agent_forked_serializes_notification_over_writer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let event = AgentForked {
+            agent_id: AgentId::new(),
+            origin: AgentId::new(),
+            handle: crate::history::CheckpointHandle::genesis(),
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_agent_forked(&mut buf, &event).await?;
+
+        let notifications = parse_notifications(&buf)?;
+        let n = notifications.first().ok_or("expected one notification")?;
+        assert_eq!(n["jsonrpc"], "2.0");
+        assert_eq!(n["method"], "agent_forked");
+        assert!(n.get("id").is_none(), "notification must not carry an id");
+        assert_eq!(n["params"]["agent_id"], event.agent_id.to_string());
+        assert_eq!(n["params"]["origin"], event.origin.to_string());
+        assert_eq!(n["params"]["handle"], event.handle.to_string());
         Ok(())
     }
 }

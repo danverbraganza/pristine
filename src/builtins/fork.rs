@@ -32,6 +32,7 @@ struct ForkInput {
 pub(crate) enum ForkError {
     InvalidHandle { handle: String, reason: String },
     UnknownTool { name: String },
+    DuplicateTool { name: String },
     NoModel,
     SpawnFailed { reason: String },
 }
@@ -43,6 +44,7 @@ impl std::fmt::Display for ForkError {
                 write!(f, "invalid fork handle {handle}: {reason}")
             }
             ForkError::UnknownTool { name } => write!(f, "unknown tool: {name}"),
+            ForkError::DuplicateTool { name } => write!(f, "duplicate tool: {name}"),
             ForkError::NoModel => write!(f, "no default model to fork"),
             ForkError::SpawnFailed { reason } => write!(f, "fork spawn failed: {reason}"),
         }
@@ -109,9 +111,7 @@ pub(crate) fn fork_from_context(
                     .ok_or_else(|| ForkError::UnknownTool { name: name.clone() })?;
                 narrowed
                     .register(tool)
-                    .map_err(|e| ForkError::SpawnFailed {
-                        reason: e.to_string(),
-                    })?;
+                    .map_err(|_| ForkError::DuplicateTool { name: name.clone() })?;
             }
             Arc::new(narrowed)
         }
@@ -503,6 +503,34 @@ mod tests {
         assert!(
             spawner.specs().is_empty(),
             "no agent may be spawned when a requested tool is unknown",
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_tool_name_errors_and_spawns_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut parent_tools = ToolRegistry::new();
+        parent_tools.register(Arc::new(EchoTool::new("echo-a")))?;
+
+        let spawner = Arc::new(RecordingSpawner::new());
+        let ctx = context(None, Arc::new(parent_tools), spawner.clone());
+        let tool = Fork::new();
+
+        let err = tool
+            .call_with_context(
+                json!({ "instruction": "go", "tools": ["echo-a", "echo-a"] }),
+                &ctx,
+            )
+            .await
+            .expect_err("a duplicated tool name must error");
+
+        let value = execution_value(err)?;
+        assert_eq!(value["kind"], "duplicate_tool");
+        assert_eq!(value["name"], "echo-a");
+        assert!(
+            spawner.specs().is_empty(),
+            "no agent may be spawned when a requested tool is duplicated",
         );
         Ok(())
     }

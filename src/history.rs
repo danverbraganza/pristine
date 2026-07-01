@@ -262,24 +262,24 @@ impl History {
         Err(HandleError::Unknown(*handle))
     }
 
+    /// Linearize in root-first order, dropping each node's checkpoint handle.
+    ///
+    /// This is a thin projection over [`linearize_with_handles`](Self::linearize_with_handles):
+    /// the single parent-chain traversal lives there, and this method discards
+    /// the [`CheckpointHandle`] paired with each block.
     pub fn linearize(&self) -> Vec<Block> {
-        let mut out = Vec::new();
-        let mut cursor = self.head.as_ref().cloned();
-        while let Some(node) = cursor {
-            out.push(node.block().clone());
-            cursor = node.parent().cloned();
-        }
-        out.reverse();
-        out
+        self.linearize_with_handles()
+            .into_iter()
+            .map(|(_, block)| block)
+            .collect()
     }
 
     /// Linearize in root-first order, pairing each block with the checkpoint
     /// handle of the node that carries it.
     ///
-    /// This mirrors [`linearize`](Self::linearize) but retains each node's
-    /// [`CheckpointHandle`] so compile-time consumers can render a handle
-    /// against a block without a second traversal. `NodeId` is otherwise
-    /// dropped by `linearize`.
+    /// Consumers that only need the blocks can use
+    /// [`linearize`](Self::linearize), which projects away the
+    /// [`CheckpointHandle`] retained here.
     pub fn linearize_with_handles(&self) -> Vec<(CheckpointHandle, Block)> {
         let mut out = Vec::new();
         let mut cursor = self.head.as_ref().cloned();

@@ -252,6 +252,12 @@ stream for the duration of the resulting model run. Explicit `subscribe` /
 `unsubscribe` methods may be added in the future for clients that want to
 observe Agents they did not message directly.
 
+A distinct `agent_forked` notification announces a newly forked peer Agent,
+carrying `{agent_id, origin, handle}`. Unlike `agent.event`, it is not keyed to
+a single subscribed Agent: forks originate from any Agent on the bus (whether a
+tool-initiated fork or a human `fork_agent` request), so the transport
+subscribes to the bus-wide fork broadcast and surfaces every one. See §Forking.
+
 #### Methods
 
 The initial method surface is deliberately small. Adding methods is cheap: each
@@ -264,6 +270,10 @@ generates all dispatch, deserialization, and error-handling code.
 - `send_message(agent_id, content)` — wraps `Harness::send_to_agent`. Returns
   acknowledgement. Implicitly subscribes the caller to `agent.event`
   notifications for that Agent.
+- `fork_agent(agent_id, instruction, handle?, tools?)` — the human fork path.
+  Routes a `Control::Fork` request THROUGH the named Agent rather than spawning
+  directly; the new peer's id is not returned synchronously but surfaces on the
+  `agent_forked` notification. See §Forking.
 - `shutdown` — triggers graceful Harness shutdown.
 
 #### Implementation
@@ -567,6 +577,123 @@ stream lives on disk. The tmp directory is created lazily on first
 ExecBash invocation and removed at harness shutdown. This staging is
 forward-compat for a future Read-by-id tool that fetches full output
 by execution_id (out of scope this cycle).
+
+## Forking
+
+Forking lets an initiator — an agent via the Fork tool, or a human via the
+`fork_agent` JSON-RPC method — spawn a peer Agent seeded from the initiator's
+live runtime state. The peer inherits all aspects of its parent (system prompt,
+model assignment, tool set) except where explicitly narrowed, plus a bounded
+slice of the parent's history. How much history the fork inherits is a slider
+the initiator controls, addressed through checkpoint handles.
+
+### Checkpoint handles
+
+A `CheckpointHandle` (`src/history.rs`) is a stable, model-safe reference to a
+point in a `History`, derived from a node's immutable `NodeId`. Its string form
+is `ckpt-<uuid>` via `Display`/`FromStr`. Handles name **tool-call
+boundaries**: when History is compiled into a `ModelInput`, the Agent appends a
+harness-attributed `[pristine checkpoint] ckpt-<uuid>` line to each rendered
+tool-result content (`annotate_tool_result_content` in `src/agent.rs`). The
+line is injected at compile time only — the stored `Block::ToolResult` is never
+mutated — so the model can name a past tool-call boundary when forking without
+the handle polluting the durable log.
+
+The reserved **genesis handle**, `CheckpointHandle::genesis()` wrapping
+`NodeId::nil()`, is the one always-available handle that is not a tool-call
+boundary. It is a **virtual sentinel**: `History::resolve` short-circuits it to
+`Ok(None)` — the empty prefix — regardless of history state, so no physical
+root node is ever stored. Every other handle resolves by walking the head's
+parent chain; an unmatched one yields `HandleError::Unknown`, and a
+non-`ckpt-` string yields `HandleError::Malformed` on parse.
+
+### The Handle slider
+
+The Fork tool's optional `handle` parameter is a continuous slider between full
+and partial context:
+
+- **Omitted** → the fork inherits the full prior context (the caller's live
+  history head).
+- **Genesis** (`nil`) → the fork inherits nothing — a pure subagent.
+- **A boundary handle** → the fork inherits the prefix up to and including that
+  node, dropping later blocks. Because prefixes are shared via `Arc`
+  (`History::from_prefix`), the inherited slice costs no copy.
+- **Invalid** (malformed or unknown) → an error, and nothing is spawned.
+
+Omitting the handle is deliberately distinct from supplying genesis: the former
+is a full fork, the latter a context-free subagent.
+
+### The `AgentSpawner` / `Nursery` seam
+
+Runtime agent spawning is factored out of `Harness::start` behind the
+`AgentSpawner` trait (`src/harness.rs`), following the engine's
+concrete-type-plus-trait shape (`Tool`/`ToolRegistry`,
+`ModelProvider`/`ProviderRegistry`). `Nursery` is the Harness-owned concrete
+implementor; its `build_and_track` routine is the single spawn path shared by
+build-time draining of `PendingAgent`s and runtime `spawn` calls. Every spawned
+Agent registers with the shared bus, observes a **per-agent child cancellation
+token** derived from the Harness's root token, and has its `JoinHandle`
+tracked. `Nursery::stop(agent_id)` cancels one child token, terminating a single
+Agent while siblings run; the root token (fired by `Harness::shutdown`) cancels
+all children at once.
+
+An `AgentSpec` carries everything the Nursery needs to spawn a peer: the system
+prompt, model, tool set, optional `history_prefix` head, optional initial
+`instruction` block, and — when the spec is a fork — the `origin` Agent and
+`forked_from` handle. On a fork spawn the Nursery emits an `AgentForked` event
+on the bus's fork broadcast; a plain runtime spawn leaves `origin`/`forked_from`
+`None` and emits nothing.
+
+### The `ToolCallContext` seam
+
+Agent-aware tools reach the calling Agent's live state through an additive
+`Tool::call_with_context(input, ctx)` path (`src/tool.rs`), which defaults to
+forwarding to `call`, so context-free tools need no changes. The Agent
+assembles a `ToolCallContext` at each dispatch, exposing the caller's identity,
+current `History` head, `SystemPrompt`, model assignment, tool set, an
+`AgentSpawner` for creating peers, and a self-stop child token (`stop()`).
+Agents built outside a running Harness receive a `DisconnectedSpawner` whose
+`spawn` returns a clear error rather than panicking.
+
+### Fork and Exit built-in tools
+
+Both are config-gated: registered only when the topology declares `[tools.fork]`
+/ `[tools.exit]`, through the builtin dispatch table in `src/lib.rs`.
+
+`Fork` (`src/builtins/fork.rs`) takes `{instruction, handle?, tools?}`. Its
+`call` rejects invocation without a context; `call_with_context` delegates to
+the shared `fork_from_context` helper, which resolves the handle against the
+caller's head, narrows the tool set to the named subset (unknown names error and
+spawn nothing), inherits the parent's system prompt and `Default` model, seeds
+`instruction` as a `Block::UserMessage`, and spawns via the context's spawner.
+It returns `{agent_id, handle}`, where `handle` is the boundary the fork
+inherited up to.
+
+`Exit` (`src/builtins/exit.rs`) takes no parameters. `call_with_context` calls
+`ctx.stop()`, cancelling the calling Agent's per-agent child token so only that
+Agent terminates — siblings and the harness keep running — and returns
+`{status: "exiting"}`.
+
+### The human path
+
+Humans do not spawn peers directly; a fork is routed **through** the target
+Agent so it resolves against that Agent's own live context, exactly as a
+tool-initiated fork does. The `fork_agent` JSON-RPC method (`src/rpc.rs`)
+translates its params into a `Control::Fork(ForkRequest)` and delivers it on the
+target Agent's out-of-band control stream (`send_control`,
+`src/messagebus.rs`) — separate from the `Block` inbound stream, so it drives no
+model turn for the request itself. The Agent's run loop merges control and block
+inbounds into one `Inbound` stream and dispatches `Control::Fork` to
+`handle_control`, which builds a `ToolCallContext` from its live fields and calls
+the same `fork_from_context` helper; an invalid request surfaces as an
+`AgentEvent::Error`.
+
+Whichever path forks, the `Nursery` publishes a single `AgentForked` on the
+bus-wide fork broadcast. The stdio transport subscribes to that broadcast
+(`subscribe_forks`) and surfaces each as an `agent_forked` notification
+(`AgentForkedNotification`, `{agent_id, origin, handle}`), so the human path's
+`fork_agent` call — which returns only an acknowledgement — learns the new
+peer's id asynchronously.
 
 ## Configuration
 

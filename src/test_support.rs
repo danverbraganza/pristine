@@ -29,6 +29,10 @@ use futures::Stream;
 use futures::stream;
 
 #[cfg(test)]
+use crate::harness::{AgentSpawner, AgentSpec, Error as HarnessError};
+#[cfg(test)]
+use crate::history::AgentId;
+#[cfg(test)]
 use crate::model::{self, ARModel, ModelInput, ModelStreamEvent};
 #[cfg(test)]
 use crate::shell::{Shell, ShellError, ShellOutput};
@@ -152,6 +156,37 @@ impl crate::tool::Tool for EchoTool {
         input: serde_json::Value,
     ) -> Result<serde_json::Value, crate::tool::ToolError> {
         Ok(serde_json::json!({ "echo": input }))
+    }
+}
+
+/// Test [`AgentSpawner`] that records every spawned [`AgentSpec`] and hands back
+/// a fresh id, so tests can assert on what a fork built and confirm a spawn did
+/// (or did not) occur without a running Harness.
+#[cfg(test)]
+pub(crate) struct RecordingSpawner {
+    specs: Mutex<Vec<AgentSpec>>,
+}
+
+#[cfg(test)]
+impl RecordingSpawner {
+    pub fn new() -> Self {
+        Self {
+            specs: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The recorded specs, in spawn order.
+    pub fn specs(&self) -> std::sync::MutexGuard<'_, Vec<AgentSpec>> {
+        self.specs.lock().expect("spec lock")
+    }
+}
+
+#[cfg(test)]
+impl AgentSpawner for RecordingSpawner {
+    fn spawn(&self, spec: AgentSpec) -> Result<AgentId, HarnessError> {
+        let id = AgentId::new();
+        self.specs.lock().expect("spec lock").push(spec);
+        Ok(id)
     }
 }
 

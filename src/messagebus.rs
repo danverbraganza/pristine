@@ -8,7 +8,7 @@ use futures::stream::BoxStream;
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
-use crate::history::{AgentId, Block, HistoryNode};
+use crate::history::{AgentId, Block, CheckpointHandle, HistoryNode};
 use crate::model::Usage;
 
 #[derive(Clone, Debug)]
@@ -33,6 +33,46 @@ pub enum AgentEvent {
     /// Emitted once after the agent finishes processing one inbound Block.
     /// Subscribers use this as the "agent ready for next input" signal.
     Idle,
+}
+
+/// A control message delivered to a running Agent out-of-band from its `Block`
+/// inbound stream. Control messages drive the Agent without contributing a
+/// `Block` to History or triggering a model turn for the request itself; they
+/// layer alongside the append-only `Block` vocabulary rather than extending it.
+#[derive(Clone, Debug)]
+pub enum Control {
+    /// Ask the Agent to fork itself using its own live runtime context. The
+    /// Agent resolves this against the same inputs it assembles at tool
+    /// dispatch and spawns a peer via the shared fork logic.
+    Fork(ForkRequest),
+}
+
+/// Parameters for an inbound fork-control request, mirroring the Fork tool's
+/// parameters so both paths reuse the same fork logic.
+#[derive(Clone, Debug)]
+pub struct ForkRequest {
+    /// The immediate next instruction seeded as the fork's first inbound
+    /// message.
+    pub instruction: String,
+    /// Optional checkpoint handle bounding the inherited history prefix. Omitted
+    /// inherits the full prior context; the genesis handle inherits none.
+    pub handle: Option<String>,
+    /// Optional subset of the parent's tools to narrow the fork to. Omitted
+    /// inherits all of the parent's tools.
+    pub tools: Option<Vec<String>>,
+}
+
+/// A fork-spawned event emitted on the bus whenever a peer Agent is forked,
+/// covering both tool-initiated and control-path forks. This is the internal
+/// signal a transport surfaces as an `agent_forked` notification.
+#[derive(Clone, Copy, Debug)]
+pub struct AgentForked {
+    /// The freshly spawned peer Agent's id.
+    pub agent_id: AgentId,
+    /// The originating Agent that forked.
+    pub origin: AgentId,
+    /// The checkpoint handle the fork inherited history up to and including.
+    pub handle: CheckpointHandle,
 }
 
 #[derive(Debug)]
@@ -73,6 +113,21 @@ pub trait MessageBus: Send + Sync {
     /// Push a `Block` onto the named Agent's inbound stream.
     fn send_inbound(&self, agent_id: AgentId, block: Block) -> Result<(), Error>;
 
+    /// Obtain the named Agent's out-of-band control stream. Control messages
+    /// arrive here rather than on the `Block` inbound stream, so `Block`
+    /// delivery is unaffected.
+    fn control_stream(&self, agent_id: AgentId) -> Result<BoxStream<'static, Control>, Error>;
+
+    /// Push a [`Control`] message onto the named Agent's control stream.
+    fn send_control(&self, agent_id: AgentId, control: Control) -> Result<(), Error>;
+
+    /// Broadcast an [`AgentForked`] event to every fork subscriber.
+    fn publish_fork(&self, event: AgentForked) -> Result<(), Error>;
+
+    /// Subscribe to [`AgentForked`] events across the bus. Multi-subscriber;
+    /// each call returns a fresh stream observing events from the call site onward.
+    fn subscribe_forks(&self) -> BoxStream<'static, AgentForked>;
+
     /// Route `AgentMessage` Blocks from `from`'s outbound stream to `to`'s inbound stream.
     /// Spawns an internal task. Other event variants are observed but not forwarded.
     fn route(&self, from: AgentId, to: AgentId) -> Result<(), Error>;
@@ -85,16 +140,20 @@ const INBOUND_CAPACITY: usize = 64;
 struct AgentEntry {
     outbound: broadcast::Sender<AgentEvent>,
     inbound_sender: mpsc::Sender<Block>,
+    control: broadcast::Sender<Control>,
 }
 
 pub struct InMemoryMessageBus {
     entries: Mutex<HashMap<AgentId, AgentEntry>>,
+    forks: broadcast::Sender<AgentForked>,
 }
 
 impl InMemoryMessageBus {
     pub fn new() -> Self {
+        let (forks, _forks_rx) = broadcast::channel(OUTBOUND_CAPACITY);
         Self {
             entries: Mutex::new(HashMap::new()),
+            forks,
         }
     }
 
@@ -109,6 +168,13 @@ impl InMemoryMessageBus {
         let map = self.entries.lock().map_err(|_| Error::Closed)?;
         map.get(&agent_id)
             .map(|e| e.inbound_sender.clone())
+            .ok_or(Error::UnknownAgent(agent_id))
+    }
+
+    fn control_sender(&self, agent_id: AgentId) -> Result<broadcast::Sender<Control>, Error> {
+        let map = self.entries.lock().map_err(|_| Error::Closed)?;
+        map.get(&agent_id)
+            .map(|e| e.control.clone())
             .ok_or(Error::UnknownAgent(agent_id))
     }
 
@@ -136,11 +202,13 @@ impl MessageBus for InMemoryMessageBus {
         }
         let (outbound_tx, _outbound_rx) = broadcast::channel(OUTBOUND_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_CAPACITY);
+        let (control_tx, _control_rx) = broadcast::channel(INBOUND_CAPACITY);
         map.insert(
             agent_id,
             AgentEntry {
                 outbound: outbound_tx,
                 inbound_sender: inbound_tx,
+                control: control_tx,
             },
         );
         Ok(Box::pin(ReceiverStream::new(inbound_rx)))
@@ -163,6 +231,33 @@ impl MessageBus for InMemoryMessageBus {
     fn send_inbound(&self, agent_id: AgentId, block: Block) -> Result<(), Error> {
         let sender = self.inbound_sender(agent_id)?;
         sender.try_send(block).map_err(|_| Error::Closed)
+    }
+
+    fn control_stream(&self, agent_id: AgentId) -> Result<BoxStream<'static, Control>, Error> {
+        let sender = self.control_sender(agent_id)?;
+        let stream =
+            BroadcastStream::new(sender.subscribe()).filter_map(|res| async move { res.ok() });
+        Ok(Box::pin(stream))
+    }
+
+    fn send_control(&self, agent_id: AgentId, control: Control) -> Result<(), Error> {
+        let sender = self.control_sender(agent_id)?;
+        // Broadcast send errors only when there are zero receivers; the Agent
+        // subscribes at build time, and the channel is lossy by design.
+        let _ = sender.send(control);
+        Ok(())
+    }
+
+    fn publish_fork(&self, event: AgentForked) -> Result<(), Error> {
+        // Lossy by design: a fork event is dropped only when no one is watching.
+        let _ = self.forks.send(event);
+        Ok(())
+    }
+
+    fn subscribe_forks(&self) -> BoxStream<'static, AgentForked> {
+        let stream =
+            BroadcastStream::new(self.forks.subscribe()).filter_map(|res| async move { res.ok() });
+        Box::pin(stream)
     }
 
     fn route(&self, from: AgentId, to: AgentId) -> Result<(), Error> {

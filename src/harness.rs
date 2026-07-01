@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent::{AgentBuilder, SystemPrompt};
-use crate::history::{AgentId, Block, HistoryNode};
-use crate::messagebus::{AgentEvent, InMemoryMessageBus, MessageBus};
+use crate::history::{AgentId, Block, CheckpointHandle, HistoryNode};
+use crate::messagebus::{AgentEvent, AgentForked, InMemoryMessageBus, MessageBus};
 use crate::model::{ARModel, ModelRole};
 use crate::provider::{ModelProvider, ProviderError, ProviderRegistry};
 use crate::rpc::{SkillsLoadedNotification, SkillsNotification};
@@ -175,6 +175,14 @@ pub struct AgentSpec {
     pub tools: Arc<ToolRegistry>,
     pub history_prefix: Option<Arc<HistoryNode>>,
     pub instruction: Option<Block>,
+    /// The originating Agent when this spec is a fork, else `None`. Paired with
+    /// [`forked_from`](AgentSpec::forked_from), it drives the spawner path's
+    /// uniform agent-forked event; a plain (non-fork) runtime spawn leaves both
+    /// `None` and emits nothing.
+    pub origin: Option<AgentId>,
+    /// The checkpoint handle the fork inherited history up to, when this spec is
+    /// a fork.
+    pub forked_from: Option<CheckpointHandle>,
 }
 
 /// Read-only seam for spawning an Agent at runtime.
@@ -301,6 +309,8 @@ impl Nursery {
 impl AgentSpawner for Nursery {
     fn spawn(&self, spec: AgentSpec) -> Result<AgentId, Error> {
         let agent_id = AgentId::new();
+        let origin = spec.origin;
+        let forked_from = spec.forked_from;
         self.build_and_track(
             agent_id,
             spec.system_prompt,
@@ -310,6 +320,15 @@ impl AgentSpawner for Nursery {
         )?;
         if let Some(block) = spec.instruction {
             self.bus.send_inbound(agent_id, block)?;
+        }
+        // A fork carries both its origin and inherited handle; emit the uniform
+        // agent-forked event so tool- and control-path forks surface alike.
+        if let (Some(origin), Some(handle)) = (origin, forked_from) {
+            let _ = self.bus.publish_fork(AgentForked {
+                agent_id,
+                origin,
+                handle,
+            });
         }
         Ok(agent_id)
     }
@@ -1015,6 +1034,8 @@ mod tests {
                     content: "do the thing".to_string(),
                     timestamp: SystemTime::now(),
                 }),
+                origin: None,
+                forked_from: None,
             })
             .expect("spawn runtime agent");
 
@@ -1062,6 +1083,50 @@ mod tests {
         );
 
         // shutdown + join must collect the runtime-spawned agent too.
+        harness.shutdown();
+        timeout(Duration::from_secs(5), harness.join())
+            .await
+            .expect("join timed out")
+            .expect("clean shutdown");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn spawner_emits_agent_forked_event_on_fork() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::history::{CheckpointHandle, NodeId};
+
+        let (mut harness, origin_id, _model_id) = build_harness_with_one_agent();
+        harness.start().expect("start");
+
+        // Subscribe before spawning so the broadcast event is observed.
+        let mut forks = harness.bus().subscribe_forks();
+
+        let forked_from = CheckpointHandle::from_node_id(NodeId::new());
+        let model = Arc::new(StubArModel::empty());
+        let spawned = harness
+            .spawner()
+            .spawn(AgentSpec {
+                system_prompt: prompt("forked"),
+                model,
+                tools: harness.tools().clone(),
+                history_prefix: None,
+                instruction: None,
+                origin: Some(origin_id),
+                forked_from: Some(forked_from),
+            })
+            .expect("spawn fork");
+
+        let event = timeout(Duration::from_secs(2), forks.next())
+            .await
+            .expect("fork event timed out")
+            .expect("fork stream closed");
+        assert_eq!(event.agent_id, spawned, "event names the new peer");
+        assert_eq!(event.origin, origin_id, "event names the originating agent");
+        assert_eq!(
+            event.handle, forked_from,
+            "event carries the forked-from handle"
+        );
+
         harness.shutdown();
         timeout(Duration::from_secs(5), harness.join())
             .await

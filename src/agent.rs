@@ -8,10 +8,11 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio_util::sync::CancellationToken;
 
+use crate::builtins::fork::fork_from_context;
 use crate::harness::{AgentSpawner, DisconnectedSpawner};
 pub use crate::history::AgentId;
 use crate::history::{Block, CheckpointHandle, History, HistoryNode};
-use crate::messagebus::{self, AgentEvent, MessageBus};
+use crate::messagebus::{self, AgentEvent, Control, MessageBus};
 use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
     Usage,
@@ -96,6 +97,14 @@ impl std::fmt::Debug for SystemPrompt {
     }
 }
 
+/// A unified inbound item for the Agent's run loop, merging the `Block` inbound
+/// stream with the out-of-band control stream. `Block`s flow through the normal
+/// model cycle; `Control` messages drive the Agent without a model turn.
+enum Inbound {
+    Block(Block),
+    Control(Control),
+}
+
 #[derive(Debug)]
 pub enum Error {
     Configuration(String),
@@ -142,7 +151,7 @@ pub struct Agent {
     system_prompt: SystemPrompt,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     history: History,
-    inbound: BoxStream<'static, Block>,
+    inbound: BoxStream<'static, Inbound>,
     bus: Arc<dyn MessageBus>,
     tools: Arc<ToolRegistry>,
     spawner: Arc<dyn AgentSpawner>,
@@ -232,7 +241,14 @@ impl AgentBuilder {
                 "default model is required".to_string(),
             ));
         }
-        let inbound = bus.register(id)?;
+        let blocks = bus.register(id)?;
+        let control = bus.control_stream(id)?;
+        // Merge the Block inbound and control streams into one so the run loop
+        // serializes over both; either stream closing narrows the merge, and
+        // both closing ends it.
+        let inbound =
+            futures::stream::select(blocks.map(Inbound::Block), control.map(Inbound::Control))
+                .boxed();
         let tools = self.tools.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
         let spawner = self
             .spawner
@@ -267,8 +283,46 @@ impl Agent {
         &self.tools
     }
 
+    /// Handle an out-of-band control message. Control messages drive the Agent
+    /// without appending a `Block` or triggering a model turn for the request
+    /// itself. A fork request is resolved against the same runtime context the
+    /// Agent assembles at tool dispatch and delegated to the shared fork logic;
+    /// a malformed/invalid request surfaces as an error event and spawns nothing.
+    fn handle_control(&self, control: Control) {
+        match control {
+            Control::Fork(request) => {
+                let ctx = ToolCallContext::new(
+                    self.id,
+                    self.history.head().cloned(),
+                    self.system_prompt.clone(),
+                    self.models.clone(),
+                    self.tools.clone(),
+                    self.spawner.clone(),
+                    self.stop_token.clone(),
+                );
+                if let Err(err) =
+                    fork_from_context(&ctx, request.instruction, request.handle, request.tools)
+                {
+                    let _ = self.bus.publish(
+                        self.id,
+                        AgentEvent::Error {
+                            message: err.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     pub async fn run(mut self) -> Result<(), Error> {
-        while let Some(block) = self.inbound.next().await {
+        while let Some(inbound) = self.inbound.next().await {
+            let block = match inbound {
+                Inbound::Control(control) => {
+                    self.handle_control(control);
+                    continue;
+                }
+                Inbound::Block(block) => block,
+            };
             let inbound_node = self.history.append(block);
             let _ = self.bus.publish(
                 self.id,
@@ -1615,5 +1669,82 @@ mod tests {
             "did not expect an Assistant turn with empty Text; turns: {:?}",
             input.turns
         );
+    }
+
+    #[tokio::test]
+    async fn fork_request_control_spawns_peer_without_model_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::messagebus::{Control, ForkRequest};
+        use crate::test_support::RecordingSpawner;
+
+        // Seed the parent with a history prefix so the fork inherits it.
+        let mut prefix = History::new();
+        let head = prefix.append(user_block("seeded context"));
+
+        let model = Arc::new(StubArModel::empty());
+        let captured = model.clone();
+        let spawner = Arc::new(RecordingSpawner::new());
+
+        let agent_id = AgentId::new();
+        let bus = Arc::new(InMemoryMessageBus::new());
+        let agent = AgentBuilder::new()
+            .id(agent_id)
+            .system_prompt(SystemPrompt {
+                base: "parent".to_string(),
+                skills: None,
+            })
+            .model(ModelRole::Default, model as Arc<dyn ARModel>)
+            .history_prefix(Some(head.clone()))
+            .spawner(spawner.clone())
+            .build(bus.clone() as Arc<dyn MessageBus>)
+            .expect("build agent");
+
+        let handle = tokio::spawn(agent.run());
+
+        bus.send_control(
+            agent_id,
+            Control::Fork(ForkRequest {
+                instruction: "do it".to_string(),
+                handle: None,
+                tools: None,
+            }),
+        )
+        .expect("send control");
+
+        // Closing inbound ends the run loop after the buffered control message
+        // drains, so join is a deterministic barrier for the fork having run.
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let specs = spawner.specs();
+        assert_eq!(specs.len(), 1, "one peer must be spawned");
+        let prefix_head = specs[0]
+            .history_prefix
+            .as_ref()
+            .ok_or("omitted handle inherits the full prefix")?;
+        assert_eq!(
+            prefix_head.id(),
+            head.id(),
+            "fork inherits the parent's live head",
+        );
+        match &specs[0].instruction {
+            Some(Block::UserMessage { content, .. }) => assert_eq!(content, "do it"),
+            other => return Err(format!("expected a seeded instruction, got {other:?}").into()),
+        }
+        assert_eq!(
+            specs[0].origin,
+            Some(agent_id),
+            "fork records its originating agent",
+        );
+
+        assert!(
+            captured.last_input().is_none(),
+            "the fork request must not trigger a model turn on the parent",
+        );
+        Ok(())
     }
 }

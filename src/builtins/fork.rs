@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 
 use crate::harness::AgentSpec;
-use crate::history::{Block, CheckpointHandle, History, UserId};
+use crate::history::{AgentId, Block, CheckpointHandle, History, UserId};
 use crate::model::ModelRole;
 use crate::tool::{Tool, ToolCallContext, ToolError, ToolRegistry, execution_err};
 
@@ -22,13 +22,133 @@ struct ForkInput {
     tools: Option<Vec<String>>,
 }
 
-#[derive(serde::Serialize)]
+/// Typed failure modes shared by the Fork tool and the agent control path.
+///
+/// Serializes as a `kind`-tagged JSON object, so the Fork tool routes it
+/// through the [`execution_err`] carrier unchanged, and the control path can
+/// render it into an error event.
+#[derive(Debug, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum ForkError {
+pub(crate) enum ForkError {
     InvalidHandle { handle: String, reason: String },
     UnknownTool { name: String },
     NoModel,
     SpawnFailed { reason: String },
+}
+
+impl std::fmt::Display for ForkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ForkError::InvalidHandle { handle, reason } => {
+                write!(f, "invalid fork handle {handle}: {reason}")
+            }
+            ForkError::UnknownTool { name } => write!(f, "unknown tool: {name}"),
+            ForkError::NoModel => write!(f, "no default model to fork"),
+            ForkError::SpawnFailed { reason } => write!(f, "fork spawn failed: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for ForkError {}
+
+/// Successful outcome of a fork: the spawned peer's id and the checkpoint handle
+/// the fork inherited history up to and including.
+pub(crate) struct ForkOutcome {
+    pub agent_id: AgentId,
+    pub handle: CheckpointHandle,
+}
+
+/// Core fork logic shared by the Fork tool and the agent control path.
+///
+/// Resolves the optional history handle against the caller's live head
+/// (omitted inherits the full prefix, genesis inherits none, invalid surfaces
+/// as [`ForkError::InvalidHandle`]), narrows the tool set to the requested
+/// subset if any, constructs an [`AgentSpec`] inheriting the caller's system
+/// prompt and default model, and spawns the peer. The spawn carries the
+/// originating agent and the inherited handle so the spawner path can emit a
+/// uniform agent-forked event.
+pub(crate) fn fork_from_context(
+    ctx: &ToolCallContext,
+    instruction: String,
+    handle: Option<String>,
+    tools: Option<Vec<String>>,
+) -> Result<ForkOutcome, ForkError> {
+    let (history_prefix, fork_handle) = match &handle {
+        None => {
+            let head = ctx.history_head().cloned();
+            let handle = head
+                .as_ref()
+                .map(|node| node.checkpoint_handle())
+                .unwrap_or_else(CheckpointHandle::genesis);
+            (head, handle)
+        }
+        Some(raw) => {
+            let handle = CheckpointHandle::from_str(raw).map_err(|e| ForkError::InvalidHandle {
+                handle: raw.clone(),
+                reason: e.to_string(),
+            })?;
+            let history = History::from_prefix(ctx.history_head().cloned());
+            let resolved = history
+                .resolve(&handle)
+                .map_err(|e| ForkError::InvalidHandle {
+                    handle: raw.clone(),
+                    reason: e.to_string(),
+                })?;
+            (resolved, handle)
+        }
+    };
+
+    let tools = match &tools {
+        None => ctx.tools().clone(),
+        Some(names) => {
+            let mut narrowed = ToolRegistry::new();
+            for name in names {
+                let tool = ctx
+                    .tools()
+                    .get(name)
+                    .ok_or_else(|| ForkError::UnknownTool { name: name.clone() })?;
+                narrowed
+                    .register(tool)
+                    .map_err(|e| ForkError::SpawnFailed {
+                        reason: e.to_string(),
+                    })?;
+            }
+            Arc::new(narrowed)
+        }
+    };
+
+    let model = ctx
+        .model(ModelRole::Default)
+        .ok_or(ForkError::NoModel)?
+        .clone();
+
+    let instruction = Block::UserMessage {
+        from: UserId::new(),
+        content: instruction,
+        timestamp: SystemTime::now(),
+    };
+
+    let spec = AgentSpec {
+        origin: Some(ctx.agent_id()),
+        forked_from: Some(fork_handle),
+        system_prompt: ctx.system_prompt().clone(),
+        model,
+        tools,
+        history_prefix,
+        instruction: Some(instruction),
+    };
+
+    let agent_id = ctx
+        .spawner()
+        .spawn(spec)
+        .map_err(|e| ForkError::SpawnFailed {
+            reason: e.to_string(),
+        })?;
+
+    Ok(ForkOutcome {
+        agent_id,
+        handle: fork_handle,
+    })
 }
 
 pub struct Fork {
@@ -99,124 +219,27 @@ impl Tool for Fork {
             ))
         })?;
 
-        let (history_prefix, fork_handle) = match &parsed.handle {
-            None => {
-                let head = ctx.history_head().cloned();
-                let handle = head
-                    .as_ref()
-                    .map(|node| node.checkpoint_handle())
-                    .unwrap_or_else(CheckpointHandle::genesis);
-                (head, handle)
-            }
-            Some(raw) => {
-                let handle = CheckpointHandle::from_str(raw).map_err(|e| {
-                    execution_err(ForkError::InvalidHandle {
-                        handle: raw.clone(),
-                        reason: e.to_string(),
-                    })
-                })?;
-                let history = History::from_prefix(ctx.history_head().cloned());
-                let resolved = history.resolve(&handle).map_err(|e| {
-                    execution_err(ForkError::InvalidHandle {
-                        handle: raw.clone(),
-                        reason: e.to_string(),
-                    })
-                })?;
-                (resolved, handle)
-            }
-        };
-
-        let tools = match &parsed.tools {
-            None => ctx.tools().clone(),
-            Some(names) => {
-                let mut narrowed = ToolRegistry::new();
-                for name in names {
-                    let tool = ctx.tools().get(name).ok_or_else(|| {
-                        execution_err(ForkError::UnknownTool { name: name.clone() })
-                    })?;
-                    narrowed.register(tool).map_err(execution_err_from_tool)?;
-                }
-                Arc::new(narrowed)
-            }
-        };
-
-        let model = ctx
-            .model(ModelRole::Default)
-            .ok_or_else(|| execution_err(ForkError::NoModel))?
-            .clone();
-
-        let instruction = Block::UserMessage {
-            from: UserId::new(),
-            content: parsed.instruction,
-            timestamp: SystemTime::now(),
-        };
-
-        let spec = AgentSpec {
-            system_prompt: ctx.system_prompt().clone(),
-            model,
-            tools,
-            history_prefix,
-            instruction: Some(instruction),
-        };
-
-        let agent_id = ctx.spawner().spawn(spec).map_err(|e| {
-            execution_err(ForkError::SpawnFailed {
-                reason: e.to_string(),
-            })
-        })?;
+        let outcome = fork_from_context(ctx, parsed.instruction, parsed.handle, parsed.tools)
+            .map_err(execution_err)?;
 
         Ok(json!({
-            "agent_id": agent_id.to_string(),
-            "handle": fork_handle.to_string(),
+            "agent_id": outcome.agent_id.to_string(),
+            "handle": outcome.handle.to_string(),
         }))
     }
-}
-
-/// Map a `ToolError` surfaced while building the narrowed registry into the
-/// Fork dialect. A duplicate name in the requested subset is the only realistic
-/// case; it is reported through the shared execution carrier.
-fn execution_err_from_tool(err: ToolError) -> ToolError {
-    execution_err(ForkError::SpawnFailed {
-        reason: err.to_string(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::Mutex;
 
     use tokio_util::sync::CancellationToken;
 
     use crate::agent::SystemPrompt;
-    use crate::harness::{AgentSpawner, Error as HarnessError};
     use crate::history::{AgentId, History, HistoryNode};
     use crate::model::ARModel;
-    use crate::test_support::{EchoTool, StubArModel, execution_value};
-
-    /// Test [`AgentSpawner`] that records every spawned [`AgentSpec`] and hands
-    /// back a fresh id, so tests can assert on what Fork built and confirm a
-    /// spawn did (or did not) occur.
-    struct RecordingSpawner {
-        specs: Mutex<Vec<AgentSpec>>,
-    }
-
-    impl RecordingSpawner {
-        fn new() -> Self {
-            Self {
-                specs: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl AgentSpawner for RecordingSpawner {
-        fn spawn(&self, spec: AgentSpec) -> Result<AgentId, HarnessError> {
-            let id = AgentId::new();
-            self.specs.lock().expect("spec lock").push(spec);
-            Ok(id)
-        }
-    }
+    use crate::test_support::{EchoTool, RecordingSpawner, StubArModel, execution_value};
 
     fn prompt() -> SystemPrompt {
         SystemPrompt {
@@ -284,7 +307,7 @@ mod tests {
             .await
             .expect("fork succeeds");
 
-        let specs = spawner.specs.lock().expect("spec lock");
+        let specs = spawner.specs();
         assert_eq!(specs.len(), 1, "one agent must be spawned");
         let prefix = specs[0]
             .history_prefix
@@ -321,7 +344,7 @@ mod tests {
             .await
             .expect("fork succeeds");
 
-        let specs = spawner.specs.lock().expect("spec lock");
+        let specs = spawner.specs();
         assert_eq!(specs.len(), 1);
         assert!(
             specs[0].history_prefix.is_none(),
@@ -358,7 +381,7 @@ mod tests {
             .await
             .expect("fork succeeds");
 
-        let specs = spawner.specs.lock().expect("spec lock");
+        let specs = spawner.specs();
         let prefix = specs[0]
             .history_prefix
             .as_ref()
@@ -389,7 +412,7 @@ mod tests {
             .await
             .expect("fork succeeds");
 
-        let specs = spawner.specs.lock().expect("spec lock");
+        let specs = spawner.specs();
         let names: Vec<String> = specs[0]
             .tools
             .list()
@@ -424,7 +447,7 @@ mod tests {
         let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_handle");
         assert!(
-            spawner.specs.lock().expect("spec lock").is_empty(),
+            spawner.specs().is_empty(),
             "no agent may be spawned on an invalid handle",
         );
         Ok(())
@@ -453,7 +476,7 @@ mod tests {
         let value = execution_value(err)?;
         assert_eq!(value["kind"], "invalid_handle");
         assert!(
-            spawner.specs.lock().expect("spec lock").is_empty(),
+            spawner.specs().is_empty(),
             "no agent may be spawned on an unknown handle",
         );
         Ok(())
@@ -478,7 +501,7 @@ mod tests {
         assert_eq!(value["kind"], "unknown_tool");
         assert_eq!(value["name"], "nonesuch");
         assert!(
-            spawner.specs.lock().expect("spec lock").is_empty(),
+            spawner.specs().is_empty(),
             "no agent may be spawned when a requested tool is unknown",
         );
         Ok(())

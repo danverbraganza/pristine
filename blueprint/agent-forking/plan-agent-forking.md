@@ -14,9 +14,9 @@ control how much prior context a fork inherits, sliding from a full-context fork
 - **Handles are checkpoint identifiers derived from the immutable `NodeId`.** The harness makes each tool-call boundary
   addressable by rendering its `NodeId` into the model-visible stream, so an agent can name a past point in time. This
   checkpoint-handle mechanism is built as part of this work.
-- **The empty end of the slider is a real genesis node.** Every history is seeded with a synthetic, content-free root
-  node carrying the reserved handle `NodeId::nil()`. Forking there inherits nothing (a pure subagent); omitting the
-  handle inherits everything. This keeps the slider uniform — empty is a real addressable endpoint, not a magic flag.
+- **The empty end of the slider is the reserved genesis handle.** `NodeId::nil()` is an always-available checkpoint
+  handle that resolves to the empty prefix (a virtual sentinel — no physical root node is stored). Forking there
+  inherits nothing (a pure subagent); omitting the handle inherits everything.
 - **Forking reuses the engine's established seam pattern, not a new mechanism.** Runtime agent spawning is exposed
   behind an `AgentSpawner` trait (concrete type owned by the Harness, trait as the read-only abstraction) and threaded
   to the Fork tool through `BuiltinContext` — mirroring `ToolRegistry`/`Tool`, `SkillsRegistry`/`SkillsRegistrySource`,
@@ -28,7 +28,7 @@ control how much prior context a fork inherits, sliding from a full-context fork
 - Every tool result the model sees now carries a short, harness-attributed checkpoint handle for that tool-call
   boundary, derived from the boundary's `NodeId`.
 - The handle is stable for the life of the (uncompacted) node; once a block is compacted its handle is no longer usable.
-- The genesis node's handle (`NodeId::nil()`) is always available and always denotes the empty prefix; it is the only
+- The genesis handle (`NodeId::nil()`) is always available and always denotes the empty prefix; it is the only
   handle that is not a tool-call boundary.
 
 ### The Fork tool (agent-initiated)
@@ -66,8 +66,8 @@ control how much prior context a fork inherits, sliding from a full-context fork
 ## Changes
 
 ### History & checkpoint handles
-- Introduce a **genesis node**: a synthetic, content-free root seeded at the head of every history, carrying the
-  reserved handle `NodeId::nil()`. It is skipped when history is compiled for the model.
+- Introduce a reserved **genesis handle** `NodeId::nil()`: an always-available checkpoint handle that resolves to the
+  empty prefix (a virtual sentinel; no physical root node is stored).
 - Make `NodeId` addressable as a **handle**: give it a stable string form and a reserved nil/genesis value, and a way
   to resolve a handle back to its history node.
 - Render the checkpoint handle for each tool-call boundary into the model-visible content of the corresponding tool

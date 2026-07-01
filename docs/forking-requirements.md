@@ -17,9 +17,10 @@ the harness will inject a short, harness-attributed **checkpoint handle** derive
 must be stable and allocated against the append-only node set. Once a block is compacted, its handle can no longer be
 used.
 
-The sole exception is the **genesis node**: a synthetic, content-free root node seeded at the head of every history
-with the reserved handle `NodeId::nil()`. It is the one always-available handle that is not a tool-call boundary, and
-it denotes the empty prefix (see the Fork tool's Handle parameter).
+The sole exception is the **genesis handle** `NodeId::nil()`: a reserved, always-available checkpoint handle that
+denotes the empty prefix. It is the one handle that is not a tool-call boundary; resolving it yields no inherited
+history (see the Fork tool's Handle parameter). It is a virtual sentinel — resolving it always produces the empty
+prefix regardless of history state, so no physical root node is stored.
 
 
 ## The Fork Tool
@@ -31,10 +32,9 @@ We will provide a built-in Fork tool to the agent. The parameters of this tool a
   so the Handle behaves as a continuous slider between full and partial context. When the Handle is **omitted /
   unspecified, the fork inherits the full prior context** (equivalent to a handle at the current head). Omitting the
   Handle is distinct from supplying the genesis handle: to create a pure subagent with **no** inherited history, the
-  initiator explicitly supplies the genesis node's handle — `NodeId::nil()`, the reserved id of a synthetic,
-  content-free root node seeded at the head of every history. Forking at the genesis node inherits nothing. The
-  genesis node is the one always-available handle that is not a tool-call boundary; every other handle is a
-  tool-call boundary.
+  initiator explicitly supplies the reserved genesis handle `NodeId::nil()`, which always resolves to the empty
+  prefix. Forking at the genesis handle inherits nothing. The genesis handle is the one always-available handle that
+  is not a tool-call boundary; every other handle is a tool-call boundary.
 * Instruction: The immediate next instruction for the forked agent — the *next node in its cycle*, seeded as the
   first message the forked agent processes after inheriting history. This is **not** the forked agent's system
   prompt. (The requirements previously called this parameter "Prompt"; it was never the system prompt.)

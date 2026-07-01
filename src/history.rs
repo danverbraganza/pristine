@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::SystemTime;
 use uuid::Uuid;
@@ -12,6 +13,18 @@ pub struct NodeId(Uuid);
 impl NodeId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+
+    /// The reserved genesis identifier shared by every `History`.
+    ///
+    /// It names the synthetic, content-free root that precedes every real
+    /// block; its checkpoint handle denotes the empty prefix.
+    pub fn nil() -> Self {
+        Self(Uuid::nil())
+    }
+
+    pub fn is_nil(&self) -> bool {
+        self.0.is_nil()
     }
 }
 
@@ -26,6 +39,74 @@ impl fmt::Display for NodeId {
         self.0.fmt(f)
     }
 }
+
+/// Prefix marking the model-facing string form of a [`CheckpointHandle`].
+const CHECKPOINT_HANDLE_PREFIX: &str = "ckpt-";
+
+/// A stable, model-safe reference to a point in a `History`.
+///
+/// A handle is derived from a node's immutable [`NodeId`]. The genesis handle
+/// (`NodeId::nil()`) is always available and denotes the empty prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CheckpointHandle(NodeId);
+
+impl CheckpointHandle {
+    /// The always-available handle denoting the empty prefix.
+    pub fn genesis() -> Self {
+        Self(NodeId::nil())
+    }
+
+    pub fn from_node_id(id: NodeId) -> Self {
+        Self(id)
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.0
+    }
+
+    /// Whether this handle names the genesis (empty-prefix) checkpoint.
+    pub fn is_genesis(&self) -> bool {
+        self.0.is_nil()
+    }
+}
+
+impl fmt::Display for CheckpointHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{CHECKPOINT_HANDLE_PREFIX}{}", self.0)
+    }
+}
+
+impl FromStr for CheckpointHandle {
+    type Err = HandleError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let body = s
+            .strip_prefix(CHECKPOINT_HANDLE_PREFIX)
+            .ok_or_else(|| HandleError::Malformed(s.to_string()))?;
+        let uuid = Uuid::parse_str(body).map_err(|_| HandleError::Malformed(s.to_string()))?;
+        Ok(Self(NodeId(uuid)))
+    }
+}
+
+/// Failure modes when parsing or resolving a [`CheckpointHandle`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HandleError {
+    /// The string form was not a well-formed checkpoint handle.
+    Malformed(String),
+    /// The handle named a node that does not exist in this `History`.
+    Unknown(CheckpointHandle),
+}
+
+impl fmt::Display for HandleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandleError::Malformed(input) => write!(f, "malformed checkpoint handle: {input}"),
+            HandleError::Unknown(handle) => write!(f, "unknown checkpoint handle: {handle}"),
+        }
+    }
+}
+
+impl std::error::Error for HandleError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AgentId(Uuid);
@@ -116,6 +197,11 @@ impl HistoryNode {
         self.id
     }
 
+    /// The stable checkpoint handle naming this node.
+    pub fn checkpoint_handle(&self) -> CheckpointHandle {
+        CheckpointHandle::from_node_id(self.id)
+    }
+
     pub fn block(&self) -> &Block {
         &self.block
     }
@@ -142,6 +228,29 @@ impl History {
 
     pub fn head(&self) -> Option<&Arc<HistoryNode>> {
         self.head.as_ref()
+    }
+
+    /// Resolve a checkpoint handle against this `History`.
+    ///
+    /// The genesis handle (`NodeId::nil()`) resolves to `None` — the empty
+    /// prefix. A handle naming a real node resolves to that node, whose parent
+    /// chain is the history prefix ending at and including it. An unknown
+    /// handle yields [`HandleError::Unknown`].
+    pub fn resolve(
+        &self,
+        handle: &CheckpointHandle,
+    ) -> Result<Option<Arc<HistoryNode>>, HandleError> {
+        if handle.is_genesis() {
+            return Ok(None);
+        }
+        let mut cursor = self.head.clone();
+        while let Some(node) = cursor {
+            if node.id() == handle.node_id() {
+                return Ok(Some(node));
+            }
+            cursor = node.parent().cloned();
+        }
+        Err(HandleError::Unknown(*handle))
     }
 
     pub fn linearize(&self) -> Vec<Block> {
@@ -202,6 +311,86 @@ mod tests {
             })
             .collect::<Result<_, _>>()?;
         assert_eq!(contents, vec!["one", "two", "three"]);
+        Ok(())
+    }
+
+    #[test]
+    fn linearize_is_transparent_to_genesis() -> Result<(), Box<dyn std::error::Error>> {
+        let mut history = History::new();
+        history.append(user_message("one"));
+        history.append(user_message("two"));
+
+        let blocks = history.linearize();
+        assert_eq!(blocks.len(), 2);
+
+        let mut cursor = history.head().cloned();
+        while let Some(node) = cursor {
+            assert!(
+                !node.id().is_nil(),
+                "genesis must never appear in the chain"
+            );
+            cursor = node.parent().cloned();
+        }
+
+        assert!(history.resolve(&CheckpointHandle::genesis())?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn genesis_handle_resolves_to_empty_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        let mut history = History::new();
+        history.append(user_message("only"));
+
+        assert!(CheckpointHandle::genesis().is_genesis());
+        assert!(history.resolve(&CheckpointHandle::genesis())?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn node_handle_round_trips_and_resolves() -> Result<(), Box<dyn std::error::Error>> {
+        let mut history = History::new();
+        history.append(user_message("first"));
+        let target = history.append(user_message("second"));
+        history.append(user_message("third"));
+
+        let handle = target.checkpoint_handle();
+        let rendered = handle.to_string();
+        assert!(rendered.starts_with("ckpt-"));
+
+        let parsed: CheckpointHandle = rendered.parse()?;
+        assert_eq!(parsed, handle);
+
+        let resolved = history
+            .resolve(&parsed)?
+            .ok_or("expected a node for a real handle")?;
+        assert_eq!(resolved.id(), target.id());
+        assert!(Arc::ptr_eq(&resolved, &target));
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_handle_returns_typed_error() -> Result<(), Box<dyn std::error::Error>> {
+        let mut history = History::new();
+        history.append(user_message("only"));
+
+        let orphan = CheckpointHandle::from_node_id(NodeId::new());
+        match history.resolve(&orphan) {
+            Err(HandleError::Unknown(handle)) => assert_eq!(handle, orphan),
+            other => return Err(format!("expected Unknown handle error, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_handle_string_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(matches!(
+            "not-a-handle".parse::<CheckpointHandle>(),
+            Err(HandleError::Malformed(_))
+        ));
+        assert!(matches!(
+            "ckpt-not-a-uuid".parse::<CheckpointHandle>(),
+            Err(HandleError::Malformed(_))
+        ));
         Ok(())
     }
 

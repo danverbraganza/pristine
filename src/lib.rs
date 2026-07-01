@@ -24,7 +24,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::{AgentId, SystemPrompt};
-use crate::builtins::{ActivateSkill, Edit, ExecBash, Insert, Read, Write};
+use crate::builtins::{ActivateSkill, Edit, ExecBash, Fork, Insert, Read, Write};
 use crate::config::{
     Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, ToolConfig, load as load_config,
 };
@@ -324,6 +324,10 @@ fn builtin_constructors() -> HashMap<&'static str, BuiltinCtor> {
     table.insert(
         "exec_bash",
         Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(ExecBash::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "fork",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Fork::new()) as Arc<dyn Tool>)),
     );
     table.insert(
         "activate_skill",

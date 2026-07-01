@@ -24,7 +24,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 
 use crate::agent::{AgentId, SystemPrompt};
-use crate::builtins::{ActivateSkill, Edit, ExecBash, Fork, Insert, Read, Write};
+use crate::builtins::{ActivateSkill, Edit, ExecBash, Exit, Fork, Insert, Read, Write};
 use crate::config::{
     Config, ConfigError, ConfigErrors, LoadArgs, ProviderConfig, ToolConfig, load as load_config,
 };
@@ -328,6 +328,10 @@ fn builtin_constructors() -> HashMap<&'static str, BuiltinCtor> {
     table.insert(
         "fork",
         Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Fork::new()) as Arc<dyn Tool>)),
+    );
+    table.insert(
+        "exit",
+        Box::new(|_ctx: &BuiltinContext| Ok(Arc::new(Exit::new()) as Arc<dyn Tool>)),
     );
     table.insert(
         "activate_skill",

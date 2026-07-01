@@ -263,6 +263,24 @@ impl History {
         out.reverse();
         out
     }
+
+    /// Linearize in root-first order, pairing each block with the checkpoint
+    /// handle of the node that carries it.
+    ///
+    /// This mirrors [`linearize`](Self::linearize) but retains each node's
+    /// [`CheckpointHandle`] so compile-time consumers can render a handle
+    /// against a block without a second traversal. `NodeId` is otherwise
+    /// dropped by `linearize`.
+    pub fn linearize_with_handles(&self) -> Vec<(CheckpointHandle, Block)> {
+        let mut out = Vec::new();
+        let mut cursor = self.head.as_ref().cloned();
+        while let Some(node) = cursor {
+            out.push((node.checkpoint_handle(), node.block().clone()));
+            cursor = node.parent().cloned();
+        }
+        out.reverse();
+        out
+    }
 }
 
 impl Default for History {
@@ -311,6 +329,27 @@ mod tests {
             })
             .collect::<Result<_, _>>()?;
         assert_eq!(contents, vec!["one", "two", "three"]);
+        Ok(())
+    }
+
+    #[test]
+    fn linearize_with_handles_pairs_each_block_with_its_node_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut history = History::new();
+        let first = history.append(user_message("one"));
+        let second = history.append(user_message("two"));
+
+        let paired = history.linearize_with_handles();
+        assert_eq!(paired.len(), 2);
+        assert_eq!(paired[0].0, first.checkpoint_handle());
+        assert_eq!(paired[1].0, second.checkpoint_handle());
+        match (&paired[0].1, &paired[1].1) {
+            (Block::UserMessage { content: a, .. }, Block::UserMessage { content: b, .. }) => {
+                assert_eq!(a, "one");
+                assert_eq!(b, "two");
+            }
+            other => return Err(format!("expected UserMessage blocks, got {other:?}").into()),
+        }
         Ok(())
     }
 

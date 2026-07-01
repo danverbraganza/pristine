@@ -8,7 +8,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 pub use crate::history::AgentId;
-use crate::history::{Block, History};
+use crate::history::{Block, CheckpointHandle, History};
 use crate::messagebus::{self, AgentEvent, MessageBus};
 use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
@@ -16,6 +16,31 @@ use crate::model::{
 };
 use crate::skills::SkillsRegistrySource;
 use crate::tool::{ToolError, ToolRegistry};
+
+/// Prefix marking the harness-attributed checkpoint-handle line appended to a
+/// tool result when History is compiled into a [`ModelInput`].
+///
+/// The line is injected at compile time only; the stored `Block::ToolResult`
+/// is never mutated. Naming this checkpoint lets an agent address the
+/// tool-call boundary when forking.
+const CHECKPOINT_ANNOTATION_PREFIX: &str = "[pristine checkpoint]";
+
+/// Render a tool result's stored value into the model-visible content, with a
+/// harness-attributed checkpoint-handle line appended.
+///
+/// The base rendering matches the provider adapters' convention (a string is
+/// used verbatim; any other JSON value is stringified), so the only change the
+/// model sees is the trailing handle line.
+fn annotate_tool_result_content(
+    result: serde_json::Value,
+    handle: CheckpointHandle,
+) -> serde_json::Value {
+    let base = match result {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    };
+    serde_json::Value::String(format!("{base}\n\n{CHECKPOINT_ANNOTATION_PREFIX} {handle}"))
+}
 
 /// Structured system prompt with named-field slots.
 ///
@@ -209,7 +234,7 @@ impl Agent {
             );
 
             loop {
-                let context = self.history.linearize();
+                let context = self.history.linearize_with_handles();
 
                 let model = self
                     .models
@@ -233,7 +258,7 @@ impl Agent {
                     role: Role::System,
                     content: vec![ContentPart::Text(self.system_prompt.render())],
                 });
-                for block in context {
+                for (handle, block) in context {
                     match block {
                         Block::UserMessage { content, .. } => turns.push(Turn {
                             role: Role::User,
@@ -265,7 +290,7 @@ impl Agent {
                             role: Role::User,
                             content: vec![ContentPart::ToolResult {
                                 tool_use_id,
-                                content: result,
+                                content: annotate_tool_result_content(result, handle),
                                 is_error,
                             }],
                         }),
@@ -940,8 +965,119 @@ mod tests {
                 is_error,
             } => {
                 assert_eq!(tool_use_id, "use_x");
-                assert_eq!(content, &serde_json::json!("ok"));
+                let rendered = content
+                    .as_str()
+                    .ok_or("expected tool result content to be a string")?;
+                assert!(rendered.starts_with("ok"));
+                assert!(rendered.contains("[pristine checkpoint] ckpt-"));
                 assert!(!*is_error);
+            }
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_run_injects_checkpoint_handle_into_tool_result_and_preserves_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "ok".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(
+            agent_id,
+            Block::ToolResult {
+                tool_use_id: "use_x".to_string(),
+                name: "echo".to_string(),
+                result: serde_json::json!("raw output"),
+                is_error: false,
+                timestamp: SystemTime::now(),
+            },
+        )
+        .expect("send tool result");
+        bus.send_inbound(agent_id, user_block("follow up"))
+            .expect("send user message");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 2),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        // The tool-result node carries the handle we expect the compiled input
+        // to name; the raw Block must be preserved (compile-time injection only).
+        let tool_result_node = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::BlockComplete { block } => match block.block() {
+                    Block::ToolResult { .. } => Some(block.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .next()
+            .ok_or("expected a ToolResult BlockComplete event")?;
+        let expected_handle = tool_result_node.checkpoint_handle();
+        match tool_result_node.block() {
+            Block::ToolResult {
+                result, is_error, ..
+            } => {
+                assert_eq!(result, &serde_json::json!("raw output"));
+                assert!(!*is_error);
+            }
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
+        }
+
+        let input = captured.last_input().expect("model called");
+        let tool_result_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::User
+                    && matches!(t.content.first(), Some(ContentPart::ToolResult { .. }))
+            })
+            .expect("expected a User turn with ContentPart::ToolResult");
+        match &tool_result_turn.content[0] {
+            ContentPart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "use_x");
+                assert!(!*is_error);
+                let rendered = content
+                    .as_str()
+                    .ok_or("expected tool result content to be a string")?;
+                assert!(
+                    rendered.starts_with("raw output"),
+                    "original result must be preserved, got {rendered}"
+                );
+                let expected_line = format!("[pristine checkpoint] {expected_handle}");
+                assert!(
+                    rendered.contains(&expected_line),
+                    "expected handle line {expected_line:?} in {rendered:?}"
+                );
             }
             other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
@@ -1086,7 +1222,12 @@ mod tests {
                 is_error,
             } => {
                 assert_eq!(tool_use_id, "use_1");
-                assert_eq!(content, &serde_json::json!({ "echo": { "text": "hi" } }));
+                let rendered = content
+                    .as_str()
+                    .ok_or("expected tool result content to be a string")?;
+                assert!(rendered.contains("\"echo\""));
+                assert!(rendered.contains("\"text\""));
+                assert!(rendered.contains("[pristine checkpoint] ckpt-"));
                 assert!(!*is_error);
             }
             other => return Err(format!("expected ToolResult, got {other:?}").into()),

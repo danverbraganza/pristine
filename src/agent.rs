@@ -8,7 +8,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 pub use crate::history::AgentId;
-use crate::history::{Block, CheckpointHandle, History};
+use crate::history::{Block, CheckpointHandle, History, HistoryNode};
 use crate::messagebus::{self, AgentEvent, MessageBus};
 use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
@@ -150,6 +150,7 @@ pub struct AgentBuilder {
     system_prompt: Option<SystemPrompt>,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     tools: Option<Arc<ToolRegistry>>,
+    history_prefix: Option<Arc<HistoryNode>>,
 }
 
 impl AgentBuilder {
@@ -159,6 +160,7 @@ impl AgentBuilder {
             system_prompt: None,
             models: HashMap::new(),
             tools: None,
+            history_prefix: None,
         }
     }
 
@@ -182,6 +184,17 @@ impl AgentBuilder {
         self
     }
 
+    /// Seed the built Agent's `History` from an inherited prefix head.
+    ///
+    /// `Some(head)` starts the log at the given node, sharing the parent chain
+    /// via `Arc`; `None` (the default) yields an empty log. This is the seam a
+    /// runtime fork uses to hand a new peer Agent a bounded slice of the
+    /// initiator's context.
+    pub fn history_prefix(mut self, head: Option<Arc<HistoryNode>>) -> Self {
+        self.history_prefix = head;
+        self
+    }
+
     pub fn build(self, bus: Arc<dyn MessageBus>) -> Result<Agent, Error> {
         let id = self
             .id
@@ -200,7 +213,7 @@ impl AgentBuilder {
             id,
             system_prompt,
             models: self.models,
-            history: History::new(),
+            history: History::from_prefix(self.history_prefix),
             inbound,
             bus,
             tools,

@@ -220,6 +220,15 @@ impl History {
         Self { head: None }
     }
 
+    /// Construct a `History` seeded from an inherited prefix head.
+    ///
+    /// `Some(head)` starts the log at the given node, sharing the entire parent
+    /// chain via `Arc` (the same prefix sharing `fork_shares_prefix_via_arc`
+    /// demonstrates). `None` yields an empty log, identical to [`new`](Self::new).
+    pub fn from_prefix(head: Option<Arc<HistoryNode>>) -> Self {
+        Self { head }
+    }
+
     pub fn append(&mut self, block: Block) -> Arc<HistoryNode> {
         let node = Arc::new(HistoryNode::new(NodeId::new(), block, self.head.clone()));
         self.head = Some(node.clone());

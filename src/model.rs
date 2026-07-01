@@ -154,6 +154,18 @@ pub enum ContentPart {
     },
 }
 
+/// Render a tool-result `serde_json::Value` into the wire string shared by every
+/// provider adapter: a JSON string passes through verbatim; any other JSON shape
+/// is stringified. This is the single source of truth for tool-result rendering,
+/// so callers that append to the result (e.g. checkpoint-handle annotation) stay
+/// byte-identical to what the adapters emit on the wire.
+pub(crate) fn tool_result_wire_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
 pub trait ARModel: Send + Sync {
     fn complete<'a>(
         &'a self,
@@ -199,6 +211,19 @@ mod tests {
     #[test]
     fn content_part_is_send_sync() {
         assert_send_sync::<ContentPart>();
+    }
+
+    #[test]
+    fn tool_result_wire_string_passes_strings_through_and_stringifies_others() {
+        assert_eq!(
+            tool_result_wire_string(&serde_json::json!("plain text")),
+            "plain text"
+        );
+        assert_eq!(
+            tool_result_wire_string(&serde_json::json!({ "ok": true })),
+            r#"{"ok":true}"#
+        );
+        assert_eq!(tool_result_wire_string(&serde_json::Value::Null), "null");
     }
 
     #[test]

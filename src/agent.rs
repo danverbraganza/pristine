@@ -38,10 +38,7 @@ fn annotate_tool_result_content(
     result: serde_json::Value,
     handle: CheckpointHandle,
 ) -> serde_json::Value {
-    let base = match result {
-        serde_json::Value::String(s) => s,
-        other => other.to_string(),
-    };
+    let base = model::tool_result_wire_string(&result);
     serde_json::Value::String(format!("{base}\n\n{CHECKPOINT_ANNOTATION_PREFIX} {handle}"))
 }
 

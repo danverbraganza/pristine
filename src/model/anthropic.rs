@@ -7,7 +7,9 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::{ARModel, ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage};
+use super::{
+    ARModel, ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage, tool_result_wire_string,
+};
 use crate::provider::{ModelInstanceConfig, ModelProvider, ProviderError};
 
 // Hard-coded request-shape default; configurability (e.g. via ModelInstanceConfig extras) is deferred.
@@ -134,10 +136,7 @@ struct AnthropicToolResultContent(String);
 /// String values pass through; every other JSON shape is rendered as a JSON
 /// string so the model receives a faithful, lossless representation.
 fn tool_result_content_from_value(v: &serde_json::Value) -> AnthropicToolResultContent {
-    match v {
-        serde_json::Value::String(s) => AnthropicToolResultContent(s.clone()),
-        other => AnthropicToolResultContent(other.to_string()),
-    }
+    AnthropicToolResultContent(tool_result_wire_string(v))
 }
 
 #[derive(serde::Serialize)]

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::SystemTime;
 
 use futures::stream::BoxStream;
@@ -142,6 +142,24 @@ impl From<tokio::task::JoinError> for Error {
 
 struct AgentHandle {
     task: JoinHandle<Result<(), Error>>,
+    /// The Agent's per-agent cancellation child token. Cancelling it terminates
+    /// only this Agent; the parent token (fired by `Harness::shutdown`) cancels
+    /// every child at once.
+    stop: CancellationToken,
+}
+
+/// [`AgentSpawner`] that refuses to spawn. Handed to Agents built outside a
+/// running Harness (e.g. `AgentBuilder` in tests) so their [`ToolCallContext`]
+/// always exposes a spawner; any spawn attempt surfaces as a clear error rather
+/// than a panic.
+pub(crate) struct DisconnectedSpawner;
+
+impl AgentSpawner for DisconnectedSpawner {
+    fn spawn(&self, _spec: AgentSpec) -> Result<AgentId, Error> {
+        Err(Error::Lifecycle(
+            "agent has no spawner attached".to_string(),
+        ))
+    }
 }
 
 /// Runtime specification for spawning a new peer Agent.
@@ -185,14 +203,20 @@ pub struct Nursery {
     bus: Arc<InMemoryMessageBus>,
     cancel: CancellationToken,
     agents: Mutex<HashMap<AgentId, AgentHandle>>,
+    /// A weak self-reference so `build_and_track` can hand each Agent an
+    /// `Arc<dyn AgentSpawner>` pointing back at this Nursery. Set once at
+    /// construction via `Arc::new_cyclic`; it upgrades for the Nursery's whole
+    /// lifetime because the Harness owns the strong `Arc`.
+    me: Weak<Nursery>,
 }
 
 impl Nursery {
-    fn new(bus: Arc<InMemoryMessageBus>, cancel: CancellationToken) -> Self {
+    fn new(bus: Arc<InMemoryMessageBus>, cancel: CancellationToken, me: Weak<Nursery>) -> Self {
         Self {
             bus,
             cancel,
             agents: Mutex::new(HashMap::new()),
+            me,
         }
     }
 
@@ -207,15 +231,22 @@ impl Nursery {
         history_prefix: Option<Arc<HistoryNode>>,
     ) -> Result<(), Error> {
         let bus_dyn: Arc<dyn MessageBus> = self.bus.clone();
+        let child = self.cancel.child_token();
+        let spawner: Arc<dyn AgentSpawner> = self
+            .me
+            .upgrade()
+            .ok_or_else(|| Error::Lifecycle("nursery has been dropped".to_string()))?;
         let agent = AgentBuilder::new()
             .id(agent_id)
             .system_prompt(system_prompt)
             .model(ModelRole::Default, model)
             .tools(tools)
             .history_prefix(history_prefix)
+            .spawner(spawner)
+            .stop_token(child.clone())
             .build(bus_dyn)
             .map_err(|e| Error::Lifecycle(e.to_string()))?;
-        let cancel = self.cancel.clone();
+        let cancel = child.clone();
         let bus_for_emit = self.bus.clone();
         let task: JoinHandle<Result<(), Error>> = tokio::spawn(async move {
             let res: Result<(), Error> = tokio::select! {
@@ -236,7 +267,21 @@ impl Nursery {
             .agents
             .lock()
             .map_err(|_| Error::Lifecycle("agent registry mutex poisoned".to_string()))?;
-        agents.insert(agent_id, AgentHandle { task });
+        agents.insert(agent_id, AgentHandle { task, stop: child });
+        Ok(())
+    }
+
+    /// Terminate one tracked Agent by cancelling its per-agent child token,
+    /// leaving every sibling running. The task exits cleanly on its next
+    /// cancellation-observing await; `Harness::join` later collects it. Returns
+    /// [`Error::UnknownAgent`] if no Agent with `agent_id` is tracked.
+    pub fn stop(&self, agent_id: AgentId) -> Result<(), Error> {
+        let agents = self
+            .agents
+            .lock()
+            .map_err(|_| Error::Lifecycle("agent registry mutex poisoned".to_string()))?;
+        let handle = agents.get(&agent_id).ok_or(Error::UnknownAgent(agent_id))?;
+        handle.stop.cancel();
         Ok(())
     }
 
@@ -352,7 +397,7 @@ impl HarnessBuilder {
         }
         let bus = Arc::new(InMemoryMessageBus::new());
         let cancel = CancellationToken::new();
-        let nursery = Arc::new(Nursery::new(bus.clone(), cancel.clone()));
+        let nursery = Arc::new_cyclic(|me| Nursery::new(bus.clone(), cancel.clone(), me.clone()));
         Ok(Harness {
             models: self.models,
             nursery,
@@ -1037,6 +1082,241 @@ mod tests {
             Err(other) => return Err(format!("expected DuplicateProvider, got {other:?}").into()),
             Ok(_) => return Err("second add_provider should fail".into()),
         }
+        Ok(())
+    }
+
+    /// Context-aware tool used by `context_aware_tool_reads_history_head_and_self_stops`.
+    /// On invocation it records the calling Agent's live History (the seeded
+    /// user messages found by walking the head's parent chain) and triggers its
+    /// own self-stop via the [`ToolCallContext`] child token.
+    struct HistoryStopTool {
+        schema: serde_json::Value,
+        captured_user_messages: Arc<Mutex<Vec<String>>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl HistoryStopTool {
+        fn new(
+            captured_user_messages: Arc<Mutex<Vec<String>>>,
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        ) -> Self {
+            Self {
+                schema: json!({ "type": "object" }),
+                captured_user_messages,
+                calls,
+            }
+        }
+    }
+
+    #[jsonrpsee::core::async_trait]
+    impl Tool for HistoryStopTool {
+        fn name(&self) -> &str {
+            "history_stop"
+        }
+
+        fn description(&self) -> &str {
+            "Records the calling agent's history and stops it."
+        }
+
+        fn input_schema(&self) -> &serde_json::Value {
+            &self.schema
+        }
+
+        async fn call(
+            &self,
+            _input: serde_json::Value,
+        ) -> Result<serde_json::Value, crate::tool::ToolError> {
+            Ok(json!({ "stopped": false }))
+        }
+
+        async fn call_with_context(
+            &self,
+            _input: serde_json::Value,
+            ctx: &crate::tool::ToolCallContext,
+        ) -> Result<serde_json::Value, crate::tool::ToolError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+            let mut contents = Vec::new();
+            let mut cursor = ctx.history_head().cloned();
+            while let Some(node) = cursor {
+                if let Block::UserMessage { content, .. } = node.block() {
+                    contents.push(content.clone());
+                }
+                cursor = node.parent().cloned();
+            }
+            contents.reverse();
+            *self.captured_user_messages.lock().expect("captured lock") = contents;
+
+            ctx.stop();
+            Ok(json!({ "stopped": true }))
+        }
+    }
+
+    #[tokio::test]
+    async fn context_aware_tool_reads_history_head_and_self_stops()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::model::{ModelStreamEvent, Usage};
+
+        let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        // Call 1 emits a tool use for history_stop; call 2 (the re-entry after
+        // the tool result) yields nothing, so the inner loop breaks and the
+        // agent returns to awaiting inbound, where it observes its self-stop.
+        let model = Arc::new(StubArModel::with_call_scripts(vec![
+            vec![
+                Ok(ModelStreamEvent::ToolUseComplete {
+                    id: "use_1".to_string(),
+                    name: "history_stop".to_string(),
+                    input: json!({}),
+                }),
+                Ok(ModelStreamEvent::MessageComplete {
+                    usage: Usage::default(),
+                }),
+            ],
+            vec![Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage::default(),
+            })],
+        ]));
+
+        let model_id = ModelId::new("stub");
+        let agent_id = AgentId::new();
+        let mut harness = HarnessBuilder::new()
+            .add_model(model_id.clone(), model)
+            .add_tool(Arc::new(HistoryStopTool::new(
+                captured.clone(),
+                calls.clone(),
+            )))
+            .expect("add tool")
+            .add_agent(PendingAgent {
+                id: agent_id,
+                system_prompt: prompt("test"),
+                model_id,
+            })
+            .build()
+            .expect("build harness");
+        harness.start().expect("start");
+
+        let mut sub = harness.subscribe(agent_id).expect("subscribe");
+        let owner = harness.owner_id();
+        harness
+            .send_to_agent(agent_id, owner, "remember me".to_string())
+            .expect("send seed message");
+
+        // The tool runs while draining to Idle: it reads history and self-stops.
+        timeout(Duration::from_secs(2), async {
+            while let Some(evt) = sub.next().await {
+                if matches!(evt, AgentEvent::Idle) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("idle wait timed out");
+
+        assert_eq!(
+            *captured.lock().expect("captured lock"),
+            vec!["remember me".to_string()],
+            "tool must read the calling agent's live History head chain",
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // The self-stop dropped the agent's inbound consumer, so a post-stop
+        // send is refused: the agent no longer processes inbound.
+        let post_stop = harness.send_to_agent(agent_id, owner, "ignored".to_string());
+        assert!(
+            post_stop.is_err(),
+            "self-stopped agent must no longer accept inbound, got {post_stop:?}"
+        );
+
+        // join WITHOUT shutdown confirms termination: the agent's inbound is
+        // never closed and shutdown is never called, so join can only return
+        // because the self-stop already ended the task; a live agent would hang.
+        timeout(Duration::from_secs(5), harness.join())
+            .await
+            .expect("join timed out — agent did not self-stop")
+            .expect("clean self-stop");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nursery_stop_terminates_one_agent_and_sibling_keeps_running()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::{ModelStreamEvent, Usage};
+
+        let model_a_id = ModelId::new("stub-a");
+        let model_b_id = ModelId::new("stub-b");
+        let agent_a = AgentId::new();
+        let agent_b = AgentId::new();
+
+        // Agent A idles on inbound with no scripted response. Agent B answers
+        // one message, proving it still processes input after A is stopped.
+        let model_a = Arc::new(StubArModel::empty());
+        let model_b = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "alive".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage::default(),
+            }),
+        ]));
+
+        let mut harness = HarnessBuilder::new()
+            .add_model(model_a_id.clone(), model_a)
+            .add_model(model_b_id.clone(), model_b)
+            .add_agent(PendingAgent {
+                id: agent_a,
+                system_prompt: prompt("a"),
+                model_id: model_a_id,
+            })
+            .add_agent(PendingAgent {
+                id: agent_b,
+                system_prompt: prompt("b"),
+                model_id: model_b_id,
+            })
+            .build()
+            .expect("build harness");
+        harness.start().expect("start");
+
+        // Stop only agent A. It is waiting on inbound; its child-token
+        // cancellation ends the task on the next poll.
+        harness.nursery.stop(agent_a).expect("stop agent a");
+
+        // Agent B still runs: it processes a message and reaches Idle.
+        let mut sub_b = harness.subscribe(agent_b).expect("subscribe b");
+        let owner = harness.owner_id();
+        harness
+            .send_to_agent(agent_b, owner, "ping".to_string())
+            .expect("send b");
+
+        let mut saw_alive = false;
+        timeout(Duration::from_secs(2), async {
+            while let Some(evt) = sub_b.next().await {
+                if let AgentEvent::BlockComplete { block } = &evt
+                    && let Block::AgentMessage { content, .. } = block.block()
+                    && content == "alive"
+                {
+                    saw_alive = true;
+                }
+                if matches!(evt, AgentEvent::Idle) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("agent b idle wait timed out");
+        assert!(saw_alive, "sibling agent B should keep running and answer");
+
+        // Close B's inbound so its loop exits. A's inbound is never closed and
+        // shutdown is never called, so join can only return because A was
+        // terminated by Nursery::stop; a live A would hang join.
+        harness.bus().close_inbound(agent_b);
+        timeout(Duration::from_secs(5), harness.join())
+            .await
+            .expect("join timed out — stopped agent kept the harness alive")
+            .expect("clean join");
         Ok(())
     }
 }

@@ -6,7 +6,9 @@ use std::time::SystemTime;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use tokio_util::sync::CancellationToken;
 
+use crate::harness::{AgentSpawner, DisconnectedSpawner};
 pub use crate::history::AgentId;
 use crate::history::{Block, CheckpointHandle, History, HistoryNode};
 use crate::messagebus::{self, AgentEvent, MessageBus};
@@ -15,7 +17,7 @@ use crate::model::{
     Usage,
 };
 use crate::skills::SkillsRegistrySource;
-use crate::tool::{ToolError, ToolRegistry};
+use crate::tool::{ToolCallContext, ToolError, ToolRegistry};
 
 /// Prefix marking the harness-attributed checkpoint-handle line appended to a
 /// tool result when History is compiled into a [`ModelInput`].
@@ -143,6 +145,8 @@ pub struct Agent {
     inbound: BoxStream<'static, Block>,
     bus: Arc<dyn MessageBus>,
     tools: Arc<ToolRegistry>,
+    spawner: Arc<dyn AgentSpawner>,
+    stop_token: CancellationToken,
 }
 
 pub struct AgentBuilder {
@@ -151,6 +155,8 @@ pub struct AgentBuilder {
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     tools: Option<Arc<ToolRegistry>>,
     history_prefix: Option<Arc<HistoryNode>>,
+    spawner: Option<Arc<dyn AgentSpawner>>,
+    stop_token: Option<CancellationToken>,
 }
 
 impl AgentBuilder {
@@ -161,6 +167,8 @@ impl AgentBuilder {
             models: HashMap::new(),
             tools: None,
             history_prefix: None,
+            spawner: None,
+            stop_token: None,
         }
     }
 
@@ -195,6 +203,23 @@ impl AgentBuilder {
         self
     }
 
+    /// Attach the runtime spawner the built Agent hands to agent-aware tools via
+    /// [`ToolCallContext`]. Defaults to a disconnected spawner that errors on
+    /// use when unset (e.g. Agents built outside a running Harness).
+    pub fn spawner(mut self, spawner: Arc<dyn AgentSpawner>) -> Self {
+        self.spawner = Some(spawner);
+        self
+    }
+
+    /// Attach the built Agent's per-agent cancellation child token, exposed to
+    /// tools as the self-stop handle and observed by the run loop. Defaults to a
+    /// detached token when unset, so an unstopped standalone Agent's self-stop
+    /// is a harmless no-op.
+    pub fn stop_token(mut self, token: CancellationToken) -> Self {
+        self.stop_token = Some(token);
+        self
+    }
+
     pub fn build(self, bus: Arc<dyn MessageBus>) -> Result<Agent, Error> {
         let id = self
             .id
@@ -209,6 +234,10 @@ impl AgentBuilder {
         }
         let inbound = bus.register(id)?;
         let tools = self.tools.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
+        let spawner = self
+            .spawner
+            .unwrap_or_else(|| Arc::new(DisconnectedSpawner) as Arc<dyn AgentSpawner>);
+        let stop_token = self.stop_token.unwrap_or_default();
         Ok(Agent {
             id,
             system_prompt,
@@ -217,6 +246,8 @@ impl AgentBuilder {
             inbound,
             bus,
             tools,
+            spawner,
+            stop_token,
         })
     }
 }
@@ -403,16 +434,26 @@ impl Agent {
                         .bus
                         .publish(self.id, AgentEvent::BlockComplete { block: call_node });
 
-                    let (result_json, is_error) = match self.tools.dispatch(&name, args).await {
-                        Ok(value) => (value, false),
-                        Err(err) => {
-                            let value = match err {
-                                ToolError::Execution(v) => v,
-                                other => serde_json::json!({ "error": other.to_string() }),
-                            };
-                            (value, true)
-                        }
-                    };
+                    let ctx = ToolCallContext::new(
+                        self.id,
+                        self.history.head().cloned(),
+                        self.system_prompt.clone(),
+                        self.models.clone(),
+                        self.tools.clone(),
+                        self.spawner.clone(),
+                        self.stop_token.clone(),
+                    );
+                    let (result_json, is_error) =
+                        match self.tools.dispatch_with_context(&name, args, &ctx).await {
+                            Ok(value) => (value, false),
+                            Err(err) => {
+                                let value = match err {
+                                    ToolError::Execution(v) => v,
+                                    other => serde_json::json!({ "error": other.to_string() }),
+                                };
+                                (value, true)
+                            }
+                        };
 
                     let result_node = self.history.append(Block::ToolResult {
                         tool_use_id: id,

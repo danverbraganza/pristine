@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use serde_json::{Value, json};
 
 use crate::harness::AgentSpec;
-use crate::history::{AgentId, Block, CheckpointHandle, History, UserId};
+use crate::history::{AgentId, Block, CheckpointHandle, History, HistoryNode, UserId};
 use crate::model::ModelRole;
 use crate::tool::{Tool, ToolCallContext, ToolError, ToolRegistry, execution_err};
 
@@ -69,36 +69,60 @@ pub(crate) struct ForkOutcome {
 /// prompt and default model, and spawns the peer. The spawn carries the
 /// originating agent and the inherited handle so the spawner path can emit a
 /// uniform agent-forked event.
+/// Drop trailing unmatched `ToolCall` nodes from the head of a fork's inherited
+/// prefix so it ends at a valid conversation boundary.
+///
+/// A `ToolCall` can only be the head of a history while its `ToolResult` is
+/// still pending — the run loop appends the result immediately after dispatch
+/// (`agent.rs`). The Fork tool runs during exactly that window, so the live
+/// head is the in-flight `fork` call itself. Inheriting it would seed the fork
+/// with a dangling `tool_use` (no following `tool_result`), which the model API
+/// rejects. Walking back to the parent yields the last completed turn.
+fn forkable_prefix(mut head: Option<Arc<HistoryNode>>) -> Option<Arc<HistoryNode>> {
+    loop {
+        match head {
+            Some(node) if matches!(node.block(), Block::ToolCall { .. }) => {
+                head = node.parent().cloned();
+            }
+            other => return other,
+        }
+    }
+}
+
 pub(crate) fn fork_from_context(
     ctx: &ToolCallContext,
     instruction: String,
     handle: Option<String>,
     tools: Option<Vec<String>>,
 ) -> Result<ForkOutcome, ForkError> {
-    let (history_prefix, fork_handle) = match &handle {
-        None => {
-            let head = ctx.history_head().cloned();
-            let handle = head
-                .as_ref()
-                .map(|node| node.checkpoint_handle())
-                .unwrap_or_else(CheckpointHandle::genesis);
-            (head, handle)
-        }
+    let resolved = match &handle {
+        None => ctx.history_head().cloned(),
         Some(raw) => {
-            let handle = CheckpointHandle::from_str(raw).map_err(|e| ForkError::InvalidHandle {
+            let parsed = CheckpointHandle::from_str(raw).map_err(|e| ForkError::InvalidHandle {
                 handle: raw.clone(),
                 reason: e.to_string(),
             })?;
             let history = History::from_prefix(ctx.history_head().cloned());
-            let resolved = history
-                .resolve(&handle)
+            history
+                .resolve(&parsed)
                 .map_err(|e| ForkError::InvalidHandle {
                     handle: raw.clone(),
                     reason: e.to_string(),
-                })?;
-            (resolved, handle)
+                })?
         }
     };
+
+    // A fork must inherit a prefix that ends at a valid conversation boundary.
+    // The Fork tool itself runs mid-tool-cycle, so the live head is the
+    // in-flight `fork` ToolCall whose ToolResult has not been appended yet;
+    // inheriting it verbatim leaves a `tool_use` with no following
+    // `tool_result`, which the model API rejects. Strip any trailing unmatched
+    // ToolCall(s), then report the boundary actually inherited.
+    let history_prefix = forkable_prefix(resolved);
+    let fork_handle = history_prefix
+        .as_ref()
+        .map(|node| node.checkpoint_handle())
+        .unwrap_or_else(CheckpointHandle::genesis);
 
     let tools = match &tools {
         None => ctx.tools().clone(),
@@ -319,6 +343,56 @@ mod tests {
             value["handle"].as_str().ok_or("handle is a string")?,
             head.checkpoint_handle().to_string(),
             "returned handle is the head's checkpoint handle",
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn omitted_handle_strips_trailing_in_flight_tool_call()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The real mid-fork state: the live head is the in-flight `fork`
+        // ToolCall whose ToolResult has not been appended yet. Inheriting it
+        // verbatim would seed the fork with a dangling tool_use.
+        let mut history = History::new();
+        let boundary = history.append(user_message("prior turn"));
+        let dangling = history.append(Block::ToolCall {
+            id: "toolu_fork".to_string(),
+            name: "fork".to_string(),
+            arguments: json!({}),
+            timestamp: SystemTime::now(),
+        });
+
+        let spawner = Arc::new(RecordingSpawner::new());
+        let ctx = context(
+            Some(dangling),
+            Arc::new(ToolRegistry::new()),
+            spawner.clone(),
+        );
+
+        let value = Fork::new()
+            .call_with_context(json!({ "instruction": "go" }), &ctx)
+            .await
+            .expect("fork succeeds");
+
+        let specs = spawner.specs();
+        assert_eq!(specs.len(), 1, "one agent must be spawned");
+        let prefix = specs[0]
+            .history_prefix
+            .as_ref()
+            .ok_or("prefix retained up to the boundary")?;
+        assert_eq!(
+            prefix.id(),
+            boundary.id(),
+            "the in-flight fork ToolCall must be stripped, leaving the prior boundary as head",
+        );
+        assert!(
+            !matches!(prefix.block(), Block::ToolCall { .. }),
+            "inherited prefix must not end at a tool_use",
+        );
+        assert_eq!(
+            value["handle"].as_str().ok_or("handle is a string")?,
+            boundary.checkpoint_handle().to_string(),
+            "returned handle names the boundary actually inherited",
         );
         Ok(())
     }

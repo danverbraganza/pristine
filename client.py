@@ -364,6 +364,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Chat REPL for the Pristine agent harness.")
     parser.add_argument("invocation_dir", nargs="?", default=None)
     parser.add_argument("--model", default=None)
+    parser.add_argument("-c", "--config", default=None)
     parser.add_argument("--trust-project-skills", action="store_true", default=None)
     args = parser.parse_args()
     invocation_dir = args.invocation_dir
@@ -373,6 +374,8 @@ def main() -> None:
     command = [str(binary), "run"]
     if args.model is not None:
         command += ["--model", args.model]
+    if args.config is not None:
+        command += ["-c", args.config]
     if args.trust_project_skills:
         command += ["--trust-project-skills"]
 

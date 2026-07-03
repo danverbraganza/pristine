@@ -68,6 +68,21 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "\u2026"
 
 
+# Box-drawing gutter prefixing every line of a forked peer's output, so its
+# activity is visually distinct from the messaged agent's.
+FORK_GUTTER = "\u2502  "  # "\u2502  "
+
+
+def _print_block(prefix: str, text: str) -> None:
+    """Print a possibly multi-line block, prefixing every line with *prefix*.
+
+    Uses `Console.out` (no markup interpretation) so arbitrary content -- file
+    text, tool output, model prose -- renders verbatim under the gutter.
+    """
+    for line in text.splitlines() or [""]:
+        err_console.out(f"{prefix}{line}")
+
+
 REGISTRY: dict[str, type["Tool"]] = {}
 
 
@@ -112,11 +127,19 @@ class Tool:
             return f"error: {msg or _safe_json(result)}"
         return _truncate(_safe_json(result), 80)
 
-    def print_result_body(self, result: object, is_error: bool) -> None:
+    def print_call_body(self, args: dict, prefix: str = "") -> None:
+        """Emit long-form detail about the call itself (e.g. a fork's full
+        instruction). Default is nothing; override when the arguments carry
+        content worth showing in full. Every emitted line must start with
+        *prefix* so forked-agent output stays under its gutter.
+        """
+
+    def print_result_body(self, result: object, is_error: bool, prefix: str = "") -> None:
         """Emit long-form body content (e.g. file text, stdout).
 
         Most tools produce nothing here; only override when there is
-        human-consumable multi-line output worth showing.
+        human-consumable multi-line output worth showing. Every emitted line
+        must start with *prefix* so forked-agent output stays under its gutter.
         """
 
 
@@ -227,17 +250,17 @@ class ExecBashTool(Tool):
             parts.append("stderr truncated")
         return ", ".join(parts)
 
-    def print_result_body(self, result: object, is_error: bool) -> None:
+    def print_result_body(self, result: object, is_error: bool, prefix: str = "") -> None:
         if is_error or not isinstance(result, dict):
             return
         stdout = result.get("stdout", "")
         stderr = result.get("stderr", "")
         if stdout:
-            err_console.print("[dim]--- stdout ---[/]")
-            err_console.out(stdout, end="" if stdout.endswith("\n") else "\n")
+            err_console.print(f"{prefix}[dim]--- stdout ---[/]")
+            _print_block(prefix, stdout)
         if stderr:
-            err_console.print("[dim]--- stderr ---[/]")
-            err_console.out(stderr, end="" if stderr.endswith("\n") else "\n")
+            err_console.print(f"{prefix}[dim]--- stderr ---[/]")
+            _print_block(prefix, stderr)
 
 
 class AddTool(Tool):
@@ -250,6 +273,44 @@ class AddTool(Tool):
         if is_error or not isinstance(result, dict):
             return super().result_summary(result, is_error)
         return f"sum={result.get('sum', '?')}"
+
+
+class ForkTool(Tool):
+    name = "fork"
+
+    def call_signature(self, args: dict) -> str:
+        parts: list[str] = []
+        handle = args.get("handle")
+        if handle:
+            parts.append(f"handle={handle}")
+        tools = args.get("tools")
+        if tools is not None:
+            parts.append(f"tools={json.dumps(tools)}")
+        return f"fork({', '.join(parts)})"
+
+    def print_call_body(self, args: dict, prefix: str = "") -> None:
+        # Always show the entire prompt handed to the forked agent.
+        instruction = str(args.get("instruction", ""))
+        err_console.print(f"{prefix}[dim]--- fork instruction (full prompt) ---[/]")
+        _print_block(prefix, instruction if instruction else "(no instruction)")
+
+    def result_summary(self, result: object, is_error: bool) -> str:
+        if is_error or not isinstance(result, dict):
+            return super().result_summary(result, is_error)
+        aid = str(result.get("agent_id", "?"))[:8]
+        return f"spawned agent #{aid} (forked from {result.get('handle', '?')})"
+
+
+class ExitTool(Tool):
+    name = "exit"
+
+    def call_signature(self, args: dict) -> str:
+        return "exit()"
+
+    def result_summary(self, result: object, is_error: bool) -> str:
+        if is_error or not isinstance(result, dict):
+            return super().result_summary(result, is_error)
+        return str(result.get("status", "exiting"))
 
 
 def _parse_message(line: str) -> dict | None:
@@ -280,14 +341,31 @@ def read_response(proc: subprocess.Popen) -> dict:
             return msg
 
 
-def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None:
-    """Read agent.event notifications until 'idle' arrives.
+def drain_events(
+    proc: subprocess.Popen,
+    pending_calls: dict[str, dict],
+    main_agent_id: str,
+) -> None:
+    """Forward a turn's events until the messaged agent and every peer idle.
+
+    Each `agent.event` is tagged with its originating `agent_id`. A turn is not
+    over when the messaged agent idles -- it may have `fork`ed a peer that is
+    still working -- so we track an active set (the messaged agent plus every
+    peer announced via `agent_forked`) and return only once all have gone idle.
+    Forked-peer events (id != `main_agent_id`) render under a box-drawing gutter
+    so they are visually distinct.
 
     `pending_calls` maps tool_use_id -> the call's arguments dict, so a
     tool_result event can replay the same call signature on its summary line.
     """
     assert proc.stdout is not None
-    while True:
+    active: set[str] = {main_agent_id}
+    forked: set[str] = set()
+    # Streamed prose per forked peer, buffered and flushed under the gutter at
+    # its idle; streaming a peer's tokens inline would interleave illegibly with
+    # the messaged agent's own stream.
+    prose: dict[str, str] = {}
+    while active:
         line = proc.stdout.readline()
         if not line:
             print("\nServer closed stdout unexpectedly", file=sys.stderr)
@@ -311,6 +389,20 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
             if count:
                 err_console.print(f"[dim]Skills diagnostics: {count} item(s)[/]")
             continue
+        if method == "agent_forked":
+            if isinstance(params, dict) and params.get("agent_id"):
+                fid = str(params["agent_id"])
+                forked.add(fid)
+                active.add(fid)
+                origin = str(params.get("origin", ""))[:8]
+                handle = params.get("handle", "?")
+                # Leading newline closes any in-progress streamed line from the
+                # messaged agent before the peer's framing begins.
+                err_console.print(
+                    f"\n{FORK_GUTTER}[bold magenta]┌─ forked agent #{fid[:8]}[/]"
+                    f" [dim](from #{origin}, at {handle})[/]"
+                )
+            continue
         if method != "agent.event":
             print(f"[drain_events] ignoring notification with method={method!r}", file=sys.stderr)
             continue
@@ -318,10 +410,15 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
             print("[drain_events] agent.event has non-dict params; ignoring", file=sys.stderr)
             continue
         event_type = params.get("type", "")
-        agent_short = str(params.get("agent_id", ""))[:8]
+        aid = str(params.get("agent_id", ""))
+        agent_short = aid[:8]
+        prefix = "" if aid == main_agent_id else FORK_GUTTER
         if event_type == "token_delta":
             text = params.get("data", {}).get("text", "")
-            print(text, end="", flush=True)
+            if prefix:
+                prose[aid] = prose.get(aid, "") + text
+            else:
+                print(text, end="", flush=True)
         elif event_type == "block_complete":
             data = params.get("data", {})
             block_type = data.get("block_type")
@@ -332,9 +429,11 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
                 if tool_use_id:
                     pending_calls[tool_use_id] = args
                 tool = Tool.from_name(name)
+                lead = "" if prefix else "\n"
                 err_console.print(
-                    f"\n[bold cyan]>>>[/] [bold]Agent #{agent_short}[/]: {tool.call_signature(args)}"
+                    f"{lead}{prefix}[bold cyan]>>>[/] [bold]Agent #{agent_short}[/]: {tool.call_signature(args)}"
                 )
+                tool.print_call_body(args, prefix)
             elif block_type == "tool_result":
                 name = data.get("name", "?")
                 result = data.get("result")
@@ -344,18 +443,26 @@ def drain_events(proc: subprocess.Popen, pending_calls: dict[str, dict]) -> None
                 tool = Tool.from_name(name)
                 marker_color = "red" if is_error else "green"
                 err_console.print(
-                    f"[bold {marker_color}]>>>[/] [bold]Agent #{agent_short}[/]: "
+                    f"{prefix}[bold {marker_color}]>>>[/] [bold]Agent #{agent_short}[/]: "
                     f"{tool.call_signature(args)} -> {tool.result_summary(result, is_error)}"
                 )
-                tool.print_result_body(result, is_error)
+                tool.print_result_body(result, is_error, prefix)
             # user_message / agent_message / reasoning_trace are observation-only
         elif event_type == "error":
             error_msg = params.get("data", {}).get("message", "unknown error")
-            print(f"\nAgent error: {error_msg}", file=sys.stderr)
-            break
+            print(f"\n{prefix}Agent #{agent_short} error: {error_msg}", file=sys.stderr)
+            active.discard(aid)
+            if aid in forked:
+                err_console.print(f"{FORK_GUTTER}[bold magenta]└─ agent #{agent_short} ended (error)[/]")
         elif event_type == "idle":
-            print()  # final newline after streamed tokens / tool activity
-            break
+            if prefix:
+                buffered = prose.pop(aid, "")
+                if buffered.strip():
+                    _print_block(prefix, buffered.rstrip("\n"))
+                err_console.print(f"{FORK_GUTTER}[bold magenta]└─ agent #{agent_short} idle[/]")
+            else:
+                print()  # newline after the messaged agent's streamed output
+            active.discard(aid)
 
 
 def main() -> None:
@@ -429,7 +536,7 @@ def main() -> None:
             except RpcError as e:
                 print(f"send_message failed: {e}", file=sys.stderr)
                 continue
-            drain_events(proc, pending_calls)
+            drain_events(proc, pending_calls, agent_id)
     finally:
         if proc.poll() is None:
             try:

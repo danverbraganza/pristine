@@ -1,8 +1,10 @@
 //! Stdio transport for JSON-RPC dispatch.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt;
+use futures::stream::{BoxStream, SelectAll};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
@@ -93,18 +95,10 @@ pub async fn run_server(
     let module = server.into_rpc();
     let mut stdout = tokio::io::stdout();
     let mut lines = spawn_stdin_reader();
-    // Forks originate from ANY agent (tool- or human-initiated), so subscribe to
-    // the bus-wide fork broadcast and surface each event as an `agent_forked`
-    // notification. The bus is held for the lifetime of this loop, so this
-    // stream stays open; a non-matching `None` merely disables the branch.
-    let mut forks = bus.subscribe_forks();
 
     loop {
         tokio::select! {
             _ = shutdown_token.cancelled() => break,
-            Some(event) = forks.next() => {
-                write_agent_forked(&mut stdout, &event).await?;
-            }
             line = lines.recv() => {
                 let Some(text) = line else { break };
 
@@ -203,6 +197,15 @@ where
     Ok(())
 }
 
+/// Forward a turn's agent events to the client until every active agent is idle.
+///
+/// A turn does not end when the messaged agent idles: it may have `fork`ed a
+/// peer that is still working, and that peer's events are published under its
+/// own id. We subscribe to the fork broadcast, merge each new peer's event
+/// stream in as it appears, and keep forwarding (each event tagged with its
+/// originating agent id) until the messaged agent and every forked peer have
+/// gone idle. `biased` polling guarantees a peer's `agent_forked` is registered
+/// before the messaged agent's `Idle` can empty the active set.
 async fn drain_events<W>(
     bus: &dyn MessageBus,
     agent_id: AgentId,
@@ -211,18 +214,35 @@ async fn drain_events<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let mut events = bus.subscribe(agent_id)?;
-    while let Some(event) = events.next().await {
-        let is_terminal = matches!(event, AgentEvent::Idle | AgentEvent::Error { .. });
-        let notification = AgentEventNotification::from_event(agent_id, &event);
-        let jsonrpc = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "agent.event",
-            "params": notification,
-        });
-        write_line(out, &jsonrpc.to_string()).await?;
-        if is_terminal {
-            break;
+    let mut agent_events: SelectAll<BoxStream<'static, (AgentId, AgentEvent)>> = SelectAll::new();
+    agent_events.push(bus.subscribe(agent_id)?.map(move |e| (agent_id, e)).boxed());
+    let mut forks = bus.subscribe_forks();
+    let mut active: HashSet<AgentId> = HashSet::from([agent_id]);
+
+    while !active.is_empty() {
+        tokio::select! {
+            biased;
+            Some(forked) = forks.next() => {
+                write_agent_forked(out, &forked).await?;
+                if active.insert(forked.agent_id) {
+                    let fid = forked.agent_id;
+                    agent_events.push(bus.subscribe(fid)?.map(move |e| (fid, e)).boxed());
+                }
+            }
+            Some((id, event)) = agent_events.next() => {
+                let is_terminal = matches!(event, AgentEvent::Idle | AgentEvent::Error { .. });
+                let notification = AgentEventNotification::from_event(id, &event);
+                let jsonrpc = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "agent.event",
+                    "params": notification,
+                });
+                write_line(out, &jsonrpc.to_string()).await?;
+                if is_terminal {
+                    active.remove(&id);
+                }
+            }
+            else => break,
         }
     }
     Ok(())

@@ -292,6 +292,30 @@ enum BlockState {
     },
 }
 
+/// Converts a closed content block into its terminal stream event. A tool_use
+/// block for a no-argument call arrives with no `input_json_delta` events, so
+/// an empty accumulator means an empty input object rather than a parse error.
+fn complete_block(state: BlockState) -> Result<ModelStreamEvent, Error> {
+    match state {
+        BlockState::Text { accumulator } => {
+            Ok(ModelStreamEvent::ContentComplete { text: accumulator })
+        }
+        BlockState::ToolUse {
+            id,
+            name,
+            json_accumulator,
+        } => {
+            let input = if json_accumulator.trim().is_empty() {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
+                serde_json::from_str(&json_accumulator)
+                    .map_err(|e| Error::Deserialization(format!("tool_use input parse: {e}")))?
+            };
+            Ok(ModelStreamEvent::ToolUseComplete { id, name, input })
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct MessageDeltaPayload {
     usage: MessageDeltaUsage,
@@ -493,28 +517,13 @@ impl ARModel for AnthropicModel {
                                 }
                             };
                         let completed = match blocks.remove(&payload.index) {
-                            Some(BlockState::Text { accumulator }) => {
-                                Some(ModelStreamEvent::ContentComplete { text: accumulator })
-                            }
-                            Some(BlockState::ToolUse {
-                                id,
-                                name,
-                                json_accumulator,
-                            }) => {
-                                match serde_json::from_str::<serde_json::Value>(&json_accumulator) {
-                                    Ok(input) => {
-                                        Some(ModelStreamEvent::ToolUseComplete { id, name, input })
-                                    }
-                                    Err(e) => {
-                                        let _ = tx
-                                            .send(Err(Error::Deserialization(format!(
-                                                "tool_use input parse: {e}"
-                                            ))))
-                                            .await;
-                                        return;
-                                    }
+                            Some(state) => match complete_block(state) {
+                                Ok(event) => Some(event),
+                                Err(e) => {
+                                    let _ = tx.send(Err(e)).await;
+                                    return;
                                 }
-                            }
+                            },
                             None => None,
                         };
                         if let Some(event) = completed
@@ -977,6 +986,50 @@ mod tests {
                 assert_eq!(partial_json, "{\"hello\":\"wo");
             }
             _ => return Err("expected ContentDelta::InputJsonDelta".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tool_use_block_with_no_input_deltas_completes_with_empty_object()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let start = r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01","name":"exit","input":{}}}"#;
+        let payload: ContentBlockStartPayload = serde_json::from_str(start)?;
+        let state = match payload.content_block {
+            ContentBlockStartInner::ToolUse { id, name, .. } => BlockState::ToolUse {
+                id,
+                name,
+                json_accumulator: String::new(),
+            },
+            _ => return Err("expected ContentBlockStartInner::ToolUse".into()),
+        };
+        match complete_block(state)? {
+            ModelStreamEvent::ToolUseComplete { id, name, input } => {
+                assert_eq!(id, "toolu_01");
+                assert_eq!(name, "exit");
+                assert_eq!(input, serde_json::json!({}));
+            }
+            other => return Err(format!("expected ToolUseComplete, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tool_use_block_with_malformed_input_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let state = BlockState::ToolUse {
+            id: "toolu_02".into(),
+            name: "echo".into(),
+            json_accumulator: "{\"text\":".into(),
+        };
+        match complete_block(state) {
+            Err(Error::Deserialization(msg)) => {
+                assert!(
+                    msg.contains("tool_use input parse"),
+                    "unexpected message: {msg}"
+                );
+            }
+            Err(e) => return Err(format!("expected Deserialization error, got {e:?}").into()),
+            Ok(event) => return Err(format!("expected error, got {event:?}").into()),
         }
         Ok(())
     }

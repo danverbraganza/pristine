@@ -44,11 +44,10 @@ fn annotate_tool_result_content(
 
 /// Structured system prompt with named-field slots.
 ///
-/// Replaces the agent's former `system_prompt: String`. The fixed `base` text
-/// is authored in config; the dynamic `skills` slot, when present, contributes
-/// a tier-1 skills disclosure section. [`render`](SystemPrompt::render) is
-/// called once per agent iteration so catalog growth between turns is picked
-/// up without rebuilding the agent.
+/// The fixed `base` text is authored in config; the dynamic `skills` slot,
+/// when present, contributes a tier-1 skills disclosure section.
+/// [`render`](SystemPrompt::render) is called once per agent iteration so
+/// catalog growth between turns is picked up without rebuilding the agent.
 #[derive(Clone)]
 pub struct SystemPrompt {
     pub base: String,
@@ -1506,7 +1505,6 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // user_message, reasoning_trace, agent_message
         assert_eq!(block_completes.len(), 3);
         match block_completes[1].block() {
             Block::ReasoningTrace { content, .. } => assert_eq!(content, "let me think"),

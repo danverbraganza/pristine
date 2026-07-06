@@ -1,12 +1,8 @@
 //! End-to-end live proof that a forked subagent actually runs and executes
 //! tools.
 //!
-//! This is the evidence the unit tests do not provide: the Fork-tool unit
-//! tests stub the spawner (`RecordingSpawner`), and the one real-`Nursery`
-//! test uses a `StubArModel` that emits no tool calls. Here we build a REAL
-//! `Harness` from the checked-in `forking.toml` topology (three agents, each
-//! holding the `fork`/`exit` tools plus the five filesystem/shell builtins),
-//! wired to a real Anthropic model, and instruct the first agent to `fork` a
+//! Builds a REAL `Harness` from the checked-in `forking.toml` topology,
+//! wired to a real Anthropic model, and instructs the first agent to `fork` a
 //! subagent whose sole job is to `write` a sentinel file and then `exit`.
 //!
 //! We assert two independent facts:
@@ -14,9 +10,6 @@
 //!   2. the sentinel file exists with the expected contents — which only the
 //!      forked subagent was told to create (the parent is explicitly told not
 //!      to write it).
-//!
-//! Together these show the forked subagent ran to the point of executing a
-//! real tool with an observable side effect.
 //!
 //! `#[ignore]`-gated and `ANTHROPIC_API_KEY`-guarded. Run explicitly:
 //!
@@ -55,16 +48,13 @@ async fn forking_live_forked_subagent_runs_and_writes_a_file()
         }
     };
 
-    // Unique workdir; the sentinel file the FORKED agent must create.
     let workdir =
         env::temp_dir().join(format!("pristine-forking-live-{}", Uuid::new_v4().simple()));
     fs::create_dir_all(&workdir)?;
     let sentinel_path = workdir.join("forked_output.txt");
 
-    // Reuse the checked-in forking.toml topology; supply a throwaway auth file
-    // that maps its `default` model alias onto a real Anthropic model. The key
-    // is inlined (not templated) so the test does not depend on the loader's
-    // env source beyond the guard above.
+    // The key is inlined (not templated) so the test does not depend on the
+    // loader's env source beyond the guard above.
     let auth_path = workdir.join("auth.toml");
     fs::write(
         &auth_path,
@@ -112,9 +102,8 @@ async fn forking_live_forked_subagent_runs_and_writes_a_file()
         .send_to_agent(main_agent, owner, instruction)
         .map_err(|e| format!("send_to_agent failed: {e}"))?;
 
-    // Poll for the two independent facts, keeping the harness alive throughout
-    // (we do NOT shut down until after the assertions, so the peer is never
-    // cancelled mid-flight).
+    // The harness is not shut down until after the assertions below, so the
+    // peer is never cancelled mid-flight.
     let deadline = Instant::now() + OVERALL_DEADLINE;
     let mut fork_seen = false;
     let mut file_written = false;

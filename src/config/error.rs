@@ -113,9 +113,6 @@ impl ConfigErrors {
     }
 
     /// Drain `other`'s contents into `self`, preserving registration order.
-    /// Used by `assemble_config` to merge per-file aggregates returned from
-    /// `parse_topology_with_env` / `parse_auth_with_env` into one cross-file
-    /// aggregate.
     pub fn extend(&mut self, other: ConfigErrors) {
         self.0.extend(other.0);
     }

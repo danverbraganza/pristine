@@ -42,7 +42,6 @@ struct ExecBashOutput {
 /// the per-process tmp directory.
 const MAX_TAIL_BYTES: usize = 64 * 1024;
 
-/// Default timeout applied when the caller does not specify `timeout_seconds`.
 const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
 
 /// Per-process tmp directory for staged stdout/stderr. Initialized on first
@@ -119,8 +118,7 @@ impl ExecBash {
         }
     }
 
-    /// Test-only constructor that accepts an arbitrary `Shell` impl, used by
-    /// `StubShell`-based unit tests in the T-3 slice.
+    /// Test-only constructor that accepts an arbitrary `Shell` impl.
     #[cfg(test)]
     pub(crate) fn with_shell(shell: Arc<dyn Shell + Send + Sync>) -> Self {
         Self {
@@ -188,8 +186,7 @@ impl Tool for ExecBash {
         // NOTE: tmp-file staging is best-effort. The tool's primary contract is
         // the JSON tail; if writing the full output to disk fails (e.g., disk
         // full, permission denied) we log and proceed rather than failing the
-        // shell call whose output the caller already paid for. Proper logging
-        // (replacing eprintln!) is a future cycle.
+        // shell call whose output the caller already paid for.
         if let Err(e) = tokio::fs::write(&stdout_path, &shell_output.stdout).await {
             eprintln!("ExecBash: stdout tmp write failed ({stdout_path:?}): {e}");
         }

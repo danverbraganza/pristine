@@ -131,8 +131,7 @@ pub struct AgentConfig {
 }
 
 /// One entry of `[tools.X]` in the topology file. The `type` discriminator
-/// selects the variant; per-variant fields are decoded inline. v1 ships only
-/// `Builtin`; future variants (MCP, scripted, etc.) plug in here.
+/// selects the variant; per-variant fields are decoded inline.
 ///
 /// `ToolConfig` is a directly-tagged enum because serde's `flatten` is
 /// incompatible with `deny_unknown_fields`.

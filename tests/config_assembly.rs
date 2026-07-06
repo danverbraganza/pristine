@@ -10,10 +10,8 @@ use pristine::build_harness_from_config;
 use pristine::config::{LoadArgs, load_with};
 use pristine::test_support::{MapEnv, MockHome};
 
-/// Auth fixture mirrors the `AuthConfig` shape. The `default` model alias
-/// points at the `anthropic` provider with `claude-opus-4-7` and an
-/// `{{ANTHROPIC_API_KEY}}` placeholder that the templating layer substitutes
-/// out of the supplied `MapEnv`.
+/// The `{{ANTHROPIC_API_KEY}}` placeholder is substituted by the templating
+/// layer out of the supplied `MapEnv`.
 const FIXTURE_AUTH: &str = r#"
 [providers.anthropic]
 type = "anthropic"

@@ -158,10 +158,9 @@ impl From<anyhow::Error> for HarnessAssemblyError {
 
 /// Walk a fully-resolved [`Config`] into a built [`Harness`].
 ///
-/// Registers the `anthropic` provider, the five built-in tools, and one
-/// `(model, agent)` pair per resolved agent. The returned `Vec<AgentId>`
-/// preserves the order of `config.agents` so callers can identify the
-/// primary agent (the stdio JSON-RPC server is single-agent today).
+/// The returned `Vec<AgentId>` preserves the order of `config.agents` so
+/// callers can identify the primary agent (the stdio JSON-RPC server is
+/// single-agent today).
 ///
 /// Provider-name resolution is the one validation step layered in here
 /// rather than inside `pristine_config::load`: alias resolution leaves
@@ -289,8 +288,8 @@ pub fn build_harness_from_config(
 
 /// Dependencies a builtin constructor closure may need at registration time.
 ///
-/// The five filesystem builtins take no dependencies and ignore `ctx`.
-/// `activate_skill` reads `skills_registry`: it is `Some` iff `[skills]` is
+/// Most builtins take no dependencies and ignore `ctx`. `activate_skill`
+/// reads `skills_registry`: it is `Some` iff `[skills]` is
 /// enabled, and a closure that needs it but finds `None` returns an error so a
 /// declared-but-skills-absent config surfaces as a harness assembly failure.
 struct BuiltinContext {
@@ -350,9 +349,7 @@ fn builtin_constructors() -> HashMap<&'static str, BuiltinCtor> {
 ///
 /// Iterates the dispatch table's known builtin names and registers a builtin
 /// iff its name is a key present in `tools`. Iterating the table (not `tools`)
-/// means unknown or extra `tools` entries are ignored. For the shipped
-/// `default.toml`, which declares all five builtin names, this registers exactly
-/// those five — behavior identical to the prior unconditional registration.
+/// means unknown or extra `tools` entries are ignored.
 fn register_builtin_tools(
     mut builder: HarnessBuilder,
     tools: &HashMap<String, ToolConfig>,
@@ -394,7 +391,7 @@ mod tests {
             .collect()
     }
 
-    /// The five builtin names declared by the shipped `default.toml`.
+    /// The builtin names declared by the shipped `default.toml`.
     fn all_builtin_tool_configs() -> HashMap<String, ToolConfig> {
         tool_configs(&["read", "write", "edit", "insert", "exec_bash"])
     }

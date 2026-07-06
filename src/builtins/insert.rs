@@ -184,7 +184,6 @@ impl Tool for Insert {
 
         let lines_inserted = logical_line_count(&parsed.content);
 
-        // Splice insert_body at position `after_line` in lines.
         let mut out_lines: Vec<&str> = Vec::with_capacity(lines.len() + insert_body.len());
         out_lines.extend_from_slice(&lines[..parsed.after_line]);
         out_lines.extend_from_slice(&insert_body);

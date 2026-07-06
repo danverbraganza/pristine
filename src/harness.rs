@@ -187,11 +187,9 @@ pub struct AgentSpec {
 
 /// Read-only seam for spawning an Agent at runtime.
 ///
-/// Follows the concrete-type-plus-trait shape of the engine's other seams
-/// (`Tool`/`ToolRegistry`, `ModelProvider`/`ProviderRegistry`,
-/// `SkillsRegistrySource`/`SkillsRegistry`): [`Nursery`] is the engine-owned
-/// concrete implementor, and this trait is the abstraction a running Agent's
-/// tools resolve against to spawn a peer.
+/// Follows the concrete-type-plus-trait shape used elsewhere in the engine:
+/// [`Nursery`] is the engine-owned concrete implementor, and this trait is the
+/// abstraction a running Agent's tools resolve against to spawn a peer.
 pub trait AgentSpawner: Send + Sync {
     /// Spawn a new Agent from `spec`, returning its freshly allocated id.
     fn spawn(&self, spec: AgentSpec) -> Result<AgentId, Error>;
@@ -1003,7 +1001,6 @@ mod tests {
         harness.start().expect("start");
         let owner = harness.owner_id();
 
-        // Build an inherited history prefix head to seed the new agent with.
         let mut prefix = History::new();
         prefix.append(Block::UserMessage {
             from: owner,
@@ -1150,10 +1147,9 @@ mod tests {
         Ok(())
     }
 
-    /// Context-aware tool used by `context_aware_tool_reads_history_head_and_self_stops`.
-    /// On invocation it records the calling Agent's live History (the seeded
-    /// user messages found by walking the head's parent chain) and triggers its
-    /// own self-stop via the [`ToolCallContext`] child token.
+    /// Context-aware tool that records the calling Agent's live History (the
+    /// seeded user messages found by walking the head's parent chain) and
+    /// triggers its own self-stop via the [`ToolCallContext`] child token.
     struct HistoryStopTool {
         schema: serde_json::Value,
         captured_user_messages: Arc<Mutex<Vec<String>>>,

@@ -1,11 +1,11 @@
 //! End-to-end chained live integration test for the built-in tools.
 //!
-//! Builds a real `Harness` with all five filesystem/shell tools
-//! registered, wires it to a real Anthropic `ARModel`, and drives one
-//! inbound `UserMessage` instructing the agent to Read a Python
-//! fixture, Edit it, then ExecBash to run it. Asserts
-//! that the file was modified, that an ExecBash tool call ran, and that
-//! the agent's final `AgentMessage` mentions the expected output digit.
+//! Builds a real `Harness` with the filesystem/shell tools registered,
+//! wires it to a real Anthropic `ARModel`, and drives one inbound
+//! `UserMessage` instructing the agent to Read a Python fixture, Edit it,
+//! then ExecBash to run it. Asserts that the file was modified, that an
+//! ExecBash tool call ran, and that the agent's final `AgentMessage`
+//! mentions the expected output digit.
 //!
 //! `#[ignore]`-gated and `ANTHROPIC_API_KEY`-guarded. Run explicitly:
 //!
@@ -49,8 +49,6 @@ async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::E
         }
     };
 
-    // Fixture: unique tempdir under the system temp root, holding a
-    // single Python source file whose only statement prints `1+1`.
     let workdir = env::temp_dir().join(format!(
         "pristine-builtin-tools-live-{}",
         Uuid::new_v4().simple()
@@ -63,8 +61,6 @@ async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::E
         .expect("fixture path is utf-8")
         .to_string();
 
-    // Harness construction mirrors `src/lib.rs::run_async` -- the
-    // canonical five-tool registration plus a real Anthropic ARModel.
     let anthropic = AnthropicProvider::new()
         .build_model(ModelInstanceConfig::new(
             MODEL_NAME,
@@ -113,9 +109,6 @@ async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::E
         .send_to_agent(agent_id, owner_id, user_message)
         .expect("send_to_agent");
 
-    // Drain events until Idle (or the 60s overall cap fires). Collect
-    // both the BlockComplete payloads (for tool-call assertion) and the
-    // final agent-message text (for the "4" substring assertion).
     let mut saw_exec_bash_call = false;
     let mut final_agent_text: Option<String> = None;
     let mut events_seen: Vec<&'static str> = Vec::new();
@@ -163,25 +156,20 @@ async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::E
     harness.shutdown();
     let _ = timeout(Duration::from_secs(5), harness.join()).await;
 
-    // File-content assertion: strict equality. The Edit tool's contract
-    // is exact-byte replacement, so the only acceptable result is the
-    // original content with `1+1` swapped for `2+2`.
+    // The Edit tool's contract is exact-byte replacement, so the only
+    // acceptable result is the original content with `1+1` swapped for `2+2`.
     let on_disk = fs::read_to_string(&fixture_path).expect("read fixture.py after run");
     assert_eq!(
         on_disk, "print(2+2)\n",
         "file content after agent run was not the expected edit",
     );
 
-    // Tool-call assertion: at least one ToolCall block with name
-    // `exec_bash` flowed through the event stream.
     assert!(
         saw_exec_bash_call,
         "expected at least one BlockComplete for an exec_bash ToolCall in the event stream",
     );
 
-    // Final-message assertion: the digit `4` is present somewhere in
-    // the agent's final text. Substring check, not equality, because
-    // wording varies across runs.
+    // Substring check, not equality, because wording varies across runs.
     let final_text =
         final_agent_text.expect("expected at least one AgentMessage BlockComplete in the stream");
     assert!(

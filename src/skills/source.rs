@@ -2,9 +2,8 @@
 //!
 //! Mirrors the `Tool`/`ToolRegistry` and `ModelProvider`/`ProviderRegistry`
 //! seams: the trait is the abstraction, concrete registries are the
-//! implementors. Moved here from the Phase-1 forward declaration in
-//! `skills.rs`; re-exported from the module root so existing `use` paths keep
-//! working.
+//! implementors. Re-exported from the module root so existing `use` paths
+//! keep working.
 
 use crate::skills::types::{SkillDiagnostic, SkillRecord, SkillSummary};
 

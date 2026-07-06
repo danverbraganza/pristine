@@ -570,7 +570,6 @@ mod tests {
         assert_eq!(value[1]["content"], "second");
         assert_eq!(value[2]["role"], "user");
         assert_eq!(value[2]["content"], "hi");
-        // System messages carry no top-level "system" field on the request.
         assert!(value[0].get("tool_calls").is_none());
     }
 

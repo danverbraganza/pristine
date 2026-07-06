@@ -70,7 +70,7 @@ def _truncate(s: str, n: int) -> str:
 
 # Box-drawing gutter prefixing every line of a forked peer's output, so its
 # activity is visually distinct from the messaged agent's.
-FORK_GUTTER = "\u2502  "  # "\u2502  "
+FORK_GUTTER = "\u2502  "
 
 
 def _print_block(prefix: str, text: str) -> None:
@@ -95,7 +95,7 @@ class Tool:
     a new class -- no dispatch table to maintain by hand.
     """
 
-    name: str = ""  # overridden in every concrete subclass
+    name: str = ""
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -289,7 +289,6 @@ class ForkTool(Tool):
         return f"fork({', '.join(parts)})"
 
     def print_call_body(self, args: dict, prefix: str = "") -> None:
-        # Always show the entire prompt handed to the forked agent.
         instruction = str(args.get("instruction", ""))
         err_console.print(f"{prefix}[dim]--- fork instruction (full prompt) ---[/]")
         _print_block(prefix, instruction if instruction else "(no instruction)")
@@ -467,7 +466,7 @@ def drain_events(
                         err_console.print(
                             f"{FORK_GUTTER}[bold magenta]└─ agent #{agent_short} exited[/]"
                         )
-            # user_message / agent_message / reasoning_trace are observation-only
+            # other block types are observation-only; nothing to render here
         elif event_type == "error":
             error_msg = params.get("data", {}).get("message", "unknown error")
             print(f"\n{prefix}Agent #{agent_short} error: {error_msg}", file=sys.stderr)

@@ -202,12 +202,9 @@ mod tests {
     #[test]
     fn default_base_url_yields_chat_completions_url_and_advertises_tools()
     -> Result<(), Box<dyn std::error::Error>> {
-        // The default base_url composes the documented OpenRouter endpoint.
         let url = format!("{}/v1/chat/completions", DEFAULT_BASE_URL);
         assert_eq!(url, "https://openrouter.ai/api/v1/chat/completions");
 
-        // Non-empty ModelInput.tools must be advertised in the request body
-        // from the start (regression guard for the dropped-tools bug).
         let input = ModelInput {
             turns: vec![Turn {
                 role: Role::User,

@@ -269,10 +269,8 @@ mod tests {
 
     /// Exercises the real write path end-to-end: a real `SkillsRegistry`
     /// scanning a `SkillsFixture` (one valid skill, one malformed) wrapped in a
-    /// `SkillsAnnouncer`, drained through the (now generic) writer helper into an
-    /// in-memory buffer, then parsed back as JSON-RPC. This closes the gap that
-    /// the notification path was only unit-tested at the announcer level, never
-    /// through `write_skills_notifications` / `write_line`.
+    /// `SkillsAnnouncer`, drained through the generic writer helper into an
+    /// in-memory buffer, then parsed back as JSON-RPC.
     #[tokio::test]
     async fn write_skills_notifications_serializes_loaded_and_diagnostics_over_writer()
     -> Result<(), Box<dyn std::error::Error>> {

@@ -176,7 +176,6 @@ mod tests {
 
         let (user, _project, diags) = resolve_paths(&config, true, &home);
 
-        // The `~` path is dropped; the absolute path survives.
         assert_eq!(user, vec![PathBuf::from("/abs/skills")]);
         assert_eq!(diags.len(), 1);
         assert!(matches!(
@@ -210,11 +209,8 @@ mod tests {
 
         let (user, project, diags) = resolve_paths(&config, false, &home);
 
-        // User paths still resolve.
         assert_eq!(user, vec![PathBuf::from("/home/erin/.agents/skills")]);
-        // Project paths are excluded entirely.
         assert!(project.is_empty());
-        // One BypassedPath per effective project path.
         let bypassed: Vec<&PathBuf> = diags
             .iter()
             .filter_map(|d| match d {

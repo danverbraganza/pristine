@@ -131,11 +131,6 @@ pub fn assemble_config<E: EnvSource>(
         return Err(errors);
     }
 
-    // Both files parsed cleanly when we reach this point: any topology / auth
-    // parse failure would have appended to `errors` and tripped the early
-    // return above. Unwrapping the `Option`s here is the natural shape, but
-    // we restate it as a structural match to keep `unwrap()` out of
-    // production code.
     let (topology, auth) = match (topology, auth) {
         (Some(t), Some(a)) => (t, a),
         _ => return Err(errors),

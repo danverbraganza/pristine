@@ -345,7 +345,7 @@ def drain_events(
     proc: subprocess.Popen,
     pending_calls: dict[str, dict],
     main_agent_id: str,
-) -> None:
+) -> bool:
     """Forward a turn's events until the messaged agent and every peer idle.
 
     Each `agent.event` is tagged with its originating `agent_id`. A turn is not
@@ -357,10 +357,16 @@ def drain_events(
 
     `pending_calls` maps tool_use_id -> the call's arguments dict, so a
     tool_result event can replay the same call signature on its summary line.
+
+    Returns True when the main (root) agent called `exit()` during the turn,
+    signalling the REPL to shut down. An exiting agent stops its run loop
+    without emitting a final `idle`, so its `exit` tool_result is what retires
+    it from the active set; waiting for an idle that never arrives would hang.
     """
     assert proc.stdout is not None
     active: set[str] = {main_agent_id}
     forked: set[str] = set()
+    root_exited = False
     # Streamed prose per forked peer, buffered and flushed under the gutter at
     # its idle; streaming a peer's tokens inline would interleave illegibly with
     # the messaged agent's own stream.
@@ -447,6 +453,20 @@ def drain_events(
                     f"{tool.call_signature(args)} -> {tool.result_summary(result, is_error)}"
                 )
                 tool.print_result_body(result, is_error, prefix)
+                if name == "exit" and not is_error:
+                    # exit stops the calling agent's run loop; it emits no
+                    # following idle, so retire it here or drain would hang.
+                    active.discard(aid)
+                    if aid == main_agent_id:
+                        root_exited = True
+                        print()  # close the messaged agent's streamed line
+                    elif aid in forked:
+                        buffered = prose.pop(aid, "")
+                        if buffered.strip():
+                            _print_block(prefix, buffered.rstrip("\n"))
+                        err_console.print(
+                            f"{FORK_GUTTER}[bold magenta]└─ agent #{agent_short} exited[/]"
+                        )
             # user_message / agent_message / reasoning_trace are observation-only
         elif event_type == "error":
             error_msg = params.get("data", {}).get("message", "unknown error")
@@ -463,6 +483,7 @@ def drain_events(
             else:
                 print()  # newline after the messaged agent's streamed output
             active.discard(aid)
+    return root_exited
 
 
 def main() -> None:
@@ -536,7 +557,9 @@ def main() -> None:
             except RpcError as e:
                 print(f"send_message failed: {e}", file=sys.stderr)
                 continue
-            drain_events(proc, pending_calls, agent_id)
+            if drain_events(proc, pending_calls, agent_id):
+                print("Agent exited; shutting down.", file=sys.stderr)
+                break
     finally:
         if proc.poll() is None:
             try:

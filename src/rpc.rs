@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::history::{AgentId, Block, UserId};
-use crate::messagebus::{AgentEvent, MessageBus};
+use crate::messagebus::{AgentEvent, AgentForked, Control, ForkRequest, MessageBus};
 use crate::model::Usage;
 use crate::skills::{SkillDiagnostic, SkillSummary};
 
@@ -24,6 +24,11 @@ pub struct SendMessageResult {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ShutdownResult {
+    pub ok: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ForkAgentResult {
     pub ok: bool,
 }
 
@@ -68,6 +73,32 @@ impl AgentEventNotification {
                 event_type: "idle".to_string(),
                 data: serde_json::json!({}),
             },
+        }
+    }
+}
+
+/// Params for the `agent_forked` notification: a peer Agent was forked (by a
+/// tool call or a control-path `fork_agent` request). Surfaced so a client can
+/// discover new peers regardless of how they were created. Mirrors the
+/// `agent.event` notification precedent, but is not keyed to a single
+/// subscribed Agent — forks originate from any Agent on the bus.
+#[derive(Serialize)]
+pub struct AgentForkedNotification {
+    /// The freshly spawned peer Agent's id.
+    pub agent_id: AgentId,
+    /// The originating Agent that forked.
+    pub origin: AgentId,
+    /// The checkpoint handle the fork inherited history up to and including, in
+    /// its model-facing `ckpt-…` string form.
+    pub handle: String,
+}
+
+impl AgentForkedNotification {
+    pub fn from_event(event: &AgentForked) -> Self {
+        Self {
+            agent_id: event.agent_id,
+            origin: event.origin,
+            handle: event.handle.to_string(),
         }
     }
 }
@@ -174,6 +205,15 @@ pub trait PristineRpc {
         content: String,
     ) -> Result<SendMessageResult, jsonrpsee::types::ErrorObjectOwned>;
 
+    #[method(name = "fork_agent", param_kind = map)]
+    async fn fork_agent(
+        &self,
+        agent_id: AgentId,
+        instruction: String,
+        handle: Option<String>,
+        tools: Option<Vec<String>>,
+    ) -> Result<ForkAgentResult, jsonrpsee::types::ErrorObjectOwned>;
+
     #[method(name = "shutdown")]
     async fn shutdown(&self) -> Result<ShutdownResult, jsonrpsee::types::ErrorObjectOwned>;
 }
@@ -228,6 +268,31 @@ impl PristineRpcServer for RpcServerImpl {
             )
         })?;
         Ok(SendMessageResult { ok: true })
+    }
+
+    async fn fork_agent(
+        &self,
+        agent_id: AgentId,
+        instruction: String,
+        handle: Option<String>,
+        tools: Option<Vec<String>>,
+    ) -> Result<ForkAgentResult, jsonrpsee::types::ErrorObjectOwned> {
+        // The new agent id is not returned synchronously; the client learns it
+        // via the `agent_forked` notification once the spawner publishes on the
+        // fork broadcast channel, matching the fire-and-forget peer model.
+        let control = Control::Fork(ForkRequest {
+            instruction,
+            handle,
+            tools,
+        });
+        self.bus.send_control(agent_id, control).map_err(|e| {
+            jsonrpsee::types::ErrorObject::owned(
+                jsonrpsee::types::error::INTERNAL_ERROR_CODE,
+                e.to_string(),
+                None::<()>,
+            )
+        })?;
+        Ok(ForkAgentResult { ok: true })
     }
 
     async fn shutdown(&self) -> Result<ShutdownResult, jsonrpsee::types::ErrorObjectOwned> {
@@ -325,6 +390,87 @@ mod tests {
         params.insert("content", "hello").expect("insert content");
         let result: Result<SendMessageResult, _> = module.call("send_message", params).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fork_agent_delivers_control_fork() -> Result<(), Box<dyn std::error::Error>> {
+        use futures::StreamExt;
+
+        let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
+        let agent_id = AgentId::new();
+        let owner_id = UserId::new();
+        let token = CancellationToken::new();
+
+        let _inbound = bus.register(agent_id)?;
+        // Subscribe to the control stream before dispatching: the control
+        // channel is a broadcast, so the receiver must exist prior to send.
+        let mut control = bus.control_stream(agent_id)?;
+
+        let server = RpcServerImpl::new(bus, agent_id, owner_id, token);
+        let module: RpcModule<RpcServerImpl> = server.into_rpc();
+
+        let mut params = jsonrpsee::core::params::ObjectParams::new();
+        params.insert("agent_id", agent_id)?;
+        params.insert("instruction", "fork now")?;
+        params.insert("tools", vec!["Read"])?;
+        // `handle` omitted: an optional map param the fork should treat as full
+        // inherited context.
+        let response: ForkAgentResult = module.call("fork_agent", params).await?;
+        assert!(response.ok);
+
+        let ctrl = tokio::time::timeout(std::time::Duration::from_secs(1), control.next())
+            .await?
+            .ok_or("control stream closed before delivering fork")?;
+        let Control::Fork(req) = ctrl;
+        assert_eq!(req.instruction, "fork now");
+        assert_eq!(req.tools, Some(vec!["Read".to_string()]));
+        assert!(req.handle.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fork_agent_unknown_agent_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
+        let registered_id = AgentId::new();
+        let unknown_id = AgentId::new();
+        let owner_id = UserId::new();
+        let token = CancellationToken::new();
+
+        let _inbound = bus.register(registered_id)?;
+
+        let server = RpcServerImpl::new(bus, registered_id, owner_id, token);
+        let module: RpcModule<RpcServerImpl> = server.into_rpc();
+
+        let mut params = jsonrpsee::core::params::ObjectParams::new();
+        params.insert("agent_id", unknown_id)?;
+        params.insert("instruction", "fork now")?;
+        let result: Result<ForkAgentResult, _> = module.call("fork_agent", params).await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn agent_forked_notification_envelope_shape() -> Result<(), serde_json::Error> {
+        let child = AgentId::new();
+        let origin = AgentId::new();
+        let handle = crate::history::CheckpointHandle::from_node_id(crate::history::NodeId::new());
+        let event = AgentForked {
+            agent_id: child,
+            origin,
+            handle,
+        };
+        let notification = AgentForkedNotification::from_event(&event);
+        let jsonrpc = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "agent_forked",
+            "params": serde_json::to_value(&notification)?,
+        });
+        assert_eq!(jsonrpc["method"], "agent_forked");
+        assert!(jsonrpc.get("id").is_none(), "notifications carry no id");
+        assert_eq!(jsonrpc["params"]["agent_id"], child.to_string());
+        assert_eq!(jsonrpc["params"]["origin"], origin.to_string());
+        assert_eq!(jsonrpc["params"]["handle"], handle.to_string());
+        Ok(())
     }
 
     #[test]

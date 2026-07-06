@@ -7,7 +7,9 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::{ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage};
+use super::{
+    ContentPart, Error, ModelInput, ModelStreamEvent, Role, Usage, tool_result_wire_string,
+};
 
 // Hard-coded request-shape default; configurability (e.g. via ModelInstanceConfig extras) is deferred.
 pub(crate) const MAX_TOKENS: u32 = 8192;
@@ -81,16 +83,6 @@ pub(crate) struct OpenAiFunctionCall {
     arguments: String,
 }
 
-/// Render a portable tool-result `Value` into the string OpenAI's `tool` role
-/// expects. String values pass through; every other JSON shape is rendered as
-/// a JSON string so the model receives a faithful representation.
-fn tool_result_content_string(v: &serde_json::Value) -> String {
-    match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
-
 pub(crate) fn model_input_to_openai(input: &ModelInput) -> (Vec<OpenAiMessage>, Vec<OpenAiTool>) {
     let mut messages: Vec<OpenAiMessage> = Vec::with_capacity(input.turns.len());
     for turn in &input.turns {
@@ -154,7 +146,7 @@ pub(crate) fn model_input_to_openai(input: &ModelInput) -> (Vec<OpenAiMessage>, 
                             // OpenAI has no is_error field on tool messages; fold
                             // the failure flag into the content so the model still
                             // sees that the call failed.
-                            let rendered = tool_result_content_string(content);
+                            let rendered = tool_result_wire_string(content);
                             let content = if *is_error {
                                 format!("[tool error] {rendered}")
                             } else {

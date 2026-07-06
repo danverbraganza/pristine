@@ -22,6 +22,12 @@ install:
 test:
     cargo nextest run
 
+# Run the live/ignored tests (require ANTHROPIC_API_KEY; each skips cleanly if unset).
+# Forwards extra args as a name-substring filter, e.g. `just test-live forking_live`.
+[group('test')]
+test-live *args:
+    cargo nextest run --run-ignored=only {{args}}
+
 # Launch the Python JSON-RPC client
 [group('development')]
 chat *args: build

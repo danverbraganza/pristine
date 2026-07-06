@@ -6,16 +6,41 @@ use std::time::SystemTime;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
+use tokio_util::sync::CancellationToken;
 
+use crate::builtins::fork::fork_from_context;
+use crate::harness::{AgentSpawner, DisconnectedSpawner};
 pub use crate::history::AgentId;
-use crate::history::{Block, History};
-use crate::messagebus::{self, AgentEvent, MessageBus};
+use crate::history::{Block, CheckpointHandle, History, HistoryNode};
+use crate::messagebus::{self, AgentEvent, Control, MessageBus};
 use crate::model::{
     self, ARModel, ContentPart, ModelInput, ModelRole, ModelStreamEvent, Role, ToolSpec, Turn,
     Usage,
 };
 use crate::skills::SkillsRegistrySource;
-use crate::tool::{ToolError, ToolRegistry};
+use crate::tool::{ToolCallContext, ToolError, ToolRegistry};
+
+/// Prefix marking the harness-attributed checkpoint-handle line appended to a
+/// tool result when History is compiled into a [`ModelInput`].
+///
+/// The line is injected at compile time only; the stored `Block::ToolResult`
+/// is never mutated. Naming this checkpoint lets an agent address the
+/// tool-call boundary when forking.
+const CHECKPOINT_ANNOTATION_PREFIX: &str = "[pristine checkpoint]";
+
+/// Render a tool result's stored value into the model-visible content, with a
+/// harness-attributed checkpoint-handle line appended.
+///
+/// The base rendering matches the provider adapters' convention (a string is
+/// used verbatim; any other JSON value is stringified), so the only change the
+/// model sees is the trailing handle line.
+fn annotate_tool_result_content(
+    result: serde_json::Value,
+    handle: CheckpointHandle,
+) -> serde_json::Value {
+    let base = model::tool_result_wire_string(&result);
+    serde_json::Value::String(format!("{base}\n\n{CHECKPOINT_ANNOTATION_PREFIX} {handle}"))
+}
 
 /// Structured system prompt with named-field slots.
 ///
@@ -69,6 +94,14 @@ impl std::fmt::Debug for SystemPrompt {
     }
 }
 
+/// A unified inbound item for the Agent's run loop, merging the `Block` inbound
+/// stream with the out-of-band control stream. `Block`s flow through the normal
+/// model cycle; `Control` messages drive the Agent without a model turn.
+enum Inbound {
+    Block(Block),
+    Control(Control),
+}
+
 #[derive(Debug)]
 pub enum Error {
     Configuration(String),
@@ -115,9 +148,11 @@ pub struct Agent {
     system_prompt: SystemPrompt,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     history: History,
-    inbound: BoxStream<'static, Block>,
+    inbound: BoxStream<'static, Inbound>,
     bus: Arc<dyn MessageBus>,
     tools: Arc<ToolRegistry>,
+    spawner: Arc<dyn AgentSpawner>,
+    stop_token: CancellationToken,
 }
 
 pub struct AgentBuilder {
@@ -125,6 +160,9 @@ pub struct AgentBuilder {
     system_prompt: Option<SystemPrompt>,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     tools: Option<Arc<ToolRegistry>>,
+    history_prefix: Option<Arc<HistoryNode>>,
+    spawner: Option<Arc<dyn AgentSpawner>>,
+    stop_token: Option<CancellationToken>,
 }
 
 impl AgentBuilder {
@@ -134,6 +172,9 @@ impl AgentBuilder {
             system_prompt: None,
             models: HashMap::new(),
             tools: None,
+            history_prefix: None,
+            spawner: None,
+            stop_token: None,
         }
     }
 
@@ -157,6 +198,34 @@ impl AgentBuilder {
         self
     }
 
+    /// Seed the built Agent's `History` from an inherited prefix head.
+    ///
+    /// `Some(head)` starts the log at the given node, sharing the parent chain
+    /// via `Arc`; `None` (the default) yields an empty log. This is the seam a
+    /// runtime fork uses to hand a new peer Agent a bounded slice of the
+    /// initiator's context.
+    pub fn history_prefix(mut self, head: Option<Arc<HistoryNode>>) -> Self {
+        self.history_prefix = head;
+        self
+    }
+
+    /// Attach the runtime spawner the built Agent hands to agent-aware tools via
+    /// [`ToolCallContext`]. Defaults to a disconnected spawner that errors on
+    /// use when unset (e.g. Agents built outside a running Harness).
+    pub fn spawner(mut self, spawner: Arc<dyn AgentSpawner>) -> Self {
+        self.spawner = Some(spawner);
+        self
+    }
+
+    /// Attach the built Agent's per-agent cancellation child token, exposed to
+    /// tools as the self-stop handle and observed by the run loop. Defaults to a
+    /// detached token when unset, so an unstopped standalone Agent's self-stop
+    /// is a harmless no-op.
+    pub fn stop_token(mut self, token: CancellationToken) -> Self {
+        self.stop_token = Some(token);
+        self
+    }
+
     pub fn build(self, bus: Arc<dyn MessageBus>) -> Result<Agent, Error> {
         let id = self
             .id
@@ -169,16 +238,29 @@ impl AgentBuilder {
                 "default model is required".to_string(),
             ));
         }
-        let inbound = bus.register(id)?;
+        let blocks = bus.register(id)?;
+        let control = bus.control_stream(id)?;
+        // Merge the Block inbound and control streams into one so the run loop
+        // serializes over both; either stream closing narrows the merge, and
+        // both closing ends it.
+        let inbound =
+            futures::stream::select(blocks.map(Inbound::Block), control.map(Inbound::Control))
+                .boxed();
         let tools = self.tools.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
+        let spawner = self
+            .spawner
+            .unwrap_or_else(|| Arc::new(DisconnectedSpawner) as Arc<dyn AgentSpawner>);
+        let stop_token = self.stop_token.unwrap_or_default();
         Ok(Agent {
             id,
             system_prompt,
             models: self.models,
-            history: History::new(),
+            history: History::from_prefix(self.history_prefix),
             inbound,
             bus,
             tools,
+            spawner,
+            stop_token,
         })
     }
 }
@@ -198,8 +280,46 @@ impl Agent {
         &self.tools
     }
 
+    /// Handle an out-of-band control message. Control messages drive the Agent
+    /// without appending a `Block` or triggering a model turn for the request
+    /// itself. A fork request is resolved against the same runtime context the
+    /// Agent assembles at tool dispatch and delegated to the shared fork logic;
+    /// a malformed/invalid request surfaces as an error event and spawns nothing.
+    fn handle_control(&self, control: Control) {
+        match control {
+            Control::Fork(request) => {
+                let ctx = ToolCallContext::new(
+                    self.id,
+                    self.history.head().cloned(),
+                    self.system_prompt.clone(),
+                    self.models.clone(),
+                    self.tools.clone(),
+                    self.spawner.clone(),
+                    self.stop_token.clone(),
+                );
+                if let Err(err) =
+                    fork_from_context(&ctx, request.instruction, request.handle, request.tools)
+                {
+                    let _ = self.bus.publish(
+                        self.id,
+                        AgentEvent::Error {
+                            message: err.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     pub async fn run(mut self) -> Result<(), Error> {
-        while let Some(block) = self.inbound.next().await {
+        while let Some(inbound) = self.inbound.next().await {
+            let block = match inbound {
+                Inbound::Control(control) => {
+                    self.handle_control(control);
+                    continue;
+                }
+                Inbound::Block(block) => block,
+            };
             let inbound_node = self.history.append(block);
             let _ = self.bus.publish(
                 self.id,
@@ -209,7 +329,7 @@ impl Agent {
             );
 
             loop {
-                let context = self.history.linearize();
+                let context = self.history.linearize_with_handles();
 
                 let model = self
                     .models
@@ -233,7 +353,7 @@ impl Agent {
                     role: Role::System,
                     content: vec![ContentPart::Text(self.system_prompt.render())],
                 });
-                for block in context {
+                for (handle, block) in context {
                     match block {
                         Block::UserMessage { content, .. } => turns.push(Turn {
                             role: Role::User,
@@ -265,7 +385,7 @@ impl Agent {
                             role: Role::User,
                             content: vec![ContentPart::ToolResult {
                                 tool_use_id,
-                                content: result,
+                                content: annotate_tool_result_content(result, handle),
                                 is_error,
                             }],
                         }),
@@ -365,16 +485,26 @@ impl Agent {
                         .bus
                         .publish(self.id, AgentEvent::BlockComplete { block: call_node });
 
-                    let (result_json, is_error) = match self.tools.dispatch(&name, args).await {
-                        Ok(value) => (value, false),
-                        Err(err) => {
-                            let value = match err {
-                                ToolError::Execution(v) => v,
-                                other => serde_json::json!({ "error": other.to_string() }),
-                            };
-                            (value, true)
-                        }
-                    };
+                    let ctx = ToolCallContext::new(
+                        self.id,
+                        self.history.head().cloned(),
+                        self.system_prompt.clone(),
+                        self.models.clone(),
+                        self.tools.clone(),
+                        self.spawner.clone(),
+                        self.stop_token.clone(),
+                    );
+                    let (result_json, is_error) =
+                        match self.tools.dispatch_with_context(&name, args, &ctx).await {
+                            Ok(value) => (value, false),
+                            Err(err) => {
+                                let value = match err {
+                                    ToolError::Execution(v) => v,
+                                    other => serde_json::json!({ "error": other.to_string() }),
+                                };
+                                (value, true)
+                            }
+                        };
 
                     let result_node = self.history.append(Block::ToolResult {
                         tool_use_id: id,
@@ -940,8 +1070,119 @@ mod tests {
                 is_error,
             } => {
                 assert_eq!(tool_use_id, "use_x");
-                assert_eq!(content, &serde_json::json!("ok"));
+                let rendered = content
+                    .as_str()
+                    .ok_or("expected tool result content to be a string")?;
+                assert!(rendered.starts_with("ok"));
+                assert!(rendered.contains("[pristine checkpoint] ckpt-"));
                 assert!(!*is_error);
+            }
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_run_injects_checkpoint_handle_into_tool_result_and_preserves_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let model = Arc::new(StubArModel::with_events(vec![
+            Ok(ModelStreamEvent::ContentComplete {
+                text: "ok".to_string(),
+            }),
+            Ok(ModelStreamEvent::MessageComplete {
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
+            }),
+        ]));
+        let captured = model.clone();
+        let (agent, agent_id, bus, mut outbound) = build_agent(model);
+
+        bus.send_inbound(
+            agent_id,
+            Block::ToolResult {
+                tool_use_id: "use_x".to_string(),
+                name: "echo".to_string(),
+                result: serde_json::json!("raw output"),
+                is_error: false,
+                timestamp: SystemTime::now(),
+            },
+        )
+        .expect("send tool result");
+        bus.send_inbound(agent_id, user_block("follow up"))
+            .expect("send user message");
+
+        let handle = tokio::spawn(agent.run());
+
+        let mut events: Vec<AgentEvent> = Vec::new();
+        timeout(
+            Duration::from_secs(2),
+            drain_until_idles(&mut outbound, &mut events, 2),
+        )
+        .await
+        .expect("drain timed out");
+
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        // The tool-result node carries the handle we expect the compiled input
+        // to name; the raw Block must be preserved (compile-time injection only).
+        let tool_result_node = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::BlockComplete { block } => match block.block() {
+                    Block::ToolResult { .. } => Some(block.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .next()
+            .ok_or("expected a ToolResult BlockComplete event")?;
+        let expected_handle = tool_result_node.checkpoint_handle();
+        match tool_result_node.block() {
+            Block::ToolResult {
+                result, is_error, ..
+            } => {
+                assert_eq!(result, &serde_json::json!("raw output"));
+                assert!(!*is_error);
+            }
+            other => return Err(format!("expected ToolResult, got {other:?}").into()),
+        }
+
+        let input = captured.last_input().expect("model called");
+        let tool_result_turn = input
+            .turns
+            .iter()
+            .find(|t| {
+                t.role == Role::User
+                    && matches!(t.content.first(), Some(ContentPart::ToolResult { .. }))
+            })
+            .expect("expected a User turn with ContentPart::ToolResult");
+        match &tool_result_turn.content[0] {
+            ContentPart::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(tool_use_id, "use_x");
+                assert!(!*is_error);
+                let rendered = content
+                    .as_str()
+                    .ok_or("expected tool result content to be a string")?;
+                assert!(
+                    rendered.starts_with("raw output"),
+                    "original result must be preserved, got {rendered}"
+                );
+                let expected_line = format!("[pristine checkpoint] {expected_handle}");
+                assert!(
+                    rendered.contains(&expected_line),
+                    "expected handle line {expected_line:?} in {rendered:?}"
+                );
             }
             other => return Err(format!("expected ToolResult, got {other:?}").into()),
         }
@@ -1086,7 +1327,12 @@ mod tests {
                 is_error,
             } => {
                 assert_eq!(tool_use_id, "use_1");
-                assert_eq!(content, &serde_json::json!({ "echo": { "text": "hi" } }));
+                let rendered = content
+                    .as_str()
+                    .ok_or("expected tool result content to be a string")?;
+                assert!(rendered.contains("\"echo\""));
+                assert!(rendered.contains("\"text\""));
+                assert!(rendered.contains("[pristine checkpoint] ckpt-"));
                 assert!(!*is_error);
             }
             other => return Err(format!("expected ToolResult, got {other:?}").into()),
@@ -1420,5 +1666,82 @@ mod tests {
             "did not expect an Assistant turn with empty Text; turns: {:?}",
             input.turns
         );
+    }
+
+    #[tokio::test]
+    async fn fork_request_control_spawns_peer_without_model_turn()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::messagebus::{Control, ForkRequest};
+        use crate::test_support::RecordingSpawner;
+
+        // Seed the parent with a history prefix so the fork inherits it.
+        let mut prefix = History::new();
+        let head = prefix.append(user_block("seeded context"));
+
+        let model = Arc::new(StubArModel::empty());
+        let captured = model.clone();
+        let spawner = Arc::new(RecordingSpawner::new());
+
+        let agent_id = AgentId::new();
+        let bus = Arc::new(InMemoryMessageBus::new());
+        let agent = AgentBuilder::new()
+            .id(agent_id)
+            .system_prompt(SystemPrompt {
+                base: "parent".to_string(),
+                skills: None,
+            })
+            .model(ModelRole::Default, model as Arc<dyn ARModel>)
+            .history_prefix(Some(head.clone()))
+            .spawner(spawner.clone())
+            .build(bus.clone() as Arc<dyn MessageBus>)
+            .expect("build agent");
+
+        let handle = tokio::spawn(agent.run());
+
+        bus.send_control(
+            agent_id,
+            Control::Fork(ForkRequest {
+                instruction: "do it".to_string(),
+                handle: None,
+                tools: None,
+            }),
+        )
+        .expect("send control");
+
+        // Closing inbound ends the run loop after the buffered control message
+        // drains, so join is a deterministic barrier for the fork having run.
+        bus.close_inbound(agent_id);
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("join timed out")
+            .expect("join")
+            .expect("run ok");
+
+        let specs = spawner.specs();
+        assert_eq!(specs.len(), 1, "one peer must be spawned");
+        let prefix_head = specs[0]
+            .history_prefix
+            .as_ref()
+            .ok_or("omitted handle inherits the full prefix")?;
+        assert_eq!(
+            prefix_head.id(),
+            head.id(),
+            "fork inherits the parent's live head",
+        );
+        match &specs[0].instruction {
+            Some(Block::UserMessage { content, .. }) => assert_eq!(content, "do it"),
+            other => return Err(format!("expected a seeded instruction, got {other:?}").into()),
+        }
+        assert_eq!(
+            specs[0].origin,
+            Some(agent_id),
+            "fork records its originating agent",
+        );
+
+        assert!(
+            captured.last_input().is_none(),
+            "the fork request must not trigger a model turn on the parent",
+        );
+        Ok(())
     }
 }

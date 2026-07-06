@@ -172,12 +172,12 @@ class ReadTool(Tool):
             n_lines = content.count("\n") + 1
         return f"success, {n_lines} line{'' if n_lines == 1 else 's'} read"
 
-    def print_result_body(self, result: object, is_error: bool) -> None:
+    def print_result_body(self, result: object, is_error: bool, prefix: str = "") -> None:
         if is_error or not isinstance(result, dict):
             return
         content = result.get("content", "")
         if content:
-            err_console.out(content, end="" if content.endswith("\n") else "\n")
+            _print_block(prefix, content.rstrip("\n"))
 
 
 class WriteTool(Tool):

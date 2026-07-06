@@ -13,7 +13,7 @@
 # via the `agent_forked` JSON-RPC notification, and any agent can also be
 # forked from outside via the `fork_agent` JSON-RPC method.
 
-# --- Tool declarations (shared across all agents) ------------------------------
+# Tool declarations, shared across all agents.
 
 [tools.read]
 type = "builtin"
@@ -43,7 +43,7 @@ builtin = "fork"
 type = "builtin"
 builtin = "exit"
 
-# --- Agents --------------------------------------------------------------------
+# Agents.
 #
 # Every agent below carries the same seven tools. The `system_prompt` bodies
 # differ only in identity; the shared "Forking" guidance describes `fork` and

@@ -249,11 +249,6 @@ enum ContentBlockStartInner {
     ToolUse {
         id: String,
         name: String,
-        // Anthropic always sends an empty object at start; the meaningful value
-        // arrives via input_json_delta. The field is parsed for completeness.
-        #[serde(default)]
-        #[allow(dead_code)]
-        input: serde_json::Value,
     },
     #[serde(other)]
     Other,
@@ -951,10 +946,9 @@ mod tests {
             serde_json::from_str(data).expect("parse content_block_start tool_use");
         assert_eq!(payload.index, 1);
         match payload.content_block {
-            ContentBlockStartInner::ToolUse { id, name, input } => {
+            ContentBlockStartInner::ToolUse { id, name, .. } => {
                 assert_eq!(id, "toolu_01abc");
                 assert_eq!(name, "echo");
-                assert_eq!(input, serde_json::json!({}));
             }
             _ => return Err("expected ContentBlockStartInner::ToolUse".into()),
         }

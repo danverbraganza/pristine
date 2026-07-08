@@ -279,6 +279,21 @@ impl Agent {
         &self.tools
     }
 
+    /// Assemble the runtime context handed to tools and fork logic, snapshotting
+    /// the Agent's current history head alongside its shared prompt, models,
+    /// tools, spawner, and stop token.
+    fn tool_call_context(&self) -> ToolCallContext {
+        ToolCallContext::new(
+            self.id,
+            self.history.head().cloned(),
+            self.system_prompt.clone(),
+            self.models.clone(),
+            self.tools.clone(),
+            self.spawner.clone(),
+            self.stop_token.clone(),
+        )
+    }
+
     /// Handle an out-of-band control message. Control messages drive the Agent
     /// without appending a `Block` or triggering a model turn for the request
     /// itself. A fork request is resolved against the same runtime context the
@@ -287,15 +302,7 @@ impl Agent {
     fn handle_control(&self, control: Control) {
         match control {
             Control::Fork(request) => {
-                let ctx = ToolCallContext::new(
-                    self.id,
-                    self.history.head().cloned(),
-                    self.system_prompt.clone(),
-                    self.models.clone(),
-                    self.tools.clone(),
-                    self.spawner.clone(),
-                    self.stop_token.clone(),
-                );
+                let ctx = self.tool_call_context();
                 if let Err(err) =
                     fork_from_context(&ctx, request.instruction, request.handle, request.tools)
                 {
@@ -484,15 +491,7 @@ impl Agent {
                         .bus
                         .publish(self.id, AgentEvent::BlockComplete { block: call_node });
 
-                    let ctx = ToolCallContext::new(
-                        self.id,
-                        self.history.head().cloned(),
-                        self.system_prompt.clone(),
-                        self.models.clone(),
-                        self.tools.clone(),
-                        self.spawner.clone(),
-                        self.stop_token.clone(),
-                    );
+                    let ctx = self.tool_call_context();
                     let (result_json, is_error) =
                         match self.tools.dispatch_with_context(&name, args, &ctx).await {
                             Ok(value) => (value, false),

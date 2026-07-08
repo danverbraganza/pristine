@@ -908,8 +908,8 @@ flag; persistent per-project trust is deferred. The flag threads end to end:
   and records each as a `bypassed_path` diagnostic; user-scope discovery is
   unaffected.
 - `client.py`: an argparse `--trust-project-skills` (`action="store_true"`,
-  `default=None`) is forwarded to the binary only when explicitly passed,
-  mirroring the existing `--model` pattern.
+  defaulting false) is forwarded to the binary only when passed, gated on a
+  plain truthiness check.
 - `justfile`: `chat *args` already forwards arbitrary arguments via `{{args}}`,
   so the flag passes through `just chat` with no justfile change.
 

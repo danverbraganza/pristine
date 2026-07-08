@@ -221,6 +221,9 @@ enum ContentBlockStartInner {
     ToolUse {
         id: String,
         name: String,
+        #[serde(default)]
+        #[allow(dead_code)]
+        input: serde_json::Value,
     },
     #[serde(other)]
     Other,
@@ -918,9 +921,10 @@ mod tests {
             serde_json::from_str(data).expect("parse content_block_start tool_use");
         assert_eq!(payload.index, 1);
         match payload.content_block {
-            ContentBlockStartInner::ToolUse { id, name, .. } => {
+            ContentBlockStartInner::ToolUse { id, name, input } => {
                 assert_eq!(id, "toolu_01abc");
                 assert_eq!(name, "echo");
+                assert_eq!(input, serde_json::json!({}));
             }
             _ => return Err("expected ContentBlockStartInner::ToolUse".into()),
         }

@@ -160,6 +160,18 @@ impl AgentSpawner for DisconnectedSpawner {
     }
 }
 
+/// The origin and inherited checkpoint of a fork spawn.
+///
+/// Present on an [`AgentSpec`] only when the spec is a fork, making the
+/// both-or-neither pairing unrepresentable: a plain runtime spawn carries no
+/// [`ForkOrigin`] and emits no agent-forked event.
+pub struct ForkOrigin {
+    /// The originating Agent the fork descends from.
+    pub origin: AgentId,
+    /// The checkpoint handle the fork inherited history up to.
+    pub handle: CheckpointHandle,
+}
+
 /// Runtime specification for spawning a new peer Agent.
 ///
 /// Carries everything the [`Nursery`] needs to build and register an Agent
@@ -173,14 +185,10 @@ pub struct AgentSpec {
     pub tools: Arc<ToolRegistry>,
     pub history_prefix: Option<Arc<HistoryNode>>,
     pub instruction: Option<Block>,
-    /// The originating Agent when this spec is a fork, else `None`. Paired with
-    /// [`forked_from`](AgentSpec::forked_from), it drives the spawner path's
-    /// uniform agent-forked event; a plain (non-fork) runtime spawn leaves both
-    /// `None` and emits nothing.
-    pub origin: Option<AgentId>,
-    /// The checkpoint handle the fork inherited history up to, when this spec is
-    /// a fork.
-    pub forked_from: Option<CheckpointHandle>,
+    /// The fork provenance when this spec is a fork, else `None`. It drives the
+    /// spawner path's uniform agent-forked event; a plain (non-fork) runtime
+    /// spawn leaves it `None` and emits nothing.
+    pub fork: Option<ForkOrigin>,
 }
 
 /// Read-only seam for spawning an Agent at runtime.
@@ -305,8 +313,7 @@ impl Nursery {
 impl AgentSpawner for Nursery {
     fn spawn(&self, spec: AgentSpec) -> Result<AgentId, Error> {
         let agent_id = AgentId::new();
-        let origin = spec.origin;
-        let forked_from = spec.forked_from;
+        let fork = spec.fork;
         self.build_and_track(
             agent_id,
             spec.system_prompt,
@@ -317,13 +324,13 @@ impl AgentSpawner for Nursery {
         if let Some(block) = spec.instruction {
             self.bus.send_inbound(agent_id, block)?;
         }
-        // A fork carries both its origin and inherited handle; emit the uniform
+        // A fork carries its origin and inherited handle; emit the uniform
         // agent-forked event so tool- and control-path forks surface alike.
-        if let (Some(origin), Some(handle)) = (origin, forked_from) {
+        if let Some(fork) = fork {
             let _ = self.bus.publish_fork(AgentForked {
                 agent_id,
-                origin,
-                handle,
+                origin: fork.origin,
+                handle: fork.handle,
             });
         }
         Ok(agent_id)
@@ -1029,8 +1036,7 @@ mod tests {
                     content: "do the thing".to_string(),
                     timestamp: SystemTime::now(),
                 }),
-                origin: None,
-                forked_from: None,
+                fork: None,
             })
             .expect("spawn runtime agent");
 
@@ -1106,8 +1112,10 @@ mod tests {
                 tools: harness.tools().clone(),
                 history_prefix: None,
                 instruction: None,
-                origin: Some(origin_id),
-                forked_from: Some(forked_from),
+                fork: Some(ForkOrigin {
+                    origin: origin_id,
+                    handle: forked_from,
+                }),
             })
             .expect("spawn fork");
 

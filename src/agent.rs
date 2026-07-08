@@ -1729,11 +1729,11 @@ mod tests {
             Some(Block::UserMessage { content, .. }) => assert_eq!(content, "do it"),
             other => return Err(format!("expected a seeded instruction, got {other:?}").into()),
         }
-        assert_eq!(
-            specs[0].origin,
-            Some(agent_id),
-            "fork records its originating agent",
-        );
+        let fork = specs[0]
+            .fork
+            .as_ref()
+            .ok_or("fork spec must carry its provenance")?;
+        assert_eq!(fork.origin, agent_id, "fork records its originating agent");
 
         assert!(
             captured.last_input().is_none(),

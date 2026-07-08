@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::harness::AgentSpec;
+use crate::harness::{AgentSpec, ForkOrigin};
 use crate::history::{AgentId, Block, CheckpointHandle, History, HistoryNode, UserId};
 use crate::model::ModelRole;
 use crate::tool::{Tool, ToolCallContext, ToolError, ToolRegistry, execution_err};
@@ -150,8 +150,10 @@ pub(crate) fn fork_from_context(
     };
 
     let spec = AgentSpec {
-        origin: Some(ctx.agent_id()),
-        forked_from: Some(fork_handle),
+        fork: Some(ForkOrigin {
+            origin: ctx.agent_id(),
+            handle: fork_handle,
+        }),
         system_prompt: ctx.system_prompt().clone(),
         model,
         tools,

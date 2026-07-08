@@ -639,10 +639,10 @@ all children at once.
 
 An `AgentSpec` carries everything the Nursery needs to spawn a peer: the system
 prompt, model, tool set, optional `history_prefix` head, optional initial
-`instruction` block, and — when the spec is a fork — the `origin` Agent and
-`forked_from` handle. On a fork spawn the Nursery emits an `AgentForked` event
-on the bus's fork broadcast; a plain runtime spawn leaves `origin`/`forked_from`
-`None` and emits nothing.
+`instruction` block, and — when the spec is a fork — a `fork` provenance pairing
+the origin Agent with the inherited handle. On a fork spawn the Nursery emits an
+`AgentForked` event on the bus's fork broadcast; a plain runtime spawn leaves
+`fork` `None` and emits nothing.
 
 ### The `ToolCallContext` seam
 

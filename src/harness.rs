@@ -121,8 +121,6 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Bus(err) => Some(err),
-            Error::DuplicateTool(_) => None,
-            Error::DuplicateProvider(_) => None,
             _ => None,
         }
     }

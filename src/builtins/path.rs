@@ -41,8 +41,13 @@ pub(crate) fn resolve_path(input: &str) -> Result<PathBuf, PathResolveError> {
 
 pub(crate) enum TextReadError {
     NotFound,
-    NotUtf8 { byte_offset: usize },
-    Io { reason: String },
+    NotUtf8 {
+        byte_offset: usize,
+    },
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
 }
 
 pub(crate) async fn read_utf8(path: &Path) -> Result<String, TextReadError> {
@@ -51,7 +56,8 @@ pub(crate) async fn read_utf8(path: &Path) -> Result<String, TextReadError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(TextReadError::NotFound),
         Err(e) => {
             return Err(TextReadError::Io {
-                reason: format!("{e}"),
+                kind: e.kind(),
+                message: format!("{e}"),
             });
         }
     };

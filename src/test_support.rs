@@ -73,6 +73,45 @@ pub(crate) fn write_fixture(dir: &Path, name: &str, contents: &[u8]) -> PathBuf 
     p
 }
 
+#[cfg(all(test, unix))]
+fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+/// Strips every permission bit from `path` and probes whether the running
+/// process is genuinely denied a read of it. A holder of `CAP_DAC_OVERRIDE`
+/// (notably root) reads a `0o000` file anyway, so a permission-denied
+/// assertion cannot hold there: such a caller gets `false`, a skip notice on
+/// stderr, and a file already restored to `0o644`. `true` means the read was
+/// rejected with [`std::io::ErrorKind::PermissionDenied`] and leaves `path`
+/// unreadable for the caller to exercise and then hand to
+/// [`restore_reads`]. Any other probe failure surfaces as `Err`.
+#[cfg(all(test, unix))]
+pub(crate) fn deny_reads_or_skip(path: &Path) -> std::io::Result<bool> {
+    set_mode(path, 0o000)?;
+    match std::fs::read(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(true),
+        Ok(_) => {
+            set_mode(path, 0o644)?;
+            eprintln!("process can read a 0o000 file; skipping permission-denied assertion");
+            Ok(false)
+        }
+        Err(e) => {
+            set_mode(path, 0o644)?;
+            Err(e)
+        }
+    }
+}
+
+/// Returns `path` to `0o644` after a [`deny_reads_or_skip`] probe reported a
+/// denied read. Callers restore before asserting so a failed assertion cannot
+/// strand an unreadable file in a tempdir.
+#[cfg(all(test, unix))]
+pub(crate) fn restore_reads(path: &Path) -> std::io::Result<()> {
+    set_mode(path, 0o644)
+}
+
 /// Unwraps a `ToolError::Execution(value)` carrier, returning an error on any
 /// other variant. Built-in tools use the `Execution` carrier as the portable
 /// shape for their dialect errors; this helper lets tests assert on the inner

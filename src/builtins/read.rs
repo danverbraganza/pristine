@@ -26,6 +26,7 @@ enum ReadError {
     NotUtf8 { byte_offset: usize },
     InvalidRange { start_line: usize, end_line: usize },
     InvalidPath { reason: String },
+    PermissionDenied { path: String },
     IoError { reason: String },
 }
 
@@ -128,8 +129,13 @@ impl Tool for Read {
             Err(TextReadError::NotUtf8 { byte_offset }) => {
                 return Err(execution_err(ReadError::NotUtf8 { byte_offset }));
             }
-            Err(TextReadError::Io { reason }) => {
-                return Err(execution_err(ReadError::IoError { reason }));
+            Err(TextReadError::Io { kind, message }) => {
+                if kind == std::io::ErrorKind::PermissionDenied {
+                    return Err(execution_err(ReadError::PermissionDenied {
+                        path: resolved.display().to_string(),
+                    }));
+                }
+                return Err(execution_err(ReadError::IoError { reason: message }));
             }
         };
 
@@ -384,6 +390,27 @@ mod tests {
             .expect("start past total is empty, not an error");
 
         assert_eq!(value["content"], "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_permission_denied_returns_typed_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "locked.txt", b"secret\n");
+        if !crate::test_support::deny_reads_or_skip(&path)? {
+            return Ok(());
+        }
+        let tool = Read::new();
+
+        let result = tool.call(json!({"path": path.to_string_lossy()})).await;
+        crate::test_support::restore_reads(&path)?;
+
+        let err = result.err().ok_or("unreadable file must error")?;
+        let value = execution_value(err)?;
+        assert_eq!(value["kind"], "permission_denied");
+        assert_eq!(value["path"], path.display().to_string());
+        Ok(())
     }
 
     #[tokio::test]

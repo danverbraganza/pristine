@@ -34,6 +34,9 @@ enum InsertError {
     InvalidPath {
         reason: String,
     },
+    PermissionDenied {
+        path: String,
+    },
     IoError {
         reason: String,
     },
@@ -127,8 +130,13 @@ impl Tool for Insert {
             Err(TextReadError::NotUtf8 { byte_offset }) => {
                 return Err(execution_err(InsertError::NotUtf8 { byte_offset }));
             }
-            Err(TextReadError::Io { reason }) => {
-                return Err(execution_err(InsertError::IoError { reason }));
+            Err(TextReadError::Io { kind, message }) => {
+                if kind == std::io::ErrorKind::PermissionDenied {
+                    return Err(execution_err(InsertError::PermissionDenied {
+                        path: resolved.display().to_string(),
+                    }));
+                }
+                return Err(execution_err(InsertError::IoError { reason: message }));
             }
         };
 
@@ -424,6 +432,33 @@ mod tests {
             value["path"].as_str().expect("path is a string"),
             missing.to_string_lossy(),
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn insert_permission_denied_on_unreadable_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "locked.txt", b"a\nb\n");
+        if !crate::test_support::deny_reads_or_skip(&path)? {
+            return Ok(());
+        }
+        let tool = Insert::new();
+
+        let result = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "after_line": 0,
+                "content": "X",
+            }))
+            .await;
+        crate::test_support::restore_reads(&path)?;
+
+        let err = result.err().ok_or("unreadable file must error")?;
+        let value = execution_value(err)?;
+        assert_eq!(value["kind"], "permission_denied");
+        assert_eq!(value["path"], path.display().to_string());
         Ok(())
     }
 

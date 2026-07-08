@@ -25,6 +25,7 @@ enum EditError {
     FileNotFound { path: String },
     NotUtf8 { byte_offset: usize },
     InvalidPath { reason: String },
+    PermissionDenied { path: String },
     IoError { reason: String },
 }
 
@@ -110,8 +111,13 @@ impl Tool for Edit {
             Err(TextReadError::NotUtf8 { byte_offset }) => {
                 return Err(execution_err(EditError::NotUtf8 { byte_offset }));
             }
-            Err(TextReadError::Io { reason }) => {
-                return Err(execution_err(EditError::IoError { reason }));
+            Err(TextReadError::Io { kind, message }) => {
+                if kind == std::io::ErrorKind::PermissionDenied {
+                    return Err(execution_err(EditError::PermissionDenied {
+                        path: resolved.display().to_string(),
+                    }));
+                }
+                return Err(execution_err(EditError::IoError { reason: message }));
             }
         };
 
@@ -292,6 +298,33 @@ mod tests {
         let value = execution_value(err)?;
         assert_eq!(value["kind"], "not_utf8");
         assert_eq!(value["byte_offset"], 2);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_returns_permission_denied_on_unreadable_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "locked.txt", b"foo bar baz");
+        if !crate::test_support::deny_reads_or_skip(&path)? {
+            return Ok(());
+        }
+        let tool = Edit::new();
+
+        let result = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "bar",
+                "new_str": "BAR",
+            }))
+            .await;
+        crate::test_support::restore_reads(&path)?;
+
+        let err = result.err().ok_or("unreadable file must error")?;
+        let value = execution_value(err)?;
+        assert_eq!(value["kind"], "permission_denied");
+        assert_eq!(value["path"], path.display().to_string());
         Ok(())
     }
 

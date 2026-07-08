@@ -106,7 +106,6 @@ pub enum Error {
     Configuration(String),
     Model(model::Error),
     Bus(messagebus::Error),
-    MissingDefaultModel,
 }
 
 impl std::fmt::Display for Error {
@@ -115,7 +114,6 @@ impl std::fmt::Display for Error {
             Error::Configuration(msg) => write!(f, "configuration error: {msg}"),
             Error::Model(err) => write!(f, "model error: {err}"),
             Error::Bus(err) => write!(f, "message bus error: {err}"),
-            Error::MissingDefaultModel => write!(f, "missing default model"),
         }
     }
 }
@@ -146,6 +144,12 @@ pub struct Agent {
     id: AgentId,
     system_prompt: SystemPrompt,
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
+    /// The `ModelRole::Default` model resolved once from `models` at build time.
+    /// `AgentBuilder::build` guarantees the entry exists and `models` is never
+    /// mutated after build, so the run loop clones this infallibly instead of
+    /// re-looking it up each turn. The full `models` map is retained as the
+    /// multi-role seam handed to `ToolCallContext`.
+    default_model: Arc<dyn ARModel>,
     history: History,
     inbound: BoxStream<'static, Inbound>,
     bus: Arc<dyn MessageBus>,
@@ -232,11 +236,11 @@ impl AgentBuilder {
         let system_prompt = self
             .system_prompt
             .ok_or_else(|| Error::Configuration("system prompt is required".to_string()))?;
-        if !self.models.contains_key(&ModelRole::Default) {
-            return Err(Error::Configuration(
-                "default model is required".to_string(),
-            ));
-        }
+        let default_model = self
+            .models
+            .get(&ModelRole::Default)
+            .ok_or_else(|| Error::Configuration("default model is required".to_string()))?
+            .clone();
         let blocks = bus.register(id)?;
         let control = bus.control_stream(id)?;
         // Merge the Block inbound and control streams into one so the run loop
@@ -254,6 +258,7 @@ impl AgentBuilder {
             id,
             system_prompt,
             models: self.models,
+            default_model,
             history: History::from_prefix(self.history_prefix),
             inbound,
             bus,
@@ -337,11 +342,7 @@ impl Agent {
             loop {
                 let context = self.history.linearize_with_handles();
 
-                let model = self
-                    .models
-                    .get(&ModelRole::Default)
-                    .ok_or(Error::MissingDefaultModel)?
-                    .clone();
+                let model = self.default_model.clone();
 
                 let tools: Vec<ToolSpec> = self
                     .tools

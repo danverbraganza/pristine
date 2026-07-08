@@ -18,6 +18,15 @@ pub(crate) enum PathResolveError {
     Cwd(String),
 }
 
+impl std::fmt::Display for PathResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PathResolveError::Empty => write!(f, "path is empty"),
+            PathResolveError::Cwd(msg) => write!(f, "cwd: {msg}"),
+        }
+    }
+}
+
 pub(crate) fn resolve_path(input: &str) -> Result<PathBuf, PathResolveError> {
     if input.is_empty() {
         return Err(PathResolveError::Empty);

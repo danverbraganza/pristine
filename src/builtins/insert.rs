@@ -6,9 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::builtins::path::{
-    AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
-};
+use crate::builtins::path::{AtomicWriteError, atomic_write, resolve_path as shared_resolve_path};
 use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
@@ -45,13 +43,10 @@ struct InsertOutput {
 }
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
-    shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => execution_err(InsertError::InvalidPath {
-            reason: "path is empty".to_string(),
-        }),
-        PathResolveError::Cwd(msg) => execution_err(InsertError::InvalidPath {
-            reason: format!("cwd: {msg}"),
-        }),
+    shared_resolve_path(input).map_err(|e| {
+        execution_err(InsertError::InvalidPath {
+            reason: e.to_string(),
+        })
     })
 }
 

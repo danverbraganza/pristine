@@ -210,9 +210,8 @@ pub fn build_harness_from_config(
     };
     builder = register_builtin_tools(builder, &config.tools, &builtin_ctx)?;
 
-    // Resolve every agent's provider up front, aggregating each miss, so all
-    // unknown names in a config surface together and the build loop below runs
-    // only once every name resolves.
+    // Resolve every agent's provider up front, aggregating each miss into
+    // provider_errors. The build loop below runs only after every name resolves.
     let mut provider_errors = ConfigErrors::new();
     let mut resolved_providers: Vec<&Arc<dyn ModelProvider>> =
         Vec::with_capacity(config.agents.len());

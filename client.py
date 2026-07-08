@@ -495,7 +495,7 @@ def main() -> None:
     parser.add_argument("invocation_dir", nargs="?", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("-c", "--config", default=None)
-    parser.add_argument("--trust-project-skills", action="store_true", default=None)
+    parser.add_argument("--trust-project-skills", action="store_true")
     args = parser.parse_args()
     invocation_dir = args.invocation_dir
 

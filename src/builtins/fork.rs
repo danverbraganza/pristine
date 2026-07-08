@@ -60,15 +60,6 @@ pub(crate) struct ForkOutcome {
     pub handle: CheckpointHandle,
 }
 
-/// Core fork logic shared by the Fork tool and the agent control path.
-///
-/// Resolves the optional history handle against the caller's live head
-/// (omitted inherits the full prefix, genesis inherits none, invalid surfaces
-/// as [`ForkError::InvalidHandle`]), narrows the tool set to the requested
-/// subset if any, constructs an [`AgentSpec`] inheriting the caller's system
-/// prompt and default model, and spawns the peer. The spawn carries the
-/// originating agent and the inherited handle so the spawner path can emit a
-/// uniform agent-forked event.
 /// Drop trailing unmatched `ToolCall` nodes from the head of a fork's inherited
 /// prefix so it ends at a valid conversation boundary.
 ///
@@ -89,6 +80,15 @@ fn forkable_prefix(mut head: Option<Arc<HistoryNode>>) -> Option<Arc<HistoryNode
     }
 }
 
+/// Core fork logic shared by the Fork tool and the agent control path.
+///
+/// Resolves the optional history handle against the caller's live head
+/// (omitted inherits the full prefix, genesis inherits none, invalid surfaces
+/// as [`ForkError::InvalidHandle`]), narrows the tool set to the requested
+/// subset if any, constructs an [`AgentSpec`] inheriting the caller's system
+/// prompt and default model, and spawns the peer. The spawn carries the
+/// originating agent and the inherited handle so the spawner path can emit a
+/// uniform agent-forked event.
 pub(crate) fn fork_from_context(
     ctx: &ToolCallContext,
     instruction: String,
@@ -112,12 +112,9 @@ pub(crate) fn fork_from_context(
         }
     };
 
-    // A fork must inherit a prefix that ends at a valid conversation boundary.
-    // The Fork tool itself runs mid-tool-cycle, so the live head is the
-    // in-flight `fork` ToolCall whose ToolResult has not been appended yet;
-    // inheriting it verbatim leaves a `tool_use` with no following
-    // `tool_result`, which the model API rejects. Strip any trailing unmatched
-    // ToolCall(s), then report the boundary actually inherited.
+    // Strip any trailing in-flight `fork` ToolCall (see `forkable_prefix`) so
+    // the inherited prefix ends at a valid boundary, then report the boundary
+    // actually inherited.
     let history_prefix = forkable_prefix(resolved);
     let fork_handle = history_prefix
         .as_ref()

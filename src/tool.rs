@@ -13,8 +13,8 @@ use crate::model::{ARModel, ModelRole};
 /// Read-only, per-dispatch view of the calling Agent's live runtime state.
 ///
 /// The Agent assembles one of these at each tool dispatch and hands it to the
-/// tool by shared reference. It carries what an agent-aware tool (e.g. a future
-/// Fork or Exit tool) needs that construction-time context cannot: the calling
+/// tool by shared reference. It carries what an agent-aware tool (e.g. a Fork
+/// or Exit tool) needs that construction-time context cannot: the calling
 /// agent's identity, its current `History` head, its `SystemPrompt`, its model
 /// assignment and tool set, a spawner for creating peer Agents, and a self-stop
 /// handle. Tools that do not need any of this ignore the context and go through

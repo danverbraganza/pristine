@@ -381,6 +381,7 @@ pub(crate) fn stream_openai_chat(
                                 name: name.clone(),
                                 arguments: arguments.clone(),
                             });
+                            let start_id = id.clone();
                             if tx
                                 .send(Ok(ModelStreamEvent::ToolUseStart { id, name }))
                                 .await
@@ -388,21 +389,16 @@ pub(crate) fn stream_openai_chat(
                             {
                                 return;
                             }
-                            if !arguments.is_empty() {
-                                let id = tool_calls
-                                    .get(&tc.index)
-                                    .map(|s| s.id.clone())
-                                    .unwrap_or_default();
-                                if tx
+                            if !arguments.is_empty()
+                                && tx
                                     .send(Ok(ModelStreamEvent::ToolUseDelta {
-                                        id,
+                                        id: start_id,
                                         partial_json: arguments,
                                     }))
                                     .await
                                     .is_err()
-                                {
-                                    return;
-                                }
+                            {
+                                return;
                             }
                         }
                         std::collections::hash_map::Entry::Occupied(mut slot) => {

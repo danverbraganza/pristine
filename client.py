@@ -127,7 +127,7 @@ class Tool:
 
         Template method: renders errors and non-dict payloads generically, and
         dispatches successful dict results to the overridable `_success_summary`
-        hook so subclasses never restate the error guard.
+        hook.
         """
         if not is_error and isinstance(result, dict):
             return self._success_summary(result)

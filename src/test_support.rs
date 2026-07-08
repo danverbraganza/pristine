@@ -15,9 +15,7 @@ use crate::config::{EnvSource, HomeSource};
 /// Returns the `ANTHROPIC_API_KEY` value, or `None` (after emitting a skip
 /// notice) when it is absent or empty. Live integration tests under `tests/`
 /// share this guard so an `--run-ignored=only` invocation in an unconfigured
-/// shell exits cleanly instead of failing on a missing credential. The
-/// `#[ignore]` attribute already excludes these tests from the default run;
-/// this is the belt-and-suspenders check for ad-hoc invocations.
+/// shell exits cleanly instead of failing on a missing credential.
 pub fn anthropic_key_or_skip() -> Option<String> {
     match std::env::var("ANTHROPIC_API_KEY") {
         Ok(k) if !k.is_empty() => Some(k),

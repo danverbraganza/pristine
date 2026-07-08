@@ -58,11 +58,11 @@ impl std::error::Error for ProviderError {
     }
 }
 
-/// Extracts the `api_key` and optional `base_url` credentials that every
-/// current provider reads from `ModelInstanceConfig::extras`. `provider` names
-/// the caller for error messages; `default_base_url` is used when `base_url` is
-/// absent. `extras` must be a JSON object with a non-empty string `api_key` and
-/// an optional string `base_url`.
+/// Extracts the `api_key` and optional `base_url` credentials a provider reads
+/// from `ModelInstanceConfig::extras`. `provider` names the caller for error
+/// messages; `default_base_url` is used when `base_url` is absent. `extras`
+/// must be a JSON object with a non-empty string `api_key` and an optional
+/// string `base_url`.
 pub(crate) fn parse_api_key_and_base_url(
     extras: &serde_json::Value,
     provider: &str,

@@ -146,9 +146,8 @@ pub struct Agent {
     models: HashMap<ModelRole, Arc<dyn ARModel>>,
     /// The `ModelRole::Default` model resolved once from `models` at build time.
     /// `AgentBuilder::build` guarantees the entry exists and `models` is never
-    /// mutated after build, so the run loop clones this infallibly instead of
-    /// re-looking it up each turn. The full `models` map is retained as the
-    /// multi-role seam handed to `ToolCallContext`.
+    /// mutated after build. The full `models` map is retained as the multi-role
+    /// seam handed to `ToolCallContext`.
     default_model: Arc<dyn ARModel>,
     history: History,
     inbound: BoxStream<'static, Inbound>,
@@ -285,8 +284,7 @@ impl Agent {
     }
 
     /// Assemble the runtime context handed to tools and fork logic, snapshotting
-    /// the Agent's current history head alongside its shared prompt, models,
-    /// tools, spawner, and stop token.
+    /// the Agent's current history head.
     fn tool_call_context(&self) -> ToolCallContext {
         ToolCallContext::new(
             self.id,

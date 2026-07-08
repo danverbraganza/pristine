@@ -28,6 +28,11 @@ enum EditError {
     IoError { reason: String },
 }
 
+#[derive(serde::Serialize)]
+struct EditOutput {
+    replaced: bool,
+}
+
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     shared_resolve_path(input).map_err(|e| {
         execution_err(EditError::InvalidPath {
@@ -138,7 +143,11 @@ impl Tool for Edit {
                 })?;
         }
 
-        Ok(json!({"replaced": true}))
+        serde_json::to_value(EditOutput { replaced: true }).map_err(|e| {
+            execution_err(EditError::IoError {
+                reason: format!("serialize output: {e}"),
+            })
+        })
     }
 }
 

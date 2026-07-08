@@ -792,7 +792,7 @@ The `Display` impl renders every contained error in registration order, with
 file path plus line/column information when the underlying error carries it
 (notably for `TomlParse`). The full list of failure modes lives on the
 `ConfigError` enum (`src/config/error.rs`): `TomlParse`, `UnknownEnvVar`,
-`DanglingAlias`, `ExtraneousAlias`, `UndeclaredTool`, `DuplicateToolRef`,
+`DanglingAlias`, `UndeclaredTool`, `DuplicateToolRef`,
 `UnknownProvider`, `IoError`, and `MissingHome`. Unknown TOML keys are
 rejected by `#[serde(deny_unknown_fields)]` on every typed struct and surface
 through `TomlParse`. No configuration failure is silent.

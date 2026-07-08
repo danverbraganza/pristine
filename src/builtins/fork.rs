@@ -259,7 +259,7 @@ mod tests {
 
     use tokio_util::sync::CancellationToken;
 
-    use crate::agent::SystemPrompt;
+    use crate::agent::{Models, SystemPrompt};
     use crate::history::{AgentId, History, HistoryNode};
     use crate::model::ARModel;
     use crate::test_support::{EchoTool, RecordingSpawner, StubArModel, execution_value};
@@ -290,16 +290,16 @@ mod tests {
         head: Option<Arc<HistoryNode>>,
         tools: Arc<ToolRegistry>,
         spawner: Arc<RecordingSpawner>,
-    ) -> ToolCallContext {
-        ToolCallContext::new(
+    ) -> Result<ToolCallContext, Box<dyn std::error::Error>> {
+        Ok(ToolCallContext::new(
             AgentId::new(),
             head,
             prompt(),
-            models(),
+            Models::new(models())?,
             tools,
             spawner,
             CancellationToken::new(),
-        )
+        ))
     }
 
     fn instruction_content(spec: &AgentSpec) -> Result<String, Box<dyn std::error::Error>> {
@@ -322,7 +322,7 @@ mod tests {
             Some(head.clone()),
             Arc::new(ToolRegistry::new()),
             spawner.clone(),
-        );
+        )?;
         let tool = Fork::new();
 
         let value = tool
@@ -366,7 +366,7 @@ mod tests {
             Some(dangling),
             Arc::new(ToolRegistry::new()),
             spawner.clone(),
-        );
+        )?;
 
         let value = Fork::new()
             .call_with_context(json!({ "instruction": "go" }), &ctx)
@@ -403,7 +403,7 @@ mod tests {
         let head = history.append(user_message("two"));
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone());
+        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone())?;
         let tool = Fork::new();
 
         let value = tool
@@ -440,7 +440,7 @@ mod tests {
         let head = history.head().cloned().ok_or("history has a head")?;
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone());
+        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone())?;
         let tool = Fork::new();
 
         let value = tool
@@ -478,7 +478,7 @@ mod tests {
         parent_tools.register(Arc::new(EchoTool::new("echo-b")))?;
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(None, Arc::new(parent_tools), spawner.clone());
+        let ctx = context(None, Arc::new(parent_tools), spawner.clone())?;
         let tool = Fork::new();
 
         tool.call_with_context(json!({ "instruction": "go", "tools": ["echo-a"] }), &ctx)
@@ -506,7 +506,7 @@ mod tests {
         let head = history.append(user_message("one"));
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone());
+        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone())?;
         let tool = Fork::new();
 
         let err = tool
@@ -534,7 +534,7 @@ mod tests {
         let head = history.append(user_message("one"));
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone());
+        let ctx = context(Some(head), Arc::new(ToolRegistry::new()), spawner.clone())?;
         let tool = Fork::new();
 
         let orphan = CheckpointHandle::from_node_id(NodeId::new());
@@ -562,7 +562,7 @@ mod tests {
         parent_tools.register(Arc::new(EchoTool::new("echo-a")))?;
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(None, Arc::new(parent_tools), spawner.clone());
+        let ctx = context(None, Arc::new(parent_tools), spawner.clone())?;
         let tool = Fork::new();
 
         let err = tool
@@ -587,7 +587,7 @@ mod tests {
         parent_tools.register(Arc::new(EchoTool::new("echo-a")))?;
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(None, Arc::new(parent_tools), spawner.clone());
+        let ctx = context(None, Arc::new(parent_tools), spawner.clone())?;
         let tool = Fork::new();
 
         let err = tool
@@ -614,7 +614,7 @@ mod tests {
         let head = history.append(user_message("only"));
 
         let spawner = Arc::new(RecordingSpawner::new());
-        let ctx = context(Some(head.clone()), Arc::new(ToolRegistry::new()), spawner);
+        let ctx = context(Some(head.clone()), Arc::new(ToolRegistry::new()), spawner)?;
         let tool = Fork::new();
 
         let value = tool

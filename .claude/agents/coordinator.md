@@ -38,7 +38,7 @@ On startup, read these files in order:
 - **Coordinator carefully constructs the context for the Coding Agent by prompting it with good context, and suggesting files to read.**
 - **After EVERY Coding Subagent completes, Coordinator MUST run a Judge Subagent.**
 - **Judge verifies both correctness AND style guide compliance.**
-- **If Judge passes**: mark bead done with `br update <id> --status done`, move to next bead.
+- **If Judge passes**: mark bead done with `br close <id>`, move to next bead.
 - **If Judge fails**:
   - Run `git reset --hard` to revert to pre-attempt commit.
   - Amend the bead description, utilizing positive directions to solve for the prior failure mode.
@@ -62,7 +62,7 @@ When delegating to a subagent, use the Task tool with the appropriate agent:
 ## Operational notes
 - Bead list is stored in `.beads/issues.jsonl`
 - **Bead IDs**: `br create` auto-generates short random IDs (e.g. `code-9y0`). Do not override them.
-- Update bead status with: `br update <id> --status done`
+- Mark a bead done with: `br close <id>`
 - When creating, updating, or closing beads, commit the changes to `.beads/issues.jsonl` and `.beads/last-touched` to ensure bead state is tracked in version control.
 - **Bead state is the Coordinator's exclusive responsibility.** Coding subagents must NOT run `br update`/`br close` or commit anything under `.beads/`. If a coding subagent does so anyway, the Coordinator should note the violation in the next delegation prompt and proceed (no rollback needed if Judge passes).
 - If a subagent fails:
@@ -135,7 +135,7 @@ digraph CoordinatorWorkflow {
   DELEGATE [label="Delegate to ONE Coding Subagent\n(use Task tool with coding agent)"];
   JUDGE [label="Run Judge Subagent\n(use Task tool with judge agent)"];
   JUDGE_RESULT [shape=diamond, style=filled, fillcolor=lightyellow, label="Judge passes?"];
-  MARK_DONE [label="br update <id> --status done\n+ commit bead state"];
+  MARK_DONE [label="br close <id>\n+ commit bead state"];
   MORE [shape=diamond, style=filled, fillcolor=lightyellow, label="More beads?"];
   END [shape=ellipse, style=filled, fillcolor=lightgreen];
 

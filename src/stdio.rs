@@ -141,13 +141,26 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     for notification in announcer.take() {
-        let jsonrpc = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": notification.method(),
-            "params": notification.params()?,
-        });
-        write_line(out, &jsonrpc.to_string()).await?;
+        write_notification(out, notification.method(), notification.params()?).await?;
     }
+    Ok(())
+}
+
+/// Write an id-less JSON-RPC 2.0 notification envelope for `method`/`params`.
+async fn write_notification<W>(
+    out: &mut W,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<(), StdioError>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let jsonrpc = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    });
+    write_line(out, &jsonrpc.to_string()).await?;
     Ok(())
 }
 
@@ -156,12 +169,7 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     let notification = AgentForkedNotification::from_event(event);
-    let jsonrpc = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "agent_forked",
-        "params": notification,
-    });
-    write_line(out, &jsonrpc.to_string()).await?;
+    write_notification(out, "agent_forked", serde_json::to_value(notification)?).await?;
     Ok(())
 }
 
@@ -232,12 +240,7 @@ where
             Some((id, event)) = agent_events.next() => {
                 let is_terminal = matches!(event, AgentEvent::Idle | AgentEvent::Error { .. });
                 let notification = AgentEventNotification::from_event(id, &event);
-                let jsonrpc = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "agent.event",
-                    "params": notification,
-                });
-                write_line(out, &jsonrpc.to_string()).await?;
+                write_notification(out, "agent.event", serde_json::to_value(notification)?).await?;
                 if is_terminal {
                     active.remove(&id);
                 }

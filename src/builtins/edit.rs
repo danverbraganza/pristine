@@ -28,11 +28,6 @@ enum EditError {
     IoError { reason: String },
 }
 
-#[derive(serde::Serialize)]
-struct EditOutput {
-    replaced: bool,
-}
-
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
     shared_resolve_path(input).map_err(|e| match e {
         PathResolveError::Empty => execution_err(EditError::InvalidPath {
@@ -137,26 +132,22 @@ impl Tool for Edit {
             }));
         }
 
-        if parsed.old_str == parsed.new_str {
-            return Ok(serde_json::to_value(EditOutput { replaced: true })
-                .unwrap_or_else(|_| json!({"replaced": true})));
+        if parsed.old_str != parsed.new_str {
+            let new_content = content.replacen(&parsed.old_str, &parsed.new_str, 1);
+
+            atomic_write(&resolved, new_content.as_bytes())
+                .await
+                .map_err(|e| match e {
+                    AtomicWriteError::WriteTmp(msg) => execution_err(EditError::IoError {
+                        reason: format!("write tmp: {msg}"),
+                    }),
+                    AtomicWriteError::Rename(msg) => execution_err(EditError::IoError {
+                        reason: format!("rename: {msg}"),
+                    }),
+                })?;
         }
 
-        let new_content = content.replacen(&parsed.old_str, &parsed.new_str, 1);
-
-        atomic_write(&resolved, new_content.as_bytes())
-            .await
-            .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => execution_err(EditError::IoError {
-                    reason: format!("write tmp: {msg}"),
-                }),
-                AtomicWriteError::Rename(msg) => execution_err(EditError::IoError {
-                    reason: format!("rename: {msg}"),
-                }),
-            })?;
-
-        Ok(serde_json::to_value(EditOutput { replaced: true })
-            .unwrap_or_else(|_| json!({"replaced": true})))
+        Ok(json!({"replaced": true}))
     }
 }
 

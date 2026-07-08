@@ -191,11 +191,11 @@ impl Tool for Insert {
         atomic_write(&resolved, new_content.as_bytes())
             .await
             .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => execution_err(InsertError::IoError {
-                    reason: format!("write tmp: {msg}"),
+                AtomicWriteError::WriteTmp { message, .. } => execution_err(InsertError::IoError {
+                    reason: format!("write tmp: {message}"),
                 }),
-                AtomicWriteError::Rename(msg) => execution_err(InsertError::IoError {
-                    reason: format!("rename: {msg}"),
+                AtomicWriteError::Rename { message, .. } => execution_err(InsertError::IoError {
+                    reason: format!("rename: {message}"),
                 }),
             })?;
 

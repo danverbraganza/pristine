@@ -127,11 +127,13 @@ impl Tool for Edit {
             atomic_write(&resolved, new_content.as_bytes())
                 .await
                 .map_err(|e| match e {
-                    AtomicWriteError::WriteTmp(msg) => execution_err(EditError::IoError {
-                        reason: format!("write tmp: {msg}"),
-                    }),
-                    AtomicWriteError::Rename(msg) => execution_err(EditError::IoError {
-                        reason: format!("rename: {msg}"),
+                    AtomicWriteError::WriteTmp { message, .. } => {
+                        execution_err(EditError::IoError {
+                            reason: format!("write tmp: {message}"),
+                        })
+                    }
+                    AtomicWriteError::Rename { message, .. } => execution_err(EditError::IoError {
+                        reason: format!("rename: {message}"),
                     }),
                 })?;
         }

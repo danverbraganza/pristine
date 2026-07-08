@@ -103,25 +103,25 @@ impl Tool for Write {
         atomic_write(&resolved, parsed.content.as_bytes())
             .await
             .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => {
-                    if msg.to_ascii_lowercase().contains("permission denied") {
+                AtomicWriteError::WriteTmp { kind, message } => {
+                    if kind == std::io::ErrorKind::PermissionDenied {
                         execution_err(WriteError::PermissionDenied {
                             path: resolved.display().to_string(),
                         })
                     } else {
                         execution_err(WriteError::IoError {
-                            reason: format!("write tmp: {msg}"),
+                            reason: format!("write tmp: {message}"),
                         })
                     }
                 }
-                AtomicWriteError::Rename(msg) => {
-                    if msg.to_ascii_lowercase().contains("permission denied") {
+                AtomicWriteError::Rename { kind, message } => {
+                    if kind == std::io::ErrorKind::PermissionDenied {
                         execution_err(WriteError::PermissionDenied {
                             path: resolved.display().to_string(),
                         })
                     } else {
                         execution_err(WriteError::IoError {
-                            reason: format!("rename: {msg}"),
+                            reason: format!("rename: {message}"),
                         })
                     }
                 }

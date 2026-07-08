@@ -61,8 +61,14 @@ pub(crate) async fn read_utf8(path: &Path) -> Result<String, TextReadError> {
 }
 
 pub(crate) enum AtomicWriteError {
-    WriteTmp(String),
-    Rename(String),
+    WriteTmp {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    Rename {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
 }
 
 pub(crate) async fn atomic_write(target: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
@@ -71,9 +77,15 @@ pub(crate) async fn atomic_write(target: &Path, content: &[u8]) -> Result<(), At
     let tmp = PathBuf::from(tmp_os);
     tokio::fs::write(&tmp, content)
         .await
-        .map_err(|e| AtomicWriteError::WriteTmp(format!("{e}")))?;
+        .map_err(|e| AtomicWriteError::WriteTmp {
+            kind: e.kind(),
+            message: format!("{e}"),
+        })?;
     tokio::fs::rename(&tmp, target)
         .await
-        .map_err(|e| AtomicWriteError::Rename(format!("{e}")))?;
+        .map_err(|e| AtomicWriteError::Rename {
+            kind: e.kind(),
+            message: format!("{e}"),
+        })?;
     Ok(())
 }

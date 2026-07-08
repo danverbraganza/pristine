@@ -9,8 +9,7 @@
 //! credential the user later substitutes for it) is not world-readable.
 //!
 //! Existing files are left untouched: `ensure_auth_file` returns `Ok(false)`
-//! without inspecting the contents. The template is verified to round-trip
-//! through `AuthConfig` deserialization by a unit test in this module.
+//! without inspecting the contents.
 
 use std::fs;
 use std::path::Path;

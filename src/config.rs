@@ -38,7 +38,7 @@ pub use topology::{AgentConfig, ResolvedSkillsConfig, SkillsConfig, ToolConfig, 
 pub use validate::validate_tool_refs;
 
 /// Canonical default topology shipped with pristine: the coding-assistant
-/// prompt plus the five built-in tools, embedded at compile time and used as
+/// prompt plus the built-in tools, embedded at compile time and used as
 /// the fallback when no `-c/--config` override is supplied.
 const DEFAULT_TOPOLOGY: &str = include_str!("../default.toml");
 

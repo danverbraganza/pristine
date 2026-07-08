@@ -30,8 +30,8 @@ const MAX_DESCRIPTION_LEN: usize = 1024;
 /// Frontmatter fields deserialized from a `SKILL.md`.
 ///
 /// Optional fields (`license`, `compatibility`, `metadata`, `allowed-tools`)
-/// are parsed so malformed values are caught, but per the bead they are not yet
-/// persisted into [`SkillRecord`] nor enforced.
+/// are parsed so malformed values are caught, but are not yet persisted into
+/// [`SkillRecord`] nor enforced.
 #[derive(Debug, Deserialize)]
 struct Frontmatter {
     name: Option<String>,
@@ -114,9 +114,7 @@ pub fn parse_skill_md(path: &Path) -> Result<(SkillRecord, Vec<SkillDiagnostic>)
     }
 
     // Charset/hyphen rule (§3.1). Independent of the length and mismatch checks,
-    // so a single name may trigger more than one warning. The `name` here is
-    // already trimmed and non-empty (presence is fatal above), so the
-    // empty/leading-after-trim cases cannot double-report the missing-name path.
+    // so a single name may trigger more than one warning.
     if let Some(reason) = invalid_name_reason(&name) {
         warnings.push(SkillDiagnostic::InvalidName {
             path: path.to_path_buf(),

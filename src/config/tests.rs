@@ -429,8 +429,8 @@ fn assemble_config_no_skills_block_disabled() {
 
 #[test]
 fn assemble_config_skills_block_omitting_enabled_is_enabled() {
-    // THE KEY TEST: a present [skills] block that omits `enabled` must resolve
-    // to ENABLED (`Some`) even though it only sets unrelated fields.
+    // A present [skills] block that omits `enabled` must resolve to ENABLED
+    // (`Some`) even though it only sets unrelated fields.
     let config = assemble_skills("[skills]\nuser_paths = [\"~/custom\"]");
     assert!(
         config.skills.is_some(),

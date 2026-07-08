@@ -140,8 +140,7 @@ impl Shell for BashShell {
 
 /// Map an `ExitStatus` to the portable `ExecStatus`. On Unix, a process killed
 /// by a signal reports `None` from `code()`; the signal branch covers that
-/// case. The `unwrap_or(-1)` is defensive for the unlikely case of a normal
-/// exit with no code on a non-Unix platform.
+/// case.
 fn classify_status(exit_status: std::process::ExitStatus) -> ExecStatus {
     #[cfg(unix)]
     {

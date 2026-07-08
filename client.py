@@ -345,7 +345,6 @@ def read_response(proc: subprocess.Popen) -> dict:
 
 def drain_events(
     proc: subprocess.Popen,
-    pending_calls: dict[str, dict],
     main_agent_id: str,
 ) -> bool:
     """Forward a turn's events until the messaged agent and every peer idle.
@@ -357,8 +356,11 @@ def drain_events(
     Forked-peer events (id != `main_agent_id`) render under a box-drawing gutter
     so they are visually distinct.
 
-    `pending_calls` maps tool_use_id -> the call's arguments dict, so a
-    tool_result event can replay the same call signature on its summary line.
+    `pending_calls` (local to this turn) maps tool_use_id -> the call's
+    arguments dict, so a tool_result event can replay the same call signature on
+    its summary line. It is allocated fresh each call because a tool's
+    call/result pair completes within a single drain (the turn ends at idle),
+    so no correlation state should survive across turns.
 
     Returns True when the main (root) agent called `exit()` during the turn,
     signalling the REPL to shut down. An exiting agent stops its run loop
@@ -368,6 +370,7 @@ def drain_events(
     assert proc.stdout is not None
     active: set[str] = {main_agent_id}
     forked: set[str] = set()
+    pending_calls: dict[str, dict] = {}
     root_exited = False
     # Streamed prose per forked peer, buffered and flushed under the gutter at
     # its idle; streaming a peer's tokens inline would interleave illegibly with
@@ -531,7 +534,6 @@ def main() -> None:
         if scripted:
             print("(scripted mode: reading turns from stdin)", file=sys.stderr)
 
-        pending_calls: dict[str, dict] = {}
         while True:
             try:
                 if scripted:
@@ -559,7 +561,7 @@ def main() -> None:
             except RpcError as e:
                 print(f"send_message failed: {e}", file=sys.stderr)
                 continue
-            if drain_events(proc, pending_calls, agent_id):
+            if drain_events(proc, agent_id):
                 print("Agent exited; shutting down.", file=sys.stderr)
                 break
     finally:

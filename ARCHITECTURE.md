@@ -141,8 +141,8 @@ Agent will also be configurable, allowing us to alter the prompt, the skills and
 also be able to tune the strategy to enable adaptive reasoning, utilizing different models for different purposes, etc.
 For now, it is sufficient if these configuration points are hard-coded properties that are directly accessed.
 
-An Agent references Models through a ModelRole indirection: it owns HashMap<ModelRole, Arc<dyn ARModel>> (and,
-eventually, an analogous map for DLModel). ModelRole is an enum naming each model's purpose within the Agent (initially
+An Agent references Models through a ModelRole indirection: it owns a Models newtype holding a lifted `default` model
+plus a `by_role` map of the remaining ModelRole bindings (and, eventually, an analogous structure for DLModel). ModelRole is an enum naming each model's purpose within the Agent (initially
 just Default; later e.g. Summarizer, Critic). The indirection allows adaptive-reasoning strategies to dispatch to the
 appropriate model without restructuring the Agent.
 

@@ -33,38 +33,11 @@ impl DeepSeekProvider {
 
 impl ModelProvider for DeepSeekProvider {
     fn build_model(&self, config: ModelInstanceConfig) -> Result<Arc<dyn ARModel>, ProviderError> {
-        let extras = config
-            .extras
-            .as_object()
-            .ok_or_else(|| ProviderError::BuildFailure {
-                reason: "deepseek provider requires extras to be a JSON object".to_string(),
-            })?;
-
-        let api_key = match extras.get("api_key") {
-            Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
-            Some(_) => {
-                return Err(ProviderError::BuildFailure {
-                    reason: "deepseek provider requires api_key in extras to be a non-empty string"
-                        .to_string(),
-                });
-            }
-            None => {
-                return Err(ProviderError::BuildFailure {
-                    reason: "deepseek provider requires api_key in extras".to_string(),
-                });
-            }
-        };
-
-        let base_url = match extras.get("base_url") {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(_) => {
-                return Err(ProviderError::BuildFailure {
-                    reason: "deepseek provider requires base_url in extras to be a string"
-                        .to_string(),
-                });
-            }
-            None => DEFAULT_BASE_URL.to_string(),
-        };
+        let (api_key, base_url) = crate::provider::parse_api_key_and_base_url(
+            &config.extras,
+            "deepseek",
+            DEFAULT_BASE_URL,
+        )?;
 
         Ok(Arc::new(DeepSeekModel {
             client: reqwest::Client::new(),

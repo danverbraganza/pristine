@@ -68,6 +68,14 @@ def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "\u2026"
 
 
+def _safe_json(obj: object) -> str:
+    """JSON-encode `obj`, falling back to `repr` for non-serializable values."""
+    try:
+        return json.dumps(obj)
+    except (TypeError, ValueError):
+        return repr(obj)
+
+
 # Box-drawing gutter prefixing every line of a forked peer's output, so its
 # activity is visually distinct from the messaged agent's.
 FORK_GUTTER = "\u2502  "
@@ -115,16 +123,21 @@ class Tool:
         return f"{self._name}({_truncate(json.dumps(args), 100)})"
 
     def result_summary(self, result: object, is_error: bool) -> str:
-        """Short outcome string that follows `->` on the result line."""
-        def _safe_json(obj: object) -> str:
-            try:
-                return json.dumps(obj)
-            except (TypeError, ValueError):
-                return repr(obj)
+        """Short outcome string that follows `->` on the result line.
 
+        Template method: renders errors and non-dict payloads generically, and
+        dispatches successful dict results to the overridable `_success_summary`
+        hook so subclasses never restate the error guard.
+        """
+        if not is_error and isinstance(result, dict):
+            return self._success_summary(result)
         if is_error:
             msg = result.get("error") if isinstance(result, dict) else None  # type: ignore[union-attr]
             return f"error: {msg or _safe_json(result)}"
+        return _truncate(_safe_json(result), 80)
+
+    def _success_summary(self, result: dict) -> str:
+        """Summary for a guaranteed non-error dict result; override per tool."""
         return _truncate(_safe_json(result), 80)
 
     def print_call_body(self, args: dict, prefix: str = "") -> None:
@@ -137,9 +150,19 @@ class Tool:
     def print_result_body(self, result: object, is_error: bool, prefix: str = "") -> None:
         """Emit long-form body content (e.g. file text, stdout).
 
-        Most tools produce nothing here; only override when there is
-        human-consumable multi-line output worth showing. Every emitted line
-        must start with *prefix* so forked-agent output stays under its gutter.
+        Template method: skips errors and non-dict payloads, then dispatches
+        successful dict results to the overridable `_success_body` hook. The
+        *prefix* is threaded through so forked-agent output stays under its
+        gutter.
+        """
+        if not is_error and isinstance(result, dict):
+            self._success_body(result, prefix)
+
+    def _success_body(self, result: dict, prefix: str = "") -> None:
+        """Emit long-form body for a guaranteed non-error dict result.
+
+        Default is nothing; override when there is human-consumable multi-line
+        output worth showing. Every emitted line must start with *prefix*.
         """
 
 
@@ -160,9 +183,7 @@ class ReadTool(Tool):
             return f'read("{path}", lines {start or 1}-{end if end is not None else "end"})'
         return f'read("{path}")'
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         content = result.get("content", "")
         if not content:
             n_lines = 0
@@ -172,9 +193,7 @@ class ReadTool(Tool):
             n_lines = content.count("\n") + 1
         return f"success, {n_lines} line{'' if n_lines == 1 else 's'} read"
 
-    def print_result_body(self, result: object, is_error: bool, prefix: str = "") -> None:
-        if is_error or not isinstance(result, dict):
-            return
+    def _success_body(self, result: dict, prefix: str = "") -> None:
         content = result.get("content", "")
         if content:
             _print_block(prefix, content.rstrip("\n"))
@@ -188,9 +207,7 @@ class WriteTool(Tool):
         size = len(args.get("content", "").encode("utf-8"))
         return f'write("{path}", {size} bytes)'
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         n_bytes = result.get("bytes_written", "?")
         return f"success, {n_bytes} byte{'' if n_bytes == 1 else 's'} written"
 
@@ -201,9 +218,7 @@ class EditTool(Tool):
     def call_signature(self, args: dict) -> str:
         return f'edit("{args.get("path", "?")}")'
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         return "success" if "bytes_written" in result else "unchanged"
 
 
@@ -213,9 +228,7 @@ class InsertTool(Tool):
     def call_signature(self, args: dict) -> str:
         return f'insert("{args.get("path", "?")}", after line {args.get("after_line", "?")})'
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         n = result.get("lines_inserted", 0)
         return f"success, {n} line{'' if n == 1 else 's'} inserted"
 
@@ -227,9 +240,7 @@ class ExecBashTool(Tool):
         cmd = _truncate(args.get("command", ""), 80)
         return f"exec_bash({json.dumps(cmd)})"
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         status = result.get("status", {})
         parts: list[str] = []
         if isinstance(status, dict):
@@ -250,9 +261,7 @@ class ExecBashTool(Tool):
             parts.append("stderr truncated")
         return ", ".join(parts)
 
-    def print_result_body(self, result: object, is_error: bool, prefix: str = "") -> None:
-        if is_error or not isinstance(result, dict):
-            return
+    def _success_body(self, result: dict, prefix: str = "") -> None:
         stdout = result.get("stdout", "")
         stderr = result.get("stderr", "")
         if stdout:
@@ -269,9 +278,7 @@ class AddTool(Tool):
     def call_signature(self, args: dict) -> str:
         return f"add({args.get('a', '?')}, {args.get('b', '?')})"
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         return f"sum={result.get('sum', '?')}"
 
 
@@ -293,9 +300,7 @@ class ForkTool(Tool):
         err_console.print(f"{prefix}[dim]--- fork instruction (full prompt) ---[/]")
         _print_block(prefix, instruction if instruction else "(no instruction)")
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         aid = str(result.get("agent_id", "?"))[:8]
         return f"spawned agent #{aid} (forked from {result.get('handle', '?')})"
 
@@ -306,9 +311,7 @@ class ExitTool(Tool):
     def call_signature(self, args: dict) -> str:
         return "exit()"
 
-    def result_summary(self, result: object, is_error: bool) -> str:
-        if is_error or not isinstance(result, dict):
-            return super().result_summary(result, is_error)
+    def _success_summary(self, result: dict) -> str:
         return str(result.get("status", "exiting"))
 
 

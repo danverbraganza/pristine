@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::builtins::path::resolve_path as shared_resolve_path;
+use crate::builtins::path::{TextReadError, read_utf8, resolve_path as shared_resolve_path};
 use crate::tool::{Tool, ToolError, execution_err};
 
 const MAX_BYTES: u64 = 64 * 1024;
@@ -118,33 +118,25 @@ impl Tool for Read {
             }));
         }
 
-        let bytes = match tokio::fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let content = match read_utf8(&resolved).await {
+            Ok(s) => s,
+            Err(TextReadError::NotFound) => {
                 return Err(execution_err(ReadError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
-            Err(e) => {
-                return Err(execution_err(ReadError::IoError {
-                    reason: format!("{e}"),
-                }));
+            Err(TextReadError::NotUtf8 { byte_offset }) => {
+                return Err(execution_err(ReadError::NotUtf8 { byte_offset }));
             }
-        };
-
-        let content = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(execution_err(ReadError::NotUtf8 {
-                    byte_offset: e.valid_up_to(),
-                }));
+            Err(TextReadError::Io { reason }) => {
+                return Err(execution_err(ReadError::IoError { reason }));
             }
         };
 
         let out = if has_range {
-            slice_lines(content, parsed.start_line, parsed.end_line)?
+            slice_lines(&content, parsed.start_line, parsed.end_line)?
         } else {
-            content.to_string()
+            content
         };
 
         serde_json::to_value(ReadOutput { content: out }).map_err(|e| {

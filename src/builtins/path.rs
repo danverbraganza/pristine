@@ -39,6 +39,27 @@ pub(crate) fn resolve_path(input: &str) -> Result<PathBuf, PathResolveError> {
     Ok(cwd.join(p))
 }
 
+pub(crate) enum TextReadError {
+    NotFound,
+    NotUtf8 { byte_offset: usize },
+    Io { reason: String },
+}
+
+pub(crate) async fn read_utf8(path: &Path) -> Result<String, TextReadError> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(TextReadError::NotFound),
+        Err(e) => {
+            return Err(TextReadError::Io {
+                reason: format!("{e}"),
+            });
+        }
+    };
+    String::from_utf8(bytes).map_err(|e| TextReadError::NotUtf8 {
+        byte_offset: e.utf8_error().valid_up_to(),
+    })
+}
+
 pub(crate) enum AtomicWriteError {
     WriteTmp(String),
     Rename(String),

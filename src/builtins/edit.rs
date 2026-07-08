@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::builtins::path::{AtomicWriteError, atomic_write, resolve_path as shared_resolve_path};
+use crate::builtins::path::{
+    AtomicWriteError, TextReadError, atomic_write, read_utf8, resolve_path as shared_resolve_path,
+};
 use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
@@ -93,26 +95,18 @@ impl Tool for Edit {
             return Err(execution_err(EditError::NoMatches));
         }
 
-        let bytes = match tokio::fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let content = match read_utf8(&resolved).await {
+            Ok(s) => s,
+            Err(TextReadError::NotFound) => {
                 return Err(execution_err(EditError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
-            Err(e) => {
-                return Err(execution_err(EditError::IoError {
-                    reason: format!("{e}"),
-                }));
+            Err(TextReadError::NotUtf8 { byte_offset }) => {
+                return Err(execution_err(EditError::NotUtf8 { byte_offset }));
             }
-        };
-
-        let content = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(execution_err(EditError::NotUtf8 {
-                    byte_offset: e.valid_up_to(),
-                }));
+            Err(TextReadError::Io { reason }) => {
+                return Err(execution_err(EditError::IoError { reason }));
             }
         };
 

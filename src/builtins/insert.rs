@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
-use crate::builtins::path::{AtomicWriteError, atomic_write, resolve_path as shared_resolve_path};
+use crate::builtins::path::{
+    AtomicWriteError, TextReadError, atomic_write, read_utf8, resolve_path as shared_resolve_path,
+};
 use crate::tool::{Tool, ToolError, execution_err};
 
 #[derive(serde::Deserialize)]
@@ -115,30 +117,22 @@ impl Tool for Insert {
 
         let resolved = resolve_path(&parsed.path)?;
 
-        let bytes = match tokio::fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let original = match read_utf8(&resolved).await {
+            Ok(s) => s,
+            Err(TextReadError::NotFound) => {
                 return Err(execution_err(InsertError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
-            Err(e) => {
-                return Err(execution_err(InsertError::IoError {
-                    reason: format!("{e}"),
-                }));
+            Err(TextReadError::NotUtf8 { byte_offset }) => {
+                return Err(execution_err(InsertError::NotUtf8 { byte_offset }));
+            }
+            Err(TextReadError::Io { reason }) => {
+                return Err(execution_err(InsertError::IoError { reason }));
             }
         };
 
-        let original = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(execution_err(InsertError::NotUtf8 {
-                    byte_offset: e.valid_up_to(),
-                }));
-            }
-        };
-
-        let total_lines = logical_line_count(original);
+        let total_lines = logical_line_count(&original);
 
         if parsed.after_line > total_lines {
             return Err(execution_err(InsertError::InvalidAfterLine {

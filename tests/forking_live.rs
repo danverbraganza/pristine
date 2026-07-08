@@ -37,15 +37,8 @@ const OVERALL_DEADLINE: Duration = Duration::from_secs(90);
 #[ignore = "live API, requires ANTHROPIC_API_KEY"]
 async fn forking_live_forked_subagent_runs_and_writes_a_file()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Guard: skip cleanly when the live credential is absent. `#[ignore]`
-    // already excludes this from the default run; this protects ad-hoc
-    // `--run-ignored=only` invocations in an unconfigured shell.
-    let api_key = match env::var("ANTHROPIC_API_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return Ok(());
-        }
+    let Some(api_key) = pristine::test_support::anthropic_key_or_skip() else {
+        return Ok(());
     };
 
     let workdir =

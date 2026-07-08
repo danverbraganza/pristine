@@ -2,18 +2,13 @@ use futures::StreamExt;
 use pristine::model::anthropic::AnthropicProvider;
 use pristine::model::{ContentPart, ModelInput, ModelStreamEvent, Role, ToolSpec, Turn};
 use pristine::provider::{ModelInstanceConfig, ModelProvider};
-use std::env;
 use std::time::Duration;
 
 #[tokio::test]
 #[ignore = "live API; run with `cargo nextest run --run-ignored only` and ANTHROPIC_API_KEY set"]
 async fn live_anthropic_smoke() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = match env::var("ANTHROPIC_API_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return Ok(());
-        }
+    let Some(api_key) = pristine::test_support::anthropic_key_or_skip() else {
+        return Ok(());
     };
 
     let model = AnthropicProvider::new()
@@ -67,12 +62,8 @@ async fn live_anthropic_smoke() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 #[ignore = "live API; run with `cargo nextest run --run-ignored only` and ANTHROPIC_API_KEY set"]
 async fn live_anthropic_tool_use_smoke() -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = match env::var("ANTHROPIC_API_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return Ok(());
-        }
+    let Some(api_key) = pristine::test_support::anthropic_key_or_skip() else {
+        return Ok(());
     };
 
     let model = AnthropicProvider::new()

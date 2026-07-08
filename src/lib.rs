@@ -211,25 +211,19 @@ pub fn build_harness_from_config(
     builder = register_builtin_tools(builder, &config.tools, &builtin_ctx)?;
 
     let mut provider_errors = ConfigErrors::new();
-    for agent in &config.agents {
-        if !providers.contains_key(&agent.model.provider_name) {
-            provider_errors.push(ConfigError::UnknownProvider {
-                name: agent.model.provider_name.clone(),
-            });
-        }
-    }
-    if !provider_errors.is_empty() {
-        return Err(HarnessAssemblyError::Config(provider_errors));
-    }
-
     let mut agent_ids = Vec::with_capacity(config.agents.len());
     for (idx, agent) in config.agents.iter().enumerate() {
-        let provider = providers.get(&agent.model.provider_name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "internal: provider '{}' disappeared from registry after validation",
-                agent.model.provider_name
-            )
-        })?;
+        // Aggregate every unknown provider before erroring so all misses in a
+        // config surface in one pass rather than one at a time.
+        let provider = match providers.get(&agent.model.provider_name) {
+            Some(provider) => provider,
+            None => {
+                provider_errors.push(ConfigError::UnknownProvider {
+                    name: agent.model.provider_name.clone(),
+                });
+                continue;
+            }
+        };
 
         let mut extras = serde_json::Map::new();
         extras.insert(
@@ -274,6 +268,10 @@ pub fn build_harness_from_config(
                 model_id,
             });
         agent_ids.push(agent_id);
+    }
+
+    if !provider_errors.is_empty() {
+        return Err(HarnessAssemblyError::Config(provider_errors));
     }
 
     if let Some(source) = &skills {

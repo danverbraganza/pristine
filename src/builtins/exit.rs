@@ -75,7 +75,7 @@ mod tests {
     use tokio::time::timeout;
     use tokio_util::sync::CancellationToken;
 
-    use crate::agent::SystemPrompt;
+    use crate::agent::{Models, SystemPrompt};
     use crate::harness::{
         AgentSpawner, AgentSpec, Error as HarnessError, HarnessBuilder, ModelId, PendingAgent,
     };
@@ -117,7 +117,7 @@ mod tests {
             AgentId::new(),
             None,
             prompt("agent"),
-            models(),
+            Models::new(models())?,
             Arc::new(ToolRegistry::new()),
             Arc::new(NoopSpawner),
             token.clone(),

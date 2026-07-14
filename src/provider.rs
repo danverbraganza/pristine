@@ -58,6 +58,51 @@ impl std::error::Error for ProviderError {
     }
 }
 
+/// Extracts the `api_key` and optional `base_url` credentials a provider reads
+/// from `ModelInstanceConfig::extras`. `provider` names the caller for error
+/// messages; `default_base_url` is used when `base_url` is absent. `extras`
+/// must be a JSON object with a non-empty string `api_key` and an optional
+/// string `base_url`.
+pub(crate) fn parse_api_key_and_base_url(
+    extras: &serde_json::Value,
+    provider: &str,
+    default_base_url: &str,
+) -> Result<(String, String), ProviderError> {
+    let extras = extras
+        .as_object()
+        .ok_or_else(|| ProviderError::BuildFailure {
+            reason: format!("{provider} provider requires extras to be a JSON object"),
+        })?;
+
+    let api_key = match extras.get("api_key") {
+        Some(serde_json::Value::String(s)) if !s.is_empty() => s.clone(),
+        Some(_) => {
+            return Err(ProviderError::BuildFailure {
+                reason: format!(
+                    "{provider} provider requires api_key in extras to be a non-empty string"
+                ),
+            });
+        }
+        None => {
+            return Err(ProviderError::BuildFailure {
+                reason: format!("{provider} provider requires api_key in extras"),
+            });
+        }
+    };
+
+    let base_url = match extras.get("base_url") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(_) => {
+            return Err(ProviderError::BuildFailure {
+                reason: format!("{provider} provider requires base_url in extras to be a string"),
+            });
+        }
+        None => default_base_url.to_string(),
+    };
+
+    Ok((api_key, base_url))
+}
+
 /// Builds concrete `ARModel` instances from `ModelInstanceConfig`.
 /// Provider impls own their own dialect — they pull whatever credentials and
 /// options they need out of `config.extras` and surface any errors as

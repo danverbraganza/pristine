@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::builtins::path::{
-    AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
+    AtomicWriteError, TextReadError, atomic_write, read_utf8, resolve_path as shared_resolve_path,
 };
 use crate::tool::{Tool, ToolError, execution_err};
 
@@ -25,6 +25,7 @@ enum EditError {
     FileNotFound { path: String },
     NotUtf8 { byte_offset: usize },
     InvalidPath { reason: String },
+    PermissionDenied { path: String },
     IoError { reason: String },
 }
 
@@ -34,13 +35,10 @@ struct EditOutput {
 }
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
-    shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => execution_err(EditError::InvalidPath {
-            reason: "path is empty".to_string(),
-        }),
-        PathResolveError::Cwd(msg) => execution_err(EditError::InvalidPath {
-            reason: format!("cwd: {msg}"),
-        }),
+    shared_resolve_path(input).map_err(|e| {
+        execution_err(EditError::InvalidPath {
+            reason: e.to_string(),
+        })
     })
 }
 
@@ -103,26 +101,23 @@ impl Tool for Edit {
             return Err(execution_err(EditError::NoMatches));
         }
 
-        let bytes = match tokio::fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let content = match read_utf8(&resolved).await {
+            Ok(s) => s,
+            Err(TextReadError::NotFound) => {
                 return Err(execution_err(EditError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
-            Err(e) => {
-                return Err(execution_err(EditError::IoError {
-                    reason: format!("{e}"),
-                }));
+            Err(TextReadError::NotUtf8 { byte_offset }) => {
+                return Err(execution_err(EditError::NotUtf8 { byte_offset }));
             }
-        };
-
-        let content = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(execution_err(EditError::NotUtf8 {
-                    byte_offset: e.valid_up_to(),
-                }));
+            Err(TextReadError::Io { kind, message }) => {
+                if kind == std::io::ErrorKind::PermissionDenied {
+                    return Err(execution_err(EditError::PermissionDenied {
+                        path: resolved.display().to_string(),
+                    }));
+                }
+                return Err(execution_err(EditError::IoError { reason: message }));
             }
         };
 
@@ -137,26 +132,28 @@ impl Tool for Edit {
             }));
         }
 
-        if parsed.old_str == parsed.new_str {
-            return Ok(serde_json::to_value(EditOutput { replaced: true })
-                .unwrap_or_else(|_| json!({"replaced": true})));
+        if parsed.old_str != parsed.new_str {
+            let new_content = content.replacen(&parsed.old_str, &parsed.new_str, 1);
+
+            atomic_write(&resolved, new_content.as_bytes())
+                .await
+                .map_err(|e| match e {
+                    AtomicWriteError::WriteTmp { message, .. } => {
+                        execution_err(EditError::IoError {
+                            reason: format!("write tmp: {message}"),
+                        })
+                    }
+                    AtomicWriteError::Rename { message, .. } => execution_err(EditError::IoError {
+                        reason: format!("rename: {message}"),
+                    }),
+                })?;
         }
 
-        let new_content = content.replacen(&parsed.old_str, &parsed.new_str, 1);
-
-        atomic_write(&resolved, new_content.as_bytes())
-            .await
-            .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => execution_err(EditError::IoError {
-                    reason: format!("write tmp: {msg}"),
-                }),
-                AtomicWriteError::Rename(msg) => execution_err(EditError::IoError {
-                    reason: format!("rename: {msg}"),
-                }),
-            })?;
-
-        Ok(serde_json::to_value(EditOutput { replaced: true })
-            .unwrap_or_else(|_| json!({"replaced": true})))
+        serde_json::to_value(EditOutput { replaced: true }).map_err(|e| {
+            execution_err(EditError::IoError {
+                reason: format!("serialize output: {e}"),
+            })
+        })
     }
 }
 
@@ -301,6 +298,33 @@ mod tests {
         let value = execution_value(err)?;
         assert_eq!(value["kind"], "not_utf8");
         assert_eq!(value["byte_offset"], 2);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_returns_permission_denied_on_unreadable_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "locked.txt", b"foo bar baz");
+        if !crate::test_support::deny_reads_or_skip(&path)? {
+            return Ok(());
+        }
+        let tool = Edit::new();
+
+        let result = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "old_str": "bar",
+                "new_str": "BAR",
+            }))
+            .await;
+        crate::test_support::restore_reads(&path)?;
+
+        let err = result.err().ok_or("unreadable file must error")?;
+        let value = execution_value(err)?;
+        assert_eq!(value["kind"], "permission_denied");
+        assert_eq!(value["path"], path.display().to_string());
         Ok(())
     }
 

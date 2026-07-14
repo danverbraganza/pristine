@@ -18,6 +18,15 @@ pub(crate) enum PathResolveError {
     Cwd(String),
 }
 
+impl std::fmt::Display for PathResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PathResolveError::Empty => write!(f, "path is empty"),
+            PathResolveError::Cwd(msg) => write!(f, "cwd: {msg}"),
+        }
+    }
+}
+
 pub(crate) fn resolve_path(input: &str) -> Result<PathBuf, PathResolveError> {
     if input.is_empty() {
         return Err(PathResolveError::Empty);
@@ -30,9 +39,42 @@ pub(crate) fn resolve_path(input: &str) -> Result<PathBuf, PathResolveError> {
     Ok(cwd.join(p))
 }
 
+pub(crate) enum TextReadError {
+    NotFound,
+    NotUtf8 {
+        byte_offset: usize,
+    },
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+}
+
+pub(crate) async fn read_utf8(path: &Path) -> Result<String, TextReadError> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(TextReadError::NotFound),
+        Err(e) => {
+            return Err(TextReadError::Io {
+                kind: e.kind(),
+                message: format!("{e}"),
+            });
+        }
+    };
+    String::from_utf8(bytes).map_err(|e| TextReadError::NotUtf8 {
+        byte_offset: e.utf8_error().valid_up_to(),
+    })
+}
+
 pub(crate) enum AtomicWriteError {
-    WriteTmp(String),
-    Rename(String),
+    WriteTmp {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    Rename {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
 }
 
 pub(crate) async fn atomic_write(target: &Path, content: &[u8]) -> Result<(), AtomicWriteError> {
@@ -41,9 +83,15 @@ pub(crate) async fn atomic_write(target: &Path, content: &[u8]) -> Result<(), At
     let tmp = PathBuf::from(tmp_os);
     tokio::fs::write(&tmp, content)
         .await
-        .map_err(|e| AtomicWriteError::WriteTmp(format!("{e}")))?;
+        .map_err(|e| AtomicWriteError::WriteTmp {
+            kind: e.kind(),
+            message: format!("{e}"),
+        })?;
     tokio::fs::rename(&tmp, target)
         .await
-        .map_err(|e| AtomicWriteError::Rename(format!("{e}")))?;
+        .map_err(|e| AtomicWriteError::Rename {
+            kind: e.kind(),
+            message: format!("{e}"),
+        })?;
     Ok(())
 }

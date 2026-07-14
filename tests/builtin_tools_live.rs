@@ -37,16 +37,8 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 #[tokio::test]
 #[ignore = "live API, requires ANTHROPIC_API_KEY"]
 async fn builtin_tools_live_read_edit_exec() -> Result<(), Box<dyn std::error::Error>> {
-    // Guard: skip cleanly if the live credential is not present. The
-    // `#[ignore]` attribute already excludes this test from the default
-    // run; this belt-and-suspenders check protects ad-hoc invocations
-    // such as `--run-ignored=only` in an unconfigured shell.
-    let api_key = match env::var("ANTHROPIC_API_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            eprintln!("ANTHROPIC_API_KEY not set; skipping live test");
-            return Ok(());
-        }
+    let Some(api_key) = pristine::test_support::anthropic_key_or_skip() else {
+        return Ok(());
     };
 
     let workdir = env::temp_dir().join(format!(

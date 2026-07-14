@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::SystemPrompt;
+use crate::agent::{Models, SystemPrompt};
 use crate::harness::AgentSpawner;
 use crate::history::{AgentId, HistoryNode};
 use crate::model::{ARModel, ModelRole};
@@ -24,7 +24,7 @@ pub struct ToolCallContext {
     agent_id: AgentId,
     history_head: Option<Arc<HistoryNode>>,
     system_prompt: SystemPrompt,
-    models: HashMap<ModelRole, Arc<dyn ARModel>>,
+    models: Models,
     tools: Arc<ToolRegistry>,
     spawner: Arc<dyn AgentSpawner>,
     stop_token: CancellationToken,
@@ -38,7 +38,7 @@ impl ToolCallContext {
         agent_id: AgentId,
         history_head: Option<Arc<HistoryNode>>,
         system_prompt: SystemPrompt,
-        models: HashMap<ModelRole, Arc<dyn ARModel>>,
+        models: Models,
         tools: Arc<ToolRegistry>,
         spawner: Arc<dyn AgentSpawner>,
         stop_token: CancellationToken,
@@ -73,12 +73,7 @@ impl ToolCallContext {
 
     /// The model bound to `role`, if any.
     pub fn model(&self, role: ModelRole) -> Option<&Arc<dyn ARModel>> {
-        self.models.get(&role)
-    }
-
-    /// The calling Agent's full model assignment.
-    pub fn models(&self) -> &HashMap<ModelRole, Arc<dyn ARModel>> {
-        &self.models
+        self.models.get(role)
     }
 
     /// The calling Agent's tool set.

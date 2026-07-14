@@ -141,8 +141,8 @@ Agent will also be configurable, allowing us to alter the prompt, the skills and
 also be able to tune the strategy to enable adaptive reasoning, utilizing different models for different purposes, etc.
 For now, it is sufficient if these configuration points are hard-coded properties that are directly accessed.
 
-An Agent references Models through a ModelRole indirection: it owns HashMap<ModelRole, Arc<dyn ARModel>> (and,
-eventually, an analogous map for DLModel). ModelRole is an enum naming each model's purpose within the Agent (initially
+An Agent references Models through a ModelRole indirection: it owns a Models newtype holding a lifted `default` model
+plus a `by_role` map of the remaining ModelRole bindings (and, eventually, an analogous structure for DLModel). ModelRole is an enum naming each model's purpose within the Agent (initially
 just Default; later e.g. Summarizer, Critic). The indirection allows adaptive-reasoning strategies to dispatch to the
 appropriate model without restructuring the Agent.
 
@@ -639,10 +639,10 @@ all children at once.
 
 An `AgentSpec` carries everything the Nursery needs to spawn a peer: the system
 prompt, model, tool set, optional `history_prefix` head, optional initial
-`instruction` block, and — when the spec is a fork — the `origin` Agent and
-`forked_from` handle. On a fork spawn the Nursery emits an `AgentForked` event
-on the bus's fork broadcast; a plain runtime spawn leaves `origin`/`forked_from`
-`None` and emits nothing.
+`instruction` block, and — when the spec is a fork — a `fork` provenance pairing
+the origin Agent with the inherited handle. On a fork spawn the Nursery emits an
+`AgentForked` event on the bus's fork broadcast; a plain runtime spawn leaves
+`fork` `None` and emits nothing.
 
 ### The `ToolCallContext` seam
 
@@ -792,7 +792,7 @@ The `Display` impl renders every contained error in registration order, with
 file path plus line/column information when the underlying error carries it
 (notably for `TomlParse`). The full list of failure modes lives on the
 `ConfigError` enum (`src/config/error.rs`): `TomlParse`, `UnknownEnvVar`,
-`DanglingAlias`, `ExtraneousAlias`, `UndeclaredTool`, `DuplicateToolRef`,
+`DanglingAlias`, `UndeclaredTool`, `DuplicateToolRef`,
 `UnknownProvider`, `IoError`, and `MissingHome`. Unknown TOML keys are
 rejected by `#[serde(deny_unknown_fields)]` on every typed struct and surface
 through `TomlParse`. No configuration failure is silent.
@@ -908,8 +908,8 @@ flag; persistent per-project trust is deferred. The flag threads end to end:
   and records each as a `bypassed_path` diagnostic; user-scope discovery is
   unaffected.
 - `client.py`: an argparse `--trust-project-skills` (`action="store_true"`,
-  `default=None`) is forwarded to the binary only when explicitly passed,
-  mirroring the existing `--model` pattern.
+  defaulting false) is forwarded to the binary only when passed, gated on a
+  plain truthiness check.
 - `justfile`: `chat *args` already forwards arbitrary arguments via `{{args}}`,
   so the flag passes through `just chat` with no justfile change.
 

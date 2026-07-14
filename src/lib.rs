@@ -210,12 +210,17 @@ pub fn build_harness_from_config(
     };
     builder = register_builtin_tools(builder, &config.tools, &builtin_ctx)?;
 
+    // Resolve every agent's provider up front, aggregating each miss into
+    // provider_errors. The build loop below runs only after every name resolves.
     let mut provider_errors = ConfigErrors::new();
+    let mut resolved_providers: Vec<&Arc<dyn ModelProvider>> =
+        Vec::with_capacity(config.agents.len());
     for agent in &config.agents {
-        if !providers.contains_key(&agent.model.provider_name) {
-            provider_errors.push(ConfigError::UnknownProvider {
+        match providers.get(&agent.model.provider_name) {
+            Some(provider) => resolved_providers.push(provider),
+            None => provider_errors.push(ConfigError::UnknownProvider {
                 name: agent.model.provider_name.clone(),
-            });
+            }),
         }
     }
     if !provider_errors.is_empty() {
@@ -223,14 +228,7 @@ pub fn build_harness_from_config(
     }
 
     let mut agent_ids = Vec::with_capacity(config.agents.len());
-    for (idx, agent) in config.agents.iter().enumerate() {
-        let provider = providers.get(&agent.model.provider_name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "internal: provider '{}' disappeared from registry after validation",
-                agent.model.provider_name
-            )
-        })?;
-
+    for (idx, (agent, provider)) in config.agents.iter().zip(resolved_providers).enumerate() {
         let mut extras = serde_json::Map::new();
         extras.insert(
             "api_key".to_string(),
@@ -911,6 +909,85 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    /// Collect the names carried by every `ConfigError::UnknownProvider` in
+    /// `errors`, in registration order.
+    fn unknown_provider_names(errors: &ConfigErrors) -> Vec<String> {
+        errors
+            .as_slice()
+            .iter()
+            .filter_map(|entry| match entry {
+                ConfigError::UnknownProvider { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn build_harness_from_config_unknown_provider_precedes_later_model_build_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.agents[0].model.provider_name = "nonesuch".to_string();
+        config.agents.push(ResolvedAgent {
+            name: "second".to_string(),
+            system_prompt: "second prompt".to_string(),
+            tools: Vec::new(),
+            model: ResolvedModel {
+                alias: "default".to_string(),
+                provider_name: "anthropic".to_string(),
+                model_name: "claude-sonnet-4-6".to_string(),
+                api_key: String::new(),
+            },
+        });
+
+        match build_harness_from_config(config, false) {
+            Ok(_) => Err("unknown provider must fail".into()),
+            Err(HarnessAssemblyError::Config(errors)) => {
+                assert_eq!(
+                    unknown_provider_names(&errors),
+                    vec!["nonesuch".to_string()],
+                    "the unknown provider outranks the later empty-api_key build failure, got {errors}",
+                );
+                Ok(())
+            }
+            Err(HarnessAssemblyError::Other(e)) => {
+                Err(format!("expected Config variant, got Other: {e}").into())
+            }
+        }
+    }
+
+    #[test]
+    fn build_harness_from_config_two_unknown_providers_report_both()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut config = one_agent_config();
+        config.agents[0].model.provider_name = "nonesuch".to_string();
+        config.agents.push(ResolvedAgent {
+            name: "second".to_string(),
+            system_prompt: "second prompt".to_string(),
+            tools: Vec::new(),
+            model: ResolvedModel {
+                alias: "default".to_string(),
+                provider_name: "alsomissing".to_string(),
+                model_name: "claude-sonnet-4-6".to_string(),
+                api_key: "sk-test-2".to_string(),
+            },
+        });
+
+        match build_harness_from_config(config, false) {
+            Ok(_) => Err("unknown providers must fail".into()),
+            Err(HarnessAssemblyError::Config(errors)) => {
+                assert_eq!(
+                    unknown_provider_names(&errors),
+                    vec!["nonesuch".to_string(), "alsomissing".to_string()],
+                    "both unknown providers report in one aggregate, got {errors}",
+                );
+                Ok(())
+            }
+            Err(HarnessAssemblyError::Other(e)) => {
+                Err(format!("expected Config variant, got Other: {e}").into())
+            }
+        }
     }
 
     #[test]

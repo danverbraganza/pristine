@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::builtins::path::{
-    AtomicWriteError, PathResolveError, atomic_write, resolve_path as shared_resolve_path,
+    AtomicWriteError, TextReadError, atomic_write, read_utf8, resolve_path as shared_resolve_path,
 };
 use crate::tool::{Tool, ToolError, execution_err};
 
@@ -34,6 +34,9 @@ enum InsertError {
     InvalidPath {
         reason: String,
     },
+    PermissionDenied {
+        path: String,
+    },
     IoError {
         reason: String,
     },
@@ -45,13 +48,10 @@ struct InsertOutput {
 }
 
 fn resolve_path(input: &str) -> Result<PathBuf, ToolError> {
-    shared_resolve_path(input).map_err(|e| match e {
-        PathResolveError::Empty => execution_err(InsertError::InvalidPath {
-            reason: "path is empty".to_string(),
-        }),
-        PathResolveError::Cwd(msg) => execution_err(InsertError::InvalidPath {
-            reason: format!("cwd: {msg}"),
-        }),
+    shared_resolve_path(input).map_err(|e| {
+        execution_err(InsertError::InvalidPath {
+            reason: e.to_string(),
+        })
     })
 }
 
@@ -120,30 +120,27 @@ impl Tool for Insert {
 
         let resolved = resolve_path(&parsed.path)?;
 
-        let bytes = match tokio::fs::read(&resolved).await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        let original = match read_utf8(&resolved).await {
+            Ok(s) => s,
+            Err(TextReadError::NotFound) => {
                 return Err(execution_err(InsertError::FileNotFound {
                     path: resolved.to_string_lossy().into_owned(),
                 }));
             }
-            Err(e) => {
-                return Err(execution_err(InsertError::IoError {
-                    reason: format!("{e}"),
-                }));
+            Err(TextReadError::NotUtf8 { byte_offset }) => {
+                return Err(execution_err(InsertError::NotUtf8 { byte_offset }));
+            }
+            Err(TextReadError::Io { kind, message }) => {
+                if kind == std::io::ErrorKind::PermissionDenied {
+                    return Err(execution_err(InsertError::PermissionDenied {
+                        path: resolved.display().to_string(),
+                    }));
+                }
+                return Err(execution_err(InsertError::IoError { reason: message }));
             }
         };
 
-        let original = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(e) => {
-                return Err(execution_err(InsertError::NotUtf8 {
-                    byte_offset: e.valid_up_to(),
-                }));
-            }
-        };
-
-        let total_lines = logical_line_count(original);
+        let total_lines = logical_line_count(&original);
 
         if parsed.after_line > total_lines {
             return Err(execution_err(InsertError::InvalidAfterLine {
@@ -202,11 +199,11 @@ impl Tool for Insert {
         atomic_write(&resolved, new_content.as_bytes())
             .await
             .map_err(|e| match e {
-                AtomicWriteError::WriteTmp(msg) => execution_err(InsertError::IoError {
-                    reason: format!("write tmp: {msg}"),
+                AtomicWriteError::WriteTmp { message, .. } => execution_err(InsertError::IoError {
+                    reason: format!("write tmp: {message}"),
                 }),
-                AtomicWriteError::Rename(msg) => execution_err(InsertError::IoError {
-                    reason: format!("rename: {msg}"),
+                AtomicWriteError::Rename { message, .. } => execution_err(InsertError::IoError {
+                    reason: format!("rename: {message}"),
                 }),
             })?;
 
@@ -435,6 +432,33 @@ mod tests {
             value["path"].as_str().expect("path is a string"),
             missing.to_string_lossy(),
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn insert_permission_denied_on_unreadable_file() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = unique_tempdir();
+        let path = write_fixture(&dir, "locked.txt", b"a\nb\n");
+        if !crate::test_support::deny_reads_or_skip(&path)? {
+            return Ok(());
+        }
+        let tool = Insert::new();
+
+        let result = tool
+            .call(json!({
+                "path": path.to_string_lossy(),
+                "after_line": 0,
+                "content": "X",
+            }))
+            .await;
+        crate::test_support::restore_reads(&path)?;
+
+        let err = result.err().ok_or("unreadable file must error")?;
+        let value = execution_value(err)?;
+        assert_eq!(value["kind"], "permission_denied");
+        assert_eq!(value["path"], path.display().to_string());
         Ok(())
     }
 

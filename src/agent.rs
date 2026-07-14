@@ -106,7 +106,6 @@ pub enum Error {
     Configuration(String),
     Model(model::Error),
     Bus(messagebus::Error),
-    MissingDefaultModel,
 }
 
 impl std::fmt::Display for Error {
@@ -115,7 +114,6 @@ impl std::fmt::Display for Error {
             Error::Configuration(msg) => write!(f, "configuration error: {msg}"),
             Error::Model(err) => write!(f, "model error: {err}"),
             Error::Bus(err) => write!(f, "message bus error: {err}"),
-            Error::MissingDefaultModel => write!(f, "missing default model"),
         }
     }
 }
@@ -142,10 +140,47 @@ impl From<messagebus::Error> for Error {
     }
 }
 
+/// An Agent's model assignment with a structurally-guaranteed default.
+///
+/// `default` is the model bound to [`ModelRole::Default`]; `by_role` holds the
+/// remaining role bindings. [`Models::new`] is the only constructor, so a
+/// `Models` cannot exist without a default.
+#[derive(Clone)]
+pub struct Models {
+    default: Arc<dyn ARModel>,
+    by_role: HashMap<ModelRole, Arc<dyn ARModel>>,
+}
+
+impl Models {
+    /// Build from a role-to-model map, lifting the [`ModelRole::Default`]
+    /// binding out of it. Returns [`Error::Configuration`] when no `Default`
+    /// binding is present.
+    pub fn new(mut by_role: HashMap<ModelRole, Arc<dyn ARModel>>) -> Result<Self, Error> {
+        let default = by_role
+            .remove(&ModelRole::Default)
+            .ok_or_else(|| Error::Configuration("default model is required".to_string()))?;
+        Ok(Self { default, by_role })
+    }
+
+    /// The [`ModelRole::Default`] model.
+    pub fn default(&self) -> &Arc<dyn ARModel> {
+        &self.default
+    }
+
+    /// The model bound to `role`, if any.
+    pub fn get(&self, role: ModelRole) -> Option<&Arc<dyn ARModel>> {
+        if role == ModelRole::Default {
+            Some(&self.default)
+        } else {
+            self.by_role.get(&role)
+        }
+    }
+}
+
 pub struct Agent {
     id: AgentId,
     system_prompt: SystemPrompt,
-    models: HashMap<ModelRole, Arc<dyn ARModel>>,
+    models: Models,
     history: History,
     inbound: BoxStream<'static, Inbound>,
     bus: Arc<dyn MessageBus>,
@@ -232,11 +267,7 @@ impl AgentBuilder {
         let system_prompt = self
             .system_prompt
             .ok_or_else(|| Error::Configuration("system prompt is required".to_string()))?;
-        if !self.models.contains_key(&ModelRole::Default) {
-            return Err(Error::Configuration(
-                "default model is required".to_string(),
-            ));
-        }
+        let models = Models::new(self.models)?;
         let blocks = bus.register(id)?;
         let control = bus.control_stream(id)?;
         // Merge the Block inbound and control streams into one so the run loop
@@ -253,7 +284,7 @@ impl AgentBuilder {
         Ok(Agent {
             id,
             system_prompt,
-            models: self.models,
+            models,
             history: History::from_prefix(self.history_prefix),
             inbound,
             bus,
@@ -279,6 +310,20 @@ impl Agent {
         &self.tools
     }
 
+    /// Assemble the runtime context handed to tools and fork logic, snapshotting
+    /// the Agent's current history head.
+    fn tool_call_context(&self) -> ToolCallContext {
+        ToolCallContext::new(
+            self.id,
+            self.history.head().cloned(),
+            self.system_prompt.clone(),
+            self.models.clone(),
+            self.tools.clone(),
+            self.spawner.clone(),
+            self.stop_token.clone(),
+        )
+    }
+
     /// Handle an out-of-band control message. Control messages drive the Agent
     /// without appending a `Block` or triggering a model turn for the request
     /// itself. A fork request is resolved against the same runtime context the
@@ -287,15 +332,7 @@ impl Agent {
     fn handle_control(&self, control: Control) {
         match control {
             Control::Fork(request) => {
-                let ctx = ToolCallContext::new(
-                    self.id,
-                    self.history.head().cloned(),
-                    self.system_prompt.clone(),
-                    self.models.clone(),
-                    self.tools.clone(),
-                    self.spawner.clone(),
-                    self.stop_token.clone(),
-                );
+                let ctx = self.tool_call_context();
                 if let Err(err) =
                     fork_from_context(&ctx, request.instruction, request.handle, request.tools)
                 {
@@ -330,11 +367,7 @@ impl Agent {
             loop {
                 let context = self.history.linearize_with_handles();
 
-                let model = self
-                    .models
-                    .get(&ModelRole::Default)
-                    .ok_or(Error::MissingDefaultModel)?
-                    .clone();
+                let model = self.models.default().clone();
 
                 let tools: Vec<ToolSpec> = self
                     .tools
@@ -484,15 +517,7 @@ impl Agent {
                         .bus
                         .publish(self.id, AgentEvent::BlockComplete { block: call_node });
 
-                    let ctx = ToolCallContext::new(
-                        self.id,
-                        self.history.head().cloned(),
-                        self.system_prompt.clone(),
-                        self.models.clone(),
-                        self.tools.clone(),
-                        self.spawner.clone(),
-                        self.stop_token.clone(),
-                    );
+                    let ctx = self.tool_call_context();
                     let (result_json, is_error) =
                         match self.tools.dispatch_with_context(&name, args, &ctx).await {
                             Ok(value) => (value, false),
@@ -542,6 +567,32 @@ mod tests {
             body: String::new(),
             directory: std::path::PathBuf::new(),
         }
+    }
+
+    #[test]
+    fn models_new_without_default_returns_configuration_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let empty: HashMap<ModelRole, Arc<dyn ARModel>> = HashMap::new();
+        match Models::new(empty) {
+            Err(Error::Configuration(msg)) => assert_eq!(msg, "default model is required"),
+            Err(other) => return Err(format!("expected Configuration error, got {other:?}").into()),
+            Ok(_) => return Err("expected an error, got a Models".into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn models_new_with_default_exposes_it() -> Result<(), Box<dyn std::error::Error>> {
+        let model: Arc<dyn ARModel> = Arc::new(StubArModel::empty());
+        let mut map: HashMap<ModelRole, Arc<dyn ARModel>> = HashMap::new();
+        map.insert(ModelRole::Default, model.clone());
+        let models = Models::new(map)?;
+        assert!(Arc::ptr_eq(models.default(), &model));
+        let looked_up = models
+            .get(ModelRole::Default)
+            .ok_or("default role resolves")?;
+        assert!(Arc::ptr_eq(looked_up, &model));
+        Ok(())
     }
 
     #[test]
@@ -1730,11 +1781,11 @@ mod tests {
             Some(Block::UserMessage { content, .. }) => assert_eq!(content, "do it"),
             other => return Err(format!("expected a seeded instruction, got {other:?}").into()),
         }
-        assert_eq!(
-            specs[0].origin,
-            Some(agent_id),
-            "fork records its originating agent",
-        );
+        let fork = specs[0]
+            .fork
+            .as_ref()
+            .ok_or("fork spec must carry its provenance")?;
+        assert_eq!(fork.origin, agent_id, "fork records its originating agent");
 
         assert!(
             captured.last_input().is_none(),

@@ -13,7 +13,6 @@ fn build_rpc_module() -> (
     AgentId,
     UserId,
     CancellationToken,
-    Arc<dyn MessageBus>,
     futures::stream::BoxStream<'static, pristine::history::Block>,
 ) {
     let bus: Arc<dyn MessageBus> = Arc::new(InMemoryMessageBus::new());
@@ -24,12 +23,12 @@ fn build_rpc_module() -> (
     let inbound = bus.register(agent_id).expect("register agent");
 
     let server = RpcServerImpl::new(bus.clone(), agent_id, owner_id, token.clone());
-    (server.into_rpc(), agent_id, owner_id, token, bus, inbound)
+    (server.into_rpc(), agent_id, owner_id, token, inbound)
 }
 
 #[tokio::test]
 async fn initialize_via_raw_json_rpc() {
-    let (module, agent_id, owner_id, _token, _bus, _inbound) = build_rpc_module();
+    let (module, agent_id, owner_id, _token, _inbound) = build_rpc_module();
 
     let request = r#"{"jsonrpc": "2.0", "method": "initialize", "id": 1}"#;
     let (response, _rx) = module
@@ -57,7 +56,7 @@ async fn initialize_via_raw_json_rpc() {
 #[tokio::test]
 async fn send_message_via_raw_json_rpc_routes_to_inbound() -> Result<(), Box<dyn std::error::Error>>
 {
-    let (module, agent_id, _owner_id, _token, _bus, mut inbound) = build_rpc_module();
+    let (module, agent_id, _owner_id, _token, mut inbound) = build_rpc_module();
 
     let request = serde_json::json!({
         "jsonrpc": "2.0",
@@ -99,7 +98,7 @@ async fn send_message_via_raw_json_rpc_routes_to_inbound() -> Result<(), Box<dyn
 
 #[tokio::test]
 async fn shutdown_via_raw_json_rpc_cancels_token() {
-    let (module, _agent_id, _owner_id, token, _bus, _inbound) = build_rpc_module();
+    let (module, _agent_id, _owner_id, token, _inbound) = build_rpc_module();
 
     assert!(!token.is_cancelled());
 
@@ -190,7 +189,7 @@ async fn event_notification_serializes_as_json_rpc() {
 
 #[tokio::test]
 async fn invalid_method_returns_json_rpc_error() {
-    let (module, _agent_id, _owner_id, _token, _bus, _inbound) = build_rpc_module();
+    let (module, _agent_id, _owner_id, _token, _inbound) = build_rpc_module();
 
     let request = r#"{"jsonrpc": "2.0", "method": "nonexistent_method", "id": 99}"#;
     let (response, _rx) = module
